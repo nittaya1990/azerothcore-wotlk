@@ -18,16 +18,22 @@
 #ifndef _LOG_H__
 #define _LOG_H__
 
+#include "IoContext.h"
 #include "Define.h"
 #include "LogCommon.h"
 #include "StringFormat.h"
-#include <memory>
 #include <unordered_map>
 #include <vector>
 
 class Appender;
 class Logger;
 struct LogMessage;
+
+namespace Acore::Asio
+{
+    class IoContext;
+    class Strand;
+}
 
 #define LOGGER_ROOT "root"
 
@@ -54,27 +60,28 @@ private:
 public:
     static Log* instance();
 
-    void Initialize();
+    void Initialize(Acore::Asio::IoContext* ioContext = nullptr);
+    void SetSynchronous();  // Not threadsafe - should only be called from main() after all threads are joined
     void LoadFromConfig();
     void Close();
     [[nodiscard]] bool ShouldLog(std::string const& type, LogLevel level) const;
     bool SetLogLevel(std::string const& name, int32 level, bool isLogger = true);
 
     template<typename... Args>
-    inline void outMessage(std::string const& filter, LogLevel const level, std::string_view fmt, Args&&... args)
+    inline void outMessage(std::string const& filter, LogLevel const level, Acore::FormatString<Args...> fmt, Args&&... args)
     {
-        _outMessage(filter, level, Acore::StringFormatFmt(fmt, std::forward<Args>(args)...));
+        _outMessage(filter, level, Acore::StringFormat(fmt, std::forward<Args>(args)...));
     }
 
     template<typename... Args>
-    void outCommand(uint32 account, std::string_view fmt, Args&&... args)
+    void outCommand(uint32 account, Acore::FormatString<Args...> fmt, Args&&... args)
     {
         if (!ShouldLog("commands.gm", LOG_LEVEL_INFO))
         {
             return;
         }
 
-        _outCommand(Acore::StringFormatFmt(fmt, std::forward<Args>(args)...), std::to_string(account));
+        _outCommand(Acore::StringFormat(fmt, std::forward<Args>(args)...), std::to_string(account));
     }
 
     void SetRealmId(uint32 id);
@@ -112,8 +119,8 @@ private:
     std::string m_logsDir;
     std::string m_logsTimestamp;
 
-    // Deprecated debug filter logs
-    DebugLogFilters _debugLogMask;
+    Acore::Asio::IoContext* _ioContext;
+    Acore::Asio::Strand* _strand;
 };
 
 #define sLog Log::instance()

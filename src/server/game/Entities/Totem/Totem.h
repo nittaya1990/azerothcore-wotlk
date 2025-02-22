@@ -27,12 +27,25 @@ enum TotemType
     TOTEM_STATUE     = 2 // copied straight from moongose, may need more implementation to work
 };
 // Some Totems cast spells that are not in creature DB
-#define SENTRY_TOTEM_SPELLID  6495
+
+enum class TotemSpellIds : uint32
+{
+    SentryTotemSpell = 6495,
+    FireTotemSpell   = 32062
+};
 
 #define SENTRY_TOTEM_ENTRY    3968
 #define EARTHBIND_TOTEM_ENTRY 2630
 
-constexpr uint32 SPELL_CYCLONE = 33786;
+enum TotemImmunitySpells
+{
+    // Immune
+    SPELL_CYCLONE    = 33786,
+    // Not Immune
+    SPELL_STONECLAW  = 55277,
+    SPELL_BIND_SIGHT = 6277,
+    SPELL_INTERVENE  = 3411
+};
 
 class Totem : public Minion
 {

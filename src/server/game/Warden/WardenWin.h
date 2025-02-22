@@ -19,8 +19,6 @@
 #define _WARDEN_WIN_H
 
 #include "ByteBuffer.h"
-#include "Cryptography/ARC4.h"
-#include "Cryptography/BigNumber.h"
 #include "Warden.h"
 #include <list>
 
@@ -81,6 +79,8 @@ public:
     void RequestHash() override;
     void HandleHashResult(ByteBuffer& buff) override;
     void RequestChecks() override;
+    bool IsCheckInProgress() override;
+    void ForceChecks() override;
     void HandleData(ByteBuffer& buff) override;
 
 private:

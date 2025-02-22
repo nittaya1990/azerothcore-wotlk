@@ -18,10 +18,9 @@
 #ifndef DEF_SHADOWFANG_H
 #define DEF_SHADOWFANG_H
 
-#include "SpellAuraEffects.h"
-#include "SpellScript.h"
 #include "CreatureAIImpl.h"
 
+#define DataHeader "SK"
 #define ShadowfangKeepScriptName "instance_shadowfang_keep"
 
 enum DataTypes
@@ -36,7 +35,9 @@ enum DataTypes
 
 enum SKCreatures
 {
-    NPC_DND_CRAZED_APOTHECARY_GENERATOR = 36212
+    NPC_DND_CRAZED_APOTHECARY_GENERATOR = 36212,
+    NPC_APOTHECARY_HUMMEL               = 36296,
+    NPC_CRAZED_APOTHECARY               = 36568
 };
 
 enum GameObjects

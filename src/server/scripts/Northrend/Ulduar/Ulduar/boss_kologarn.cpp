@@ -15,12 +15,14 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "AchievementCriteriaScript.h"
+#include "CreatureScript.h"
 #include "PassiveAI.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "SpellAuraEffects.h"
 #include "SpellScript.h"
+#include "SpellScriptLoader.h"
 #include "Vehicle.h"
 #include "ulduar.h"
 
@@ -172,7 +174,7 @@ public:
 
         void MoveInLineOfSight(Unit* who) override
         {
-            if (who->GetTypeId() == TYPEID_PLAYER && me->GetExactDist2d(who) < 45.0f && me->getStandState() == UNIT_STAND_STATE_SUBMERGED)
+            if (who->IsPlayer() && me->GetExactDist2d(who) < 45.0f && me->getStandState() == UNIT_STAND_STATE_SUBMERGED)
             {
                 me->SetStandState(UNIT_STAND_STATE_STAND);
                 if (Unit* arm = ObjectAccessor::GetCreature(*me, _left))
@@ -185,9 +187,9 @@ public:
                 ScriptedAI::MoveInLineOfSight(who);
         }
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
-            if (!_EnterEvadeMode())
+            if (!_EnterEvadeMode(why))
                 return;
             Reset();
             me->setActive(false);
@@ -235,24 +237,25 @@ public:
             _looksAchievement = true;
 
             me->SetDisableGravity(true);
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_DISABLE_MOVE);
             me->DisableRotate(true);
 
             events.Reset();
             summons.DespawnAll();
 
             if (m_pInstance)
+            {
                 m_pInstance->SetData(TYPE_KOLOGARN, NOT_STARTED);
+
+                // Open the door inside Kologarn chamber
+                if (GameObject* door = m_pInstance->instance->GetGameObject(m_pInstance->GetGuidData(GO_KOLOGARN_DOORS)))
+                    door->SetGoState(GO_STATE_ACTIVE);
+            }
 
             AttachLeftArm();
             AttachRightArm();
 
             // Reset breath on pull
             breathReady = false;
-
-            // Open the door inside Kologarn chamber
-            if (GameObject* door = me->FindNearestGameObject(GO_KOLOGARN_DOORS, 100.0f))
-                door->SetGoState(GO_STATE_ACTIVE);
         }
 
         void DoAction(int32 param) override
@@ -301,6 +304,13 @@ public:
 
             Talk(SAY_DEATH);
 
+            if (m_pInstance)
+            {
+                // Open the door inside Kologarn chamber
+                if (GameObject* door = m_pInstance->instance->GetGameObject(m_pInstance->GetGuidData(GO_KOLOGARN_DOORS)))
+                    door->SetGoState(GO_STATE_ACTIVE);
+            }
+
             if (GameObject* bridge = me->FindNearestGameObject(GO_KOLOGARN_BRIDGE, 100))
                 bridge->SetGoState(GO_STATE_READY);
 
@@ -309,12 +319,15 @@ public:
             {
                 me->RemoveGameObject(go, false);
                 go->SetSpellId(1); // hack to make it despawn
-                go->SetUInt32Value(GAMEOBJECT_FLAGS, 0);
+                go->ReplaceAllGameObjectFlags((GameObjectFlags)0);
+                go->SetLootRecipient(me);
             }
             if (Creature* arm = ObjectAccessor::GetCreature(*me, _left))
                 arm->DespawnOrUnsummon(3000); // visual
             if (Creature* arm = ObjectAccessor::GetCreature(*me, _right))
                 arm->DespawnOrUnsummon(3000); // visual
+            me->SetUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
+            me->SetDisableGravity(true);
         }
 
         void KilledUnit(Unit*) override
@@ -339,7 +352,7 @@ public:
                     if (me->IsInCombat())
                     {
                         Talk(SAY_LEFT_ARM_GONE);
-                        events.ScheduleEvent(EVENT_RESTORE_ARM_LEFT, 50000);
+                        events.ScheduleEvent(EVENT_RESTORE_ARM_LEFT, 50s);
                     }
                 }
                 else
@@ -348,13 +361,13 @@ public:
                     if (me->IsInCombat())
                     {
                         Talk(SAY_RIGHT_ARM_GONE);
-                        events.ScheduleEvent(EVENT_RESTORE_ARM_RIGHT, 50000);
+                        events.ScheduleEvent(EVENT_RESTORE_ARM_RIGHT, 50s);
                     }
                 }
 
                 me->CastSpell(me, SPELL_ARM_DEAD, true);
                 if (!_right && !_left)
-                    events.ScheduleEvent(EVENT_STONE_SHOUT, 5000);
+                    events.ScheduleEvent(EVENT_STONE_SHOUT, 5s);
             }
         }
 
@@ -367,31 +380,36 @@ public:
             }
         }
 
-        void EnterCombat(Unit*  /*who*/) override
+        void JustEngagedWith(Unit*  /*who*/) override
         {
             if (m_pInstance)
                 m_pInstance->SetData(TYPE_KOLOGARN, IN_PROGRESS);
 
-            events.ScheduleEvent(EVENT_SMASH, 8000);
-            events.ScheduleEvent(EVENT_SWEEP, 17000);
-            events.ScheduleEvent(EVENT_GRIP, 15000);
-            events.ScheduleEvent(EVENT_FOCUSED_EYEBEAM, 10000);
-            events.ScheduleEvent(EVENT_PREPARE_BREATH, 3000);
+            events.ScheduleEvent(EVENT_SMASH, 8s);
+            events.ScheduleEvent(EVENT_SWEEP, 17s);
+            events.ScheduleEvent(EVENT_GRIP, 15s);
+            events.ScheduleEvent(EVENT_FOCUSED_EYEBEAM, 10s);
+            events.ScheduleEvent(EVENT_PREPARE_BREATH, 3s);
             //events.ScheduleEvent(EVENT_ENRAGE, x); no info
 
             Talk(SAY_AGGRO);
             me->setActive(true);
 
             // Close the door inside Kologarn chamber
-            if (GameObject* door = me->FindNearestGameObject(GO_KOLOGARN_DOORS, 100.0f))
-                door->SetGoState(GO_STATE_READY);
+            if (m_pInstance)
+            {
+                if (GameObject* door = m_pInstance->instance->GetGameObject(m_pInstance->GetGuidData(GO_KOLOGARN_DOORS)))
+                {
+                    door->SetGoState(GO_STATE_READY);
+                }
+            }
         }
 
         void UpdateAI(uint32 diff) override
         {
             if (!UpdateVictim())
             {
-                EnterEvadeMode();
+                EnterEvadeMode(EVADE_REASON_OTHER);
                 return;
             }
 
@@ -411,7 +429,7 @@ public:
                     }
 
                     me->CastSpell(me->GetVictim(), SPELL_STONE_SHOUT, false);
-                    events.ScheduleEvent(EVENT_STONE_SHOUT, 2000);
+                    events.ScheduleEvent(EVENT_STONE_SHOUT, 2s);
                     break;
                 case EVENT_SMASH:
                     if (_left && _right)
@@ -419,8 +437,8 @@ public:
                     else if (_left || _right)
                         me->CastSpell(me->GetVictim(), SPELL_ONEARMED_OVERHEAD_SMASH, false);
 
-                    events.DelayEvents(1000);
-                    events.ScheduleEvent(EVENT_SMASH, 14000);
+                    events.DelayEvents(1s);
+                    events.ScheduleEvent(EVENT_SMASH, 14s);
                     return;
                 case EVENT_SWEEP:
                     if (_left)
@@ -432,11 +450,11 @@ public:
                             Talk(SAY_SHOCKWAVE);
                     }
 
-                    events.DelayEvents(1000);
-                    events.ScheduleEvent(EVENT_SWEEP, 17000);
+                    events.DelayEvents(1s);
+                    events.ScheduleEvent(EVENT_SWEEP, 17s);
                     return;
                 case EVENT_GRIP:
-                    events.ScheduleEvent(EVENT_GRIP, 25000);
+                    events.ScheduleEvent(EVENT_GRIP, 25s);
                     if (!_right)
                         break;
 
@@ -446,7 +464,7 @@ public:
                     return;
                 case EVENT_FOCUSED_EYEBEAM:
                 {
-                    events.ScheduleEvent(EVENT_FOCUSED_EYEBEAM, 20000);
+                    events.ScheduleEvent(EVENT_FOCUSED_EYEBEAM, 20s);
 
                     if ((eyebeamTarget = SelectTarget(SelectTargetMethod::MinDistance, 0, 0, true)))
                     {
@@ -509,7 +527,7 @@ public:
         int32 _damageDone;
         bool _combatStarted;
 
-        void EnterEvadeMode() override {}
+        void EnterEvadeMode(EvadeReason /*why*/ = EVADE_REASON_OTHER) override {}
         void MoveInLineOfSight(Unit*) override {}
         void AttackStart(Unit*) override {}
         void UpdateAI(uint32  /*diff*/) override {}
@@ -555,7 +573,7 @@ public:
         {
             float x, y, z;
             // left arm
-            if( me->GetEntry() == NPC_LEFT_ARM )
+            if (me->GetEntry() == NPC_LEFT_ARM )
             {
                 x = 1776.97f;
                 y = -44.8396f;
@@ -612,7 +630,7 @@ public:
         uint32 _timer;
         bool _damaged, justSpawned;
 
-        void DamageDealt(Unit* /*victim*/, uint32& damage, DamageEffectType /*damageType*/) override
+        void DamageDealt(Unit* /*victim*/, uint32& damage, DamageEffectType /*damageType*/, SpellSchoolMask /*damageSchoolMask*/) override
         {
             if (damage > 0 && !_damaged && me->GetInstanceScript())
             {
@@ -647,6 +665,37 @@ public:
     };
 };
 
+struct boss_kologarn_pit_kill_bunny : public NullCreatureAI
+{
+    boss_kologarn_pit_kill_bunny(Creature* creature) : NullCreatureAI(creature) { }
+
+    void Reset() override
+    {
+        RectangleBoundary* _boundaryXY = new RectangleBoundary(1782.0f, 1832.0f, -56.0f, 8.0f);
+        ZRangeBoundary* _boundaryZ = new ZRangeBoundary(400.0f, 439.0f);
+        _boundaryIntersect = new BoundaryIntersectBoundary(_boundaryXY, _boundaryZ);
+
+        scheduler.Schedule(0s, [this](TaskContext context)
+        {
+            me->GetMap()->DoForAllPlayers([&](Player* player)
+            {
+                if (_boundaryIntersect->IsWithinBoundary(player->GetPosition()) && !player->IsGameMaster())
+                {
+                    player->KillSelf(false);
+                }
+            });
+            context.Repeat(1s);
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        scheduler.Update(diff);
+    }
+private:
+    BoundaryIntersectBoundary const* _boundaryIntersect;
+};
+
 // predicate function to select non main tank target
 class StoneGripTargetSelector
 {
@@ -655,10 +704,10 @@ public:
 
     bool operator() (WorldObject* target) const
     {
-        if (target == _victim && _me->getThreatMgr().getThreatList().size() > 1)
+        if (target == _victim && _me->GetThreatMgr().GetThreatListSize() > 1)
             return true;
 
-        if (target->GetTypeId() != TYPEID_PLAYER)
+        if (!target->IsPlayer())
             return true;
 
         return false;
@@ -669,156 +718,107 @@ private:
     Unit const* _victim;
 };
 
-class spell_ulduar_stone_grip_cast_target : public SpellScriptLoader
+class spell_ulduar_stone_grip_cast_target : public SpellScript
 {
-public:
-    spell_ulduar_stone_grip_cast_target() : SpellScriptLoader("spell_ulduar_stone_grip_cast_target") { }
+    PrepareSpellScript(spell_ulduar_stone_grip_cast_target);
 
-    class spell_ulduar_stone_grip_cast_target_SpellScript : public SpellScript
+    bool Load() override
     {
-        PrepareSpellScript(spell_ulduar_stone_grip_cast_target_SpellScript);
+        if (!GetCaster()->IsCreature())
+            return false;
+        return true;
+    }
 
-        bool Load() override
-        {
-            if (GetCaster()->GetTypeId() != TYPEID_UNIT)
-                return false;
-            return true;
-        }
-
-        void FilterTargetsInitial(std::list<WorldObject*>& targets)
-        {
-            // Remove "main tank" and non-player targets
-            targets.remove_if (StoneGripTargetSelector(GetCaster()->ToCreature(), GetCaster()->GetVictim()));
-            // Maximum affected targets per difficulty mode
-            uint32 maxTargets = 1;
-            if (GetSpellInfo()->Id == 63981)
-                maxTargets = 3;
-
-            // Return a random amount of targets based on maxTargets
-            while (maxTargets < targets.size())
-            {
-                std::list<WorldObject*>::iterator itr = targets.begin();
-                advance(itr, urand(0, targets.size() - 1));
-                targets.erase(itr);
-            }
-        }
-
-        void Register() override
-        {
-            OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_ulduar_stone_grip_cast_target_SpellScript::FilterTargetsInitial, EFFECT_ALL, TARGET_UNIT_SRC_AREA_ENEMY);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void FilterTargetsInitial(std::list<WorldObject*>& targets)
     {
-        return new spell_ulduar_stone_grip_cast_target_SpellScript();
+        // Remove "main tank" and non-player targets
+        targets.remove_if (StoneGripTargetSelector(GetCaster()->ToCreature(), GetCaster()->GetVictim()));
+        // Maximum affected targets per difficulty mode
+        uint32 maxTargets = 1;
+        if (GetSpellInfo()->Id == 63981)
+            maxTargets = 3;
+
+        // Return a random amount of targets based on maxTargets
+        while (maxTargets < targets.size())
+        {
+            std::list<WorldObject*>::iterator itr = targets.begin();
+            advance(itr, urand(0, targets.size() - 1));
+            targets.erase(itr);
+        }
+    }
+
+    void Register() override
+    {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_ulduar_stone_grip_cast_target::FilterTargetsInitial, EFFECT_ALL, TARGET_UNIT_SRC_AREA_ENEMY);
     }
 };
 
-class spell_ulduar_stone_grip : public SpellScriptLoader
+class spell_ulduar_stone_grip_aura : public AuraScript
 {
-public:
-    spell_ulduar_stone_grip() : SpellScriptLoader("spell_ulduar_stone_grip") { }
+    PrepareAuraScript(spell_ulduar_stone_grip_aura);
 
-    class spell_ulduar_stone_grip_AuraScript : public AuraScript
+    void OnRemoveStun(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
     {
-        PrepareAuraScript(spell_ulduar_stone_grip_AuraScript);
+        if (Player* owner = GetOwner()->ToPlayer())
+            owner->RemoveAurasDueToSpell(aurEff->GetAmount());
+    }
 
-        void OnRemoveStun(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
-        {
-            if (Player* owner = GetOwner()->ToPlayer())
-                owner->RemoveAurasDueToSpell(aurEff->GetAmount());
-        }
-
-        void Register() override
-        {
-            OnEffectRemove += AuraEffectRemoveFn(spell_ulduar_stone_grip_AuraScript::OnRemoveStun, EFFECT_2, SPELL_AURA_MOD_STUN, AURA_EFFECT_HANDLE_REAL);
-        }
-    };
-
-    AuraScript* GetAuraScript() const override
+    void Register() override
     {
-        return new spell_ulduar_stone_grip_AuraScript();
+        OnEffectRemove += AuraEffectRemoveFn(spell_ulduar_stone_grip_aura::OnRemoveStun, EFFECT_2, SPELL_AURA_MOD_STUN, AURA_EFFECT_HANDLE_REAL);
     }
 };
 
-class spell_ulduar_squeezed_lifeless : public SpellScriptLoader
+class spell_ulduar_squeezed_lifeless : public SpellScript
 {
-public:
-    spell_ulduar_squeezed_lifeless() : SpellScriptLoader("spell_ulduar_squeezed_lifeless") { }
+    PrepareSpellScript(spell_ulduar_squeezed_lifeless);
 
-    class spell_ulduar_squeezed_lifeless_SpellScript : public SpellScript
+    void HandleInstaKill(SpellEffIndex  /*effIndex*/)
     {
-        PrepareSpellScript(spell_ulduar_squeezed_lifeless_SpellScript);
+        if (!GetHitPlayer() || !GetHitPlayer()->GetVehicle())
+            return;
 
-        void HandleInstaKill(SpellEffIndex  /*effIndex*/)
-        {
-            if (!GetHitPlayer() || !GetHitPlayer()->GetVehicle())
-                return;
+        // Hack to set correct position is in _ExitVehicle()
+        GetHitPlayer()->ExitVehicle();
+    }
 
-            // Hack to set correct position is in _ExitVehicle()
-            GetHitPlayer()->ExitVehicle();
-        }
-
-        void Register() override
-        {
-            OnEffectHitTarget += SpellEffectFn(spell_ulduar_squeezed_lifeless_SpellScript::HandleInstaKill, EFFECT_1, SPELL_EFFECT_INSTAKILL);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void Register() override
     {
-        return new spell_ulduar_squeezed_lifeless_SpellScript();
+        OnEffectHitTarget += SpellEffectFn(spell_ulduar_squeezed_lifeless::HandleInstaKill, EFFECT_1, SPELL_EFFECT_INSTAKILL);
     }
 };
 
-class spell_kologarn_stone_shout : public SpellScriptLoader
+class spell_kologarn_stone_shout : public SpellScript
 {
-public:
-    spell_kologarn_stone_shout() :  SpellScriptLoader("spell_kologarn_stone_shout") { }
+    PrepareSpellScript(spell_kologarn_stone_shout);
 
-    class spell_kologarn_stone_shout_AuraScript : public AuraScript
+    void FilterTargets(std::list<WorldObject*>& targets)
     {
-        PrepareAuraScript(spell_kologarn_stone_shout_AuraScript);
-
-        void OnPeriodic(AuraEffect const* /*aurEff*/)
-        {
-            uint32 triggerSpellId = GetSpellInfo()->Effects[EFFECT_0].TriggerSpell;
-            if (Unit* caster = GetCaster())
-                caster->CastSpell(caster, triggerSpellId, false);
-        }
-
-        void Register() override
-        {
-            if (m_scriptSpellId == SPELL_STONE_SHOUT_10 || m_scriptSpellId == SPELL_STONE_SHOUT_25)
-                OnEffectPeriodic += AuraEffectPeriodicFn(spell_kologarn_stone_shout_AuraScript::OnPeriodic, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
-        }
-    };
-
-    AuraScript* GetAuraScript() const override
-    {
-        return new spell_kologarn_stone_shout_AuraScript();
+        targets.remove_if (PlayerOrPetCheck());
     }
 
-    class spell_kologarn_stone_shout_SpellScript : public SpellScript
+    void Register() override
     {
-        PrepareSpellScript(spell_kologarn_stone_shout_SpellScript);
+        if (m_scriptSpellId != SPELL_STONE_SHOUT_10 && m_scriptSpellId != SPELL_STONE_SHOUT_25)
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_kologarn_stone_shout::FilterTargets, EFFECT_0, TARGET_UNIT_SRC_AREA_ENEMY);
+    }
+};
 
-        void FilterTargets(std::list<WorldObject*>& targets)
-        {
-            targets.remove_if (PlayerOrPetCheck());
-        }
+class spell_kologarn_stone_shout_aura : public AuraScript
+{
+    PrepareAuraScript(spell_kologarn_stone_shout_aura);
 
-        void Register() override
-        {
-            if (m_scriptSpellId != SPELL_STONE_SHOUT_10 && m_scriptSpellId != SPELL_STONE_SHOUT_25)
-                OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_kologarn_stone_shout_SpellScript::FilterTargets, EFFECT_0, TARGET_UNIT_SRC_AREA_ENEMY);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void OnPeriodic(AuraEffect const* /*aurEff*/)
     {
-        return new spell_kologarn_stone_shout_SpellScript();
+        uint32 triggerSpellId = GetSpellInfo()->Effects[EFFECT_0].TriggerSpell;
+        if (Unit* caster = GetCaster())
+            caster->CastSpell(caster, triggerSpellId, false);
+    }
+
+    void Register() override
+    {
+        if (m_scriptSpellId == SPELL_STONE_SHOUT_10 || m_scriptSpellId == SPELL_STONE_SHOUT_25)
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_kologarn_stone_shout_aura::OnPeriodic, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
     }
 };
 
@@ -876,12 +876,13 @@ void AddSC_boss_kologarn()
     new boss_kologarn();
     new boss_kologarn_arms();
     new boss_kologarn_eyebeam();
+    RegisterUlduarCreatureAI(boss_kologarn_pit_kill_bunny);
 
     // Spells
-    new spell_ulduar_stone_grip_cast_target();
-    new spell_ulduar_stone_grip();
-    new spell_ulduar_squeezed_lifeless();
-    new spell_kologarn_stone_shout();
+    RegisterSpellScript(spell_ulduar_stone_grip_cast_target);
+    RegisterSpellScript(spell_ulduar_stone_grip_aura);
+    RegisterSpellScript(spell_ulduar_squeezed_lifeless);
+    RegisterSpellAndAuraScriptPair(spell_kologarn_stone_shout, spell_kologarn_stone_shout_aura);
 
     // Achievements
     new achievement_kologarn_looks_could_kill();

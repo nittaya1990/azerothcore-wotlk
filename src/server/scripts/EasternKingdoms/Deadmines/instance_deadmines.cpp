@@ -1,4 +1,4 @@
-﻿/*
+/*
  * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -15,8 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "InstanceMapScript.h"
 #include "InstanceScript.h"
-#include "ScriptMgr.h"
 #include "deadmines.h"
 
 class instance_deadmines : public InstanceMapScript
@@ -28,6 +28,7 @@ public:
     {
         instance_deadmines_InstanceMapScript(Map* map) : InstanceScript(map)
         {
+            SetHeaders(DataHeader);
         }
 
         void Initialize() override
@@ -39,13 +40,26 @@ public:
         {
             switch (gameobject->GetEntry())
             {
+                case GO_HEAVY_DOOR_1:
+                case GO_HEAVY_DOOR_2:
+                case GO_DOOR_LEVER_1:
+                case GO_DOOR_LEVER_2:
+                case GO_DOOR_LEVER_3:
+                case GO_CANNON:
+                    gameobject->AllowSaveToDB(true);
+                    break;
                 case GO_FACTORY_DOOR:
+                    gameobject->AllowSaveToDB(true);
+                    // GoState (Door opened) is restored during GO creation, but we need to set LootState to prevent Lever from closing it again
                     if (_encounters[TYPE_RHAHK_ZOR] == DONE)
-                        gameobject->SetGoState(GO_STATE_ACTIVE);
+                        gameobject->SetLootState(GO_ACTIVATED);
                     break;
                 case GO_IRON_CLAD_DOOR:
-                    if (_encounters[TYPE_CANNON] == DONE)
-                        HandleGameObject(ObjectGuid::Empty, true, gameobject);
+                    gameobject->AllowSaveToDB(true);
+                    if (GetStoredGameObjectState(gameobject->GetSpawnId()) == GO_STATE_ACTIVE)
+                    {
+                        gameobject->DespawnOrUnsummon();
+                    }
                     break;
             }
         }

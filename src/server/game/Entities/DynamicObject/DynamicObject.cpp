@@ -17,16 +17,13 @@
 
 #include "GameTime.h"
 #include "GridNotifiers.h"
-#include "GridNotifiersImpl.h"
 #include "ObjectAccessor.h"
-#include "Opcodes.h"
 #include "ScriptMgr.h"
+#include "SpellAuraEffects.h"
 #include "Transport.h"
-#include "UpdateMask.h"
-#include "World.h"
 
 DynamicObject::DynamicObject(bool isWorldObject) : WorldObject(isWorldObject), MovableMapObject(),
-    _aura(nullptr), _removedAura(nullptr), _caster(nullptr), _duration(0), _isViewpoint(false)
+    _aura(nullptr), _removedAura(nullptr), _caster(nullptr), _duration(0), _isViewpoint(false), _updateViewerVisibilityTimer(0)
 {
     m_objectType |= TYPEMASK_DYNAMICOBJECT;
     m_objectTypeId = TYPEID_DYNAMICOBJECT;
@@ -125,13 +122,15 @@ bool DynamicObject::CreateDynamicObject(ObjectGuid::LowType guidlow, Unit* caste
     SetFloatValue(DYNAMICOBJECT_RADIUS, radius);
     SetUInt32Value(DYNAMICOBJECT_CASTTIME, GameTime::GetGameTimeMS().count());
 
-    if (IsWorldObject())
-        setActive(true);    //must before add to map to be put in world container
-
     if (!GetMap()->AddToMap(this, true))
     {
         // Returning false will cause the object to be deleted - remove from transport
         return false;
+    }
+
+    if (IsWorldObject())
+    {
+        setActive(true);
     }
 
     return true;
@@ -165,7 +164,22 @@ void DynamicObject::Update(uint32 p_time)
     if (expired)
         Remove();
     else
+    {
+        if (_updateViewerVisibilityTimer)
+        {
+            if (_updateViewerVisibilityTimer <= p_time)
+            {
+                _updateViewerVisibilityTimer = 0;
+
+                if (Player* playerCaster = _caster->ToPlayer())
+                    playerCaster->UpdateVisibilityForPlayer();
+            }
+            else
+                _updateViewerVisibilityTimer -= p_time;
+        }
+
         sScriptMgr->OnDynamicObjectUpdate(this, p_time);
+    }
 }
 
 void DynamicObject::Remove()
@@ -214,13 +228,22 @@ void DynamicObject::RemoveAura()
         _removedAura->_Remove(AURA_REMOVE_BY_DEFAULT);
 }
 
-void DynamicObject::SetCasterViewpoint()
+void DynamicObject::SetCasterViewpoint(bool updateViewerVisibility)
 {
     if (Player* caster = _caster->ToPlayer())
     {
+        // Remove old farsight viewpoint
+        if (Unit* farsightObject = ObjectAccessor::GetUnit(*caster, caster->GetGuidValue(PLAYER_FARSIGHT)))
+        {
+            _oldFarsightGUID = caster->GetGuidValue(PLAYER_FARSIGHT);
+            caster->SetViewpoint(farsightObject, false);
+        }
+
         caster->SetViewpoint(this, true);
         _isViewpoint = true;
     }
+
+    _updateViewerVisibilityTimer = updateViewerVisibility ? 100 : 0;
 }
 
 void DynamicObject::RemoveCasterViewpoint()
@@ -229,6 +252,13 @@ void DynamicObject::RemoveCasterViewpoint()
     {
         caster->SetViewpoint(this, false);
         _isViewpoint = false;
+
+        // Restore prev farsight viewpoint
+        if (Unit* farsightObject = ObjectAccessor::GetUnit(*caster, _oldFarsightGUID))
+        {
+            caster->SetViewpoint(farsightObject, true);
+        }
+        _oldFarsightGUID.Clear();
     }
 }
 

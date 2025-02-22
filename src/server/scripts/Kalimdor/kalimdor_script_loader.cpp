@@ -20,7 +20,6 @@ void AddSC_instance_blackfathom_deeps();     //Blackfathom Depths
 void AddSC_hyjal();                          //CoT Battle for Mt. Hyjal
 void AddSC_boss_archimonde();
 void AddSC_instance_mount_hyjal();
-void AddSC_hyjal_trash();
 void AddSC_boss_rage_winterchill();
 void AddSC_boss_anetheron();
 void AddSC_boss_kazrogal();
@@ -57,6 +56,7 @@ void AddSC_boss_moam();
 void AddSC_boss_buru();
 void AddSC_boss_ayamiss();
 void AddSC_boss_ossirian();
+void AddSC_ruins_of_ahnqiraj();
 void AddSC_instance_ruins_of_ahnqiraj();
 void AddSC_boss_cthun();                     //Temple of ahn'qiraj
 void AddSC_boss_viscidus();
@@ -68,6 +68,7 @@ void AddSC_boss_skeram();
 void AddSC_boss_twinemperors();
 void AddSC_boss_ouro();
 void AddSC_npc_anubisath_sentinel();
+void AddSC_temple_of_ahnqiraj();
 void AddSC_instance_temple_of_ahnqiraj();
 void AddSC_instance_wailing_caverns();       //Wailing caverns
 void AddSC_zulfarrak();
@@ -102,7 +103,6 @@ void AddKalimdorScripts()
     AddSC_hyjal();                          //CoT Battle for Mt. Hyjal
     AddSC_boss_archimonde();
     AddSC_instance_mount_hyjal();
-    AddSC_hyjal_trash();
     AddSC_boss_rage_winterchill();
     AddSC_boss_anetheron();
     AddSC_boss_kazrogal();
@@ -139,6 +139,7 @@ void AddKalimdorScripts()
     AddSC_boss_buru();
     AddSC_boss_ayamiss();
     AddSC_boss_ossirian();
+    AddSC_ruins_of_ahnqiraj();
     AddSC_instance_ruins_of_ahnqiraj();
     AddSC_boss_cthun();                     //Temple of ahn'qiraj
     AddSC_boss_viscidus();
@@ -150,6 +151,7 @@ void AddKalimdorScripts()
     AddSC_boss_twinemperors();
     AddSC_boss_ouro();
     AddSC_npc_anubisath_sentinel();
+    AddSC_temple_of_ahnqiraj();
     AddSC_instance_temple_of_ahnqiraj();
     AddSC_instance_wailing_caverns();       //Wailing caverns
     AddSC_zulfarrak();

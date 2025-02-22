@@ -21,7 +21,6 @@
 #include "DatabaseEnvFwd.h"
 #include "Define.h"
 #include <map>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -80,7 +79,7 @@ public:
     void RollbackTransaction();
     void CommitTransaction();
     int ExecuteTransaction(std::shared_ptr<TransactionBase> transaction);
-    size_t EscapeString(char* to, const char* from, size_t length);
+    std::size_t EscapeString(char* to, const char* from, std::size_t length);
     void Ping();
 
     uint32 GetLastError();
@@ -94,23 +93,23 @@ protected:
     void Unlock();
 
     [[nodiscard]] uint32 GetServerVersion() const;
+    [[nodiscard]] std::string GetServerInfo() const;
     MySQLPreparedStatement* GetPreparedStatement(uint32 index);
     void PrepareStatement(uint32 index, std::string_view sql, ConnectionFlags flags);
 
     virtual void DoPrepareStatements() = 0;
+    virtual bool _HandleMySQLErrno(uint32 errNo, char const* err = "", uint8 attempts = 5);
 
     typedef std::vector<std::unique_ptr<MySQLPreparedStatement>> PreparedStatementContainer;
 
     PreparedStatementContainer m_stmts; //! PreparedStatements storage
     bool m_reconnecting;  //! Are we reconnecting?
     bool m_prepareError;  //! Was there any error while preparing statements?
+    MySQLHandle* m_Mysql; //! MySQL Handle.
 
 private:
-    bool _HandleMySQLErrno(uint32 errNo, uint8 attempts = 5);
-
     ProducerConsumerQueue<SQLOperation*>* m_queue;      //! Queue shared with other asynchronous connections.
     std::unique_ptr<DatabaseWorker> m_worker;           //! Core worker task.
-    MySQLHandle* m_Mysql;                               //! MySQL Handle.
     MySQLConnectionInfo& m_connectionInfo;              //! Connection info (used for logging)
     ConnectionFlags m_connectionFlags;                  //! Connection flags (for preparing relevant statements)
     std::mutex m_Mutex;

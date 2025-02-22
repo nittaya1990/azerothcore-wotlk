@@ -15,7 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "ScriptedEscortAI.h"
 #include "SpellInfo.h"
@@ -120,112 +120,114 @@ public:
             summons.DespawnAll();
             Phase = 1;
             me->SetDisplayId(me->GetNativeDisplayId());
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+            me->SetImmuneToAll(true);
             me->SetReactState(REACT_PASSIVE);
-            if( pInstance )
+            if (pInstance)
                 pInstance->SetData(BOSS_BLACK_KNIGHT, NOT_STARTED);
 
             //me->SetLootMode(0); // [LOOT]
         }
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
             me->DespawnOrUnsummon(1);
-            ScriptedAI::EnterEvadeMode();
+            ScriptedAI::EnterEvadeMode(why);
         }
 
         void DamageTaken(Unit*, uint32& damage, DamageEffectType, SpellSchoolMask) override
         {
-            if (me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE))
+            if (me->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE))
             {
                 damage = 0;
                 return;
             }
 
-            if( Phase < 3 && damage >= me->GetHealth() )
+            if (Phase < 3 && damage >= me->GetHealth())
             {
                 damage = 0;
                 me->SetHealth(me->GetMaxHealth());
                 events.Reset();
-                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+                me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
                 me->RemoveAllAuras();
                 me->SetControlled(true, UNIT_STATE_STUNNED);
                 me->CastSpell(me, SPELL_BK_GHOUL_EXPLODE, true);
                 summons.clear();
 
                 me->CastSpell(me, SPELL_BK_FEIGN_DEATH, true);
-                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PREVENT_EMOTES_FROM_CHAT_TEXT);
-                me->SetFlag(UNIT_FIELD_FLAGS_2, UNIT_FLAG2_FEIGN_DEATH);
-                me->SetFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_DEAD);
+                me->SetUnitFlag(UNIT_FLAG_PREVENT_EMOTES_FROM_CHAT_TEXT);
+                me->SetUnitFlag2(UNIT_FLAG2_FEIGN_DEATH);
+                me->SetDynamicFlag(UNIT_DYNFLAG_DEAD);
                 me->AddUnitState(UNIT_STATE_DIED);
             }
         }
 
         void DoAction(int32 param) override
         {
-            if( param == -1 )
+            if (param == -1)
             {
                 summons.DespawnAll();
             }
-            else if( param == 1 )
+            else if (param == 1)
             {
-                if( !pInstance )
+                if (!pInstance)
                     return;
 
                 pInstance->SetData(BOSS_BLACK_KNIGHT, IN_PROGRESS);
-                Talk(TEXT_BK_AGGRO);
+                Talk(SAY_BK_AGGRO);
                 me->CastSpell((Unit*)nullptr, (pInstance->GetData(DATA_TEAMID_IN_INSTANCE) == TEAM_HORDE ? SPELL_RAISE_DEAD_JAEREN : SPELL_RAISE_DEAD_ARELAS), false);
-                if( Creature* announcer = pInstance->instance->GetCreature(pInstance->GetGuidData(DATA_ANNOUNCER)) )
+                if (Creature* announcer = pInstance->instance->GetCreature(pInstance->GetGuidData(DATA_ANNOUNCER)))
                     announcer->DespawnOrUnsummon();
 
                 events.Reset();
-                events.ScheduleEvent(EVENT_ANNOUNCER_SAY_ZOMBIE, 2500);
-                events.ScheduleEvent(EVENT_SPELL_PLAGUE_STRIKE, urand(7000, 9000));
-                events.ScheduleEvent(EVENT_SPELL_ICY_TOUCH, urand(3500, 7000));
-                events.ScheduleEvent(EVENT_SPELL_DEATH_RESPITE, urand(13000, 15000));
-                events.ScheduleEvent(EVENT_SPELL_OBLITERATE, urand(11000, 19000));
+                events.ScheduleEvent(EVENT_ANNOUNCER_SAY_ZOMBIE, 2500ms);
+                events.ScheduleEvent(EVENT_SPELL_PLAGUE_STRIKE, 7s, 9s);
+                events.ScheduleEvent(EVENT_SPELL_ICY_TOUCH, 3500ms, 7000ms);
+                events.ScheduleEvent(EVENT_SPELL_DEATH_RESPITE, 13s, 15s);
+                events.ScheduleEvent(EVENT_SPELL_OBLITERATE, 11s, 19s);
             }
         }
 
         void SpellHitTarget(Unit*  /*target*/, SpellInfo const* spell) override
         {
-            switch( spell->Id )
+            switch (spell->Id)
             {
                 case SPELL_BLACK_KNIGHT_RES:
                     me->SetHealth(me->GetMaxHealth());
-                    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+                    me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+                    me->SetImmuneToAll(false);
                     me->SetControlled(false, UNIT_STATE_STUNNED);
 
-                    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PREVENT_EMOTES_FROM_CHAT_TEXT);
-                    me->RemoveFlag(UNIT_FIELD_FLAGS_2, UNIT_FLAG2_FEIGN_DEATH);
-                    me->RemoveFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_DEAD);
+                    me->RemoveUnitFlag(UNIT_FLAG_PREVENT_EMOTES_FROM_CHAT_TEXT);
+                    me->RemoveUnitFlag2(UNIT_FLAG2_FEIGN_DEATH);
+                    me->RemoveDynamicFlag(UNIT_DYNFLAG_DEAD);
                     me->ClearUnitState(UNIT_STATE_DIED);
 
                     ++Phase;
 
-                    switch( Phase )
+                    switch (Phase)
                     {
                         case 2:
                             me->SetDisplayId(MODEL_SKELETON);
-                            Talk(TEXT_BK_SKELETON_RES);
+                            Talk(SAY_BK_PHASE_2);
                             me->CastSpell(me, SPELL_ARMY_DEAD, false);
 
                             events.Reset();
-                            events.ScheduleEvent(EVENT_SPELL_PLAGUE_STRIKE, urand(7000, 9000));
-                            events.ScheduleEvent(EVENT_SPELL_ICY_TOUCH, urand(3500, 7000));
-                            events.ScheduleEvent(EVENT_SPELL_OBLITERATE, urand(11000, 19000));
-                            events.ScheduleEvent(EVENT_SPELL_DESECRATION, urand(2000, 3000));
+                            events.ScheduleEvent(EVENT_SPELL_PLAGUE_STRIKE, 7s, 9s);
+                            events.ScheduleEvent(EVENT_SPELL_ICY_TOUCH, 3500ms, 7000ms);
+                            events.ScheduleEvent(EVENT_SPELL_OBLITERATE, 11s, 19s);
+                            events.ScheduleEvent(EVENT_SPELL_DESECRATION, 2s, 3s);
                             break;
                         case 3:
                             me->SetDisplayId(MODEL_GHOST);
-                            Talk(TEXT_BK_GHOST_RES);
+                            Talk(SAY_BK_PHASE_3);
 
                             events.Reset();
-                            events.ScheduleEvent(EVENT_SPELL_DEATH_BITE, 2000);
-                            events.ScheduleEvent(EVENT_SPELL_MARKED_DEATH, 1000);
+                            events.ScheduleEvent(EVENT_SPELL_DEATH_BITE, 2s);
+                            events.ScheduleEvent(EVENT_SPELL_MARKED_DEATH, 1s);
                             break;
                         default:
-                            EnterEvadeMode();
+                            EnterEvadeMode(EVADE_REASON_OTHER);
                             break;
                     }
                     break;
@@ -234,57 +236,57 @@ public:
 
         void UpdateAI(uint32 diff) override
         {
-            if( !UpdateVictim() )
+            if (!UpdateVictim())
                 return;
 
             events.Update(diff);
 
-            if( me->HasUnitState(UNIT_STATE_CASTING) )
+            if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
-            switch( events.ExecuteEvent() )
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
                 case EVENT_ANNOUNCER_SAY_ZOMBIE:
-                    if( pInstance && !summons.empty() )
-                        if( Creature* ghoul = pInstance->instance->GetCreature(*summons.begin()) )
-                            ghoul->Yell("[Zombie] .... . Brains ....", LANG_UNIVERSAL);
-
+                    if (pInstance && !summons.empty())
+                        if (Creature* ghoul = pInstance->instance->GetCreature(*summons.begin()))
+                            if (urand(0, 1))
+                                ghoul->Yell("[Zombie] .... . Brains ....", LANG_UNIVERSAL); /// @todo: Multiple variations + not always happening, from video sources, needs sniff to transition from DB.
                     break;
                 case EVENT_SPELL_PLAGUE_STRIKE:
-                    if( me->GetVictim() )
+                    if (me->GetVictim())
                         me->CastSpell(me->GetVictim(), SPELL_PLAGUE_STRIKE, false);
-                    events.RepeatEvent(urand(10000, 12000));
+                    events.Repeat(10s, 12s);
                     break;
                 case EVENT_SPELL_ICY_TOUCH:
-                    if( me->GetVictim() )
+                    if (me->GetVictim())
                         me->CastSpell(me->GetVictim(), SPELL_ICY_TOUCH, false);
-                    events.RepeatEvent(urand(5000, 6000));
+                    events.Repeat(5s, 6s);
                     break;
                 case EVENT_SPELL_DEATH_RESPITE:
-                    if( Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 50.0f, true) )
+                    if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 50.0f, true))
                         me->CastSpell(target, SPELL_DEATH_RESPITE, false);
-                    events.RepeatEvent(urand(13000, 15000));
+                    events.Repeat(13s, 15s);
                     break;
                 case EVENT_SPELL_OBLITERATE:
-                    if( me->GetVictim() )
+                    if (me->GetVictim())
                         me->CastSpell(me->GetVictim(), SPELL_OBLITERATE, false);
-                    events.RepeatEvent(urand(15000, 17000));
+                    events.Repeat(15s, 17s);
                     break;
                 case EVENT_SPELL_DESECRATION:
-                    if( Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 50.0f, true) )
+                    if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 50.0f, true))
                         me->CastSpell(target, SPELL_DESECRATION, false);
-                    events.RepeatEvent(urand(14000, 17000));
+                    events.Repeat(14s, 17s);
                     break;
                 case EVENT_SPELL_DEATH_BITE:
                     me->CastSpell((Unit*)nullptr, SPELL_DEATH_BITE, false);
-                    events.RepeatEvent(urand(2000, 4000));
+                    events.Repeat(2s, 4s);
                     break;
                 case EVENT_SPELL_MARKED_DEATH:
-                    if( Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 0.000000f, true) )
+                    if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 0.000000f, true))
                         me->CastSpell(target, SPELL_MARKED_DEATH, false);
-                    events.RepeatEvent(9000);
+                    events.Repeat(9s);
                     break;
             }
 
@@ -294,7 +296,7 @@ public:
         void JustSummoned(Creature* summon) override
         {
             summons.Summon(summon);
-            if( Unit* target = summon->SelectNearestTarget(200.0f) )
+            if (Unit* target = summon->SelectNearestTarget(200.0f))
             {
                 summon->AI()->AttackStart(target);
                 DoZoneInCombat(summon);
@@ -303,22 +305,19 @@ public:
 
         void KilledUnit(Unit* victim) override
         {
-            if( victim->GetTypeId() == TYPEID_PLAYER )
+            if (victim->IsPlayer())
             {
-                if( urand(0, 1) )
-                    Talk(TEXT_BK_SLAIN_1);
-                else
-                    Talk(TEXT_BK_SLAIN_2);
+                Talk(SAY_BK_KILL_PLAYER);
             }
         }
 
         void JustDied(Unit* /*killer*/) override
         {
             me->CastSpell((Unit*)nullptr, SPELL_BK_KILL_CREDIT, true);
-            Talk(TEXT_BK_DEATH);
-            if( pInstance )
+            Talk(SAY_BK_DEATH);
+            if (pInstance)
                 pInstance->SetData(BOSS_BLACK_KNIGHT, DONE);
-            if( me->ToTempSummon() )
+            if (me->ToTempSummon())
                 me->ToTempSummon()->SetTempSummonType(TEMPSUMMON_MANUAL_DESPAWN);
         }
     };
@@ -342,11 +341,13 @@ public:
         {
             Start(false, true, ObjectGuid::Empty, nullptr);
             SetDespawnAtEnd(true);
+            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            me->SetImmuneToAll(true);
         }
 
         void DoAction(int32 param) override
         {
-            if( param == 1 )
+            if (param == 1)
             {
                 me->SetControlled(false, UNIT_STATE_ROOT);
                 me->DisableRotate(false);
@@ -357,7 +358,7 @@ public:
 
         void WaypointReached(uint32 i) override
         {
-            if( i == 12 )
+            if (i == 12)
             {
                 SetEscortPaused(true);
                 me->SetOrientation(3.62f);
@@ -365,7 +366,7 @@ public:
                 me->DisableRotate(true);
                 me->SetFacingTo(3.62f);
                 me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_ONESHOT_MOUNT_SPECIAL);
-                if( InstanceScript* pInstance = me->GetInstanceScript() )
+                if (InstanceScript* pInstance = me->GetInstanceScript())
                     pInstance->SetData(DATA_SKELETAL_GRYPHON_LANDED, 0);
             }
         }
@@ -402,30 +403,30 @@ public:
             events.Reset();
         }
 
-        void EnterCombat(Unit*  /*who*/) override
+        void JustEngagedWith(Unit*  /*who*/) override
         {
             events.Reset();
             if (me->GetEntry() == NPC_RISEN_JAEREN || me->GetEntry() == NPC_RISEN_ARELAS)
-                events.RescheduleEvent(1, 1000); // leap
-            events.RescheduleEvent(2, urand(3000, 4000)); // claw
+                events.RescheduleEvent(1, 1s); // leap
+            events.RescheduleEvent(2, 3s, 4s); // claw
         }
 
         void SpellHit(Unit*  /*caster*/, SpellInfo const* spell) override
         {
             if (spell->Id == SPELL_BK_GHOUL_EXPLODE)
             {
-                me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED);
+                me->RemoveUnitFlag(UNIT_FLAG_STUNNED);
                 me->CastSpell(me, SPELL_EXPLODE, false);
             }
         }
 
         void SpellHitTarget(Unit* target, SpellInfo const* spell) override
         {
-            switch(spell->Id)
+            switch (spell->Id)
             {
                 case SPELL_CLAW_N:
                 case SPELL_CLAW_H:
-                    DoResetThreat();
+                    DoResetThreatList();
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 30.0f))
                     {
                         me->AddThreat(target, 100.0f);
@@ -433,7 +434,7 @@ public:
                     }
                     break;
                 case SPELL_EXPLODE_H:
-                    if (target && target->GetTypeId() == TYPEID_PLAYER)
+                    if (target && target->IsPlayer())
                         if (pInstance)
                             pInstance->SetData(DATA_ACHIEV_IVE_HAD_WORSE, 0);
                     break;
@@ -442,15 +443,15 @@ public:
 
         void UpdateAI(uint32 diff) override
         {
-            if( !UpdateVictim() )
+            if (!UpdateVictim())
                 return;
 
             events.Update(diff);
 
-            if( me->HasUnitState(UNIT_STATE_CASTING) )
+            if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
-            switch( events.ExecuteEvent() )
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
@@ -462,12 +463,12 @@ public:
 
                             break;
                         }
-                    events.RepeatEvent(1000);
+                    events.Repeat(1s);
                     break;
                 case 2: // claw
                     if (Unit* target = me->GetVictim())
                         me->CastSpell(target, SPELL_CLAW_N, false);
-                    events.RepeatEvent(urand(6000, 8000));
+                    events.Repeat(6s, 8s);
                     break;
             }
 

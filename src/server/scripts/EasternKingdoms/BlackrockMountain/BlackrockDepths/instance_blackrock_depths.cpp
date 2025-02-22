@@ -16,9 +16,9 @@
  */
 
 #include "GameTime.h"
+#include "InstanceMapScript.h"
 #include "InstanceScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "blackrock_depths.h"
 
 constexpr auto MAX_ENCOUNTER = 6;
@@ -107,7 +107,10 @@ public:
 
     struct instance_blackrock_depths_InstanceMapScript : public InstanceScript
     {
-        instance_blackrock_depths_InstanceMapScript(Map* map) : InstanceScript(map) { }
+        instance_blackrock_depths_InstanceMapScript(Map* map) : InstanceScript(map)
+        {
+            SetHeaders(DataHeader);
+        }
 
         uint32 encounter[MAX_ENCOUNTER];
         std::string str_data;
@@ -453,7 +456,7 @@ public:
             {
                 case TYPE_RING_OF_LAW:
                     encounter[0] = data;
-                    switch(data)
+                    switch (data)
                     {
                     case IN_PROGRESS:
                         TempSummonGrimstone = instance->SummonCreature(NPC_GRIMSTONE, GrimstonePositon);
@@ -468,7 +471,7 @@ public:
                         SetData(TYPE_RING_OF_LAW, NOT_STARTED);
                         break;
                     case DONE:
-                        for (const auto& itr : ArenaSpectators)
+                        for (auto const& itr : ArenaSpectators)
                         {
                             if (Creature* spectator = instance->GetCreature(itr))
                             {
@@ -752,7 +755,7 @@ public:
                 {
                     ++TombEventCounter;
                     boss->SetFaction(FACTION_DARK_IRON_DWARVES);
-                    boss->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);
+                    boss->SetImmuneToPC(false);
 
                     // find suitable target here.
                     Player* target = boss->SelectNearestPlayer(130);
@@ -779,14 +782,14 @@ public:
                         //do not call EnterEvadeMode(), it will create infinit loops
                         boss->Respawn();
                         boss->RemoveAllAuras();
-                        boss->DeleteThreatList();
+                        boss->GetThreatMgr().ClearAllThreat();
                         boss->CombatStop(true);
                         boss->LoadCreaturesAddon(true);
                         boss->GetMotionMaster()->MoveTargetedHome();
                         boss->SetLootRecipient(nullptr);
                     }
                     boss->SetFaction(FACTION_FRIENDLY);
-                    boss->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC); // think this is useless
+                    boss->SetImmuneToPC(true); // think this is useless
                     if (i == 6) // doomrel needs explicit reset
                     {
                         boss->AI()->Reset();

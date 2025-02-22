@@ -15,7 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "blackrock_spire.h"
 
@@ -65,9 +65,9 @@ public:
             targetEgg = nullptr;
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
-            events.ScheduleEvent(SPELL_HATCH_EGG, 1000);
+            events.ScheduleEvent(SPELL_HATCH_EGG, 1s);
         }
 
         void UpdateAI(uint32 diff) override
@@ -83,7 +83,7 @@ public:
             }
 
             GetCreatureListWithEntryInGrid(nearbyWhelps, me, NPC_ROOKERY_WHELP, RANGE_WHELP_CALL_HELP);
-            for (const auto& whelp : nearbyWhelps)
+            for (auto const& whelp : nearbyWhelps)
             {
                 if (!whelp->IsInCombat())
                 {
@@ -106,7 +106,7 @@ public:
                             minDist = 50;
                             tempDist = 50;
                             me->GetGameObjectListWithEntryInGrid(nearbyEggs, GO_ROOKERY_EGG, 40);
-                            for (const auto& egg : nearbyEggs)
+                            for (auto const& egg : nearbyEggs)
                             {
                                 if (egg->isSpawned() && egg->getLootState() == GO_READY)
                                 {
@@ -138,7 +138,7 @@ public:
                 targetPosition = me->GetPosition();
                 DoCast(SPELL_HATCH_EGG);
                 targetEgg = nullptr;
-                events.ScheduleEvent(SPELL_HATCH_EGG, urand(6000, 8000));
+                events.ScheduleEvent(SPELL_HATCH_EGG, 6s, 8s);
             }
             else if (!me->HasUnitState(UNIT_STATE_CASTING)  && !targetEgg)
             {
@@ -181,10 +181,10 @@ public:
             DoZoneInCombat(nullptr, 100.0f);
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
-            _EnterCombat();
-            events.ScheduleEvent(SPELL_WAR_STOMP, urand(17000, 20000));
+            _JustEngagedWith();
+            events.ScheduleEvent(SPELL_WAR_STOMP, 17s, 20s);
             resetTimer = 0;
         }
 
@@ -200,7 +200,7 @@ public:
             {
                 case SPELL_WAR_STOMP:
                     DoCastVictim(SPELL_WAR_STOMP);
-                    events.ScheduleEvent(SPELL_WAR_STOMP, urand(17000, 20000));
+                    events.ScheduleEvent(SPELL_WAR_STOMP, 17s, 20s);
                     break;
 
                 default:

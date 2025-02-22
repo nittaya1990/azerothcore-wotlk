@@ -15,7 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "oculus.h"
 
@@ -83,7 +83,7 @@ public:
             events.Reset();
         }
 
-        void EnterCombat(Unit*  /*who*/) override
+        void JustEngagedWith(Unit*  /*who*/) override
         {
             Talk(SAY_AGGRO);
 
@@ -92,9 +92,9 @@ public:
 
             me->SetInCombatWithZone();
 
-            events.RescheduleEvent(EVENT_MAGIC_PULL, urand(10000, 15000));
-            events.RescheduleEvent(EVENT_THUNDERING_STOMP, urand(3000, 6000));
-            events.RescheduleEvent(EVENT_SUMMON, 2000);
+            events.RescheduleEvent(EVENT_MAGIC_PULL, 10s, 15s);
+            events.RescheduleEvent(EVENT_THUNDERING_STOMP, 3s, 6s);
+            events.RescheduleEvent(EVENT_SUMMON, 2s);
         }
 
         void JustDied(Unit*  /*killer*/) override
@@ -105,9 +105,9 @@ public:
             {
                 pInstance->SetData(DATA_DRAKOS, DONE);
                 for( uint8 i = 0; i < 3; ++i )
-                    if( ObjectGuid guid = pInstance->GetGuidData(DATA_DCD_1 + i) )
-                        if( GameObject* pGo = ObjectAccessor::GetGameObject(*me, guid) )
-                            if( pGo->GetGoState() != GO_STATE_ACTIVE )
+                    if (ObjectGuid guid = pInstance->GetGuidData(DATA_DCD_1 + i))
+                        if (GameObject* pGo = ObjectAccessor::GetGameObject(*me, guid))
+                            if (pGo->GetGoState() != GO_STATE_ACTIVE )
                             {
                                 pGo->SetLootState(GO_READY);
                                 pGo->UseDoorOrButton(0, false);
@@ -125,17 +125,17 @@ public:
 
         void UpdateAI(uint32 diff) override
         {
-            if( !UpdateVictim() )
+            if (!UpdateVictim())
                 return;
 
             events.Update(diff);
 
-            if( me->HasUnitState(UNIT_STATE_CASTING) )
+            if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
             DoMeleeAttackIfReady();
 
-            switch( events.ExecuteEvent() )
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
@@ -145,8 +145,8 @@ public:
                         //me->TextEmote(TEXT_MAGIC_PULL, nullptr, true);
 
                         me->CastSpell(me, SPELL_MAGIC_PULL, false);
-                        events.RepeatEvent(urand(15000, 25000));
-                        events.ScheduleEvent(EVENT_SUMMON_x4, 1500);
+                        events.Repeat(15s, 25s);
+                        events.ScheduleEvent(EVENT_SUMMON_x4, 1500ms);
                     }
                     break;
                 case EVENT_THUNDERING_STOMP:
@@ -154,7 +154,7 @@ public:
                         Talk(SAY_STOMP);
 
                         me->CastSpell(me, SPELL_THUNDERING_STOMP, false);
-                        events.RepeatEvent(urand(10000, 20000));
+                        events.Repeat(10s, 20s);
                     }
                     break;
                 case EVENT_SUMMON:
@@ -164,7 +164,7 @@ public:
                             float angle = rand_norm() * 2 * M_PI;
                             me->SummonCreature(NPC_UNSTABLE_SPHERE, me->GetPositionX() + 5.0f * cos(angle), me->GetPositionY() + 5.0f * std::sin(angle), me->GetPositionZ(), 0.0f, TEMPSUMMON_TIMED_DESPAWN, 18000);
                         }
-                        events.RepeatEvent(2000);
+                        events.Repeat(2s);
                     }
                     break;
                 case EVENT_SUMMON_x4:
@@ -206,10 +206,10 @@ public:
 
         void MovementInform(uint32 type, uint32 id) override
         {
-            if( type != POINT_MOTION_TYPE || id != 1 )
+            if (type != POINT_MOTION_TYPE || id != 1)
                 return;
 
-            if( !located )
+            if (!located)
                 gonext = true;
         }
 
@@ -231,21 +231,21 @@ public:
 
         void UpdateAI(uint32 diff) override
         {
-            if( timer == 0 )
+            if (timer == 0)
                 me->CastSpell(me, SPELL_TELEPORT_VISUAL, true);
 
             timer += diff;
 
-            if( timer > 10000 )
+            if (timer > 10000)
             {
-                if( !located )
+                if (!located)
                     me->GetMotionMaster()->MoveIdle();
                 located = true;
                 me->CastSpell(me, SPELL_UNSTABLE_SPHERE_PULSE, true);
                 timer -= 2000;
             }
 
-            if( !located && gonext )
+            if (!located && gonext)
             {
                 PickNewLocation();
                 gonext = false;

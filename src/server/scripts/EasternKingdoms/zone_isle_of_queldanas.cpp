@@ -15,6 +15,14 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
+#include "PassiveAI.h"
+#include "Pet.h"
+#include "Player.h"
+#include "ScriptedCreature.h"
+#include "SpellInfo.h"
+#include "SpellScript.h"
+#include "SpellScriptLoader.h"
 /* ScriptData
 SDName: Isle_of_Queldanas
 SD%Complete: 100
@@ -26,14 +34,6 @@ EndScriptData */
 npc_converted_sentry
 npc_greengill_slave
 EndContentData */
-
-#include "PassiveAI.h"
-#include "Pet.h"
-#include "Player.h"
-#include "ScriptMgr.h"
-#include "ScriptedCreature.h"
-#include "SpellInfo.h"
-#include "SpellScript.h"
 
 /*###### OUR: ######*/
 
@@ -146,7 +146,7 @@ public:
             morlenGUID.Clear();
             summons.DespawnAll();
             if (Creature* c = me->FindNearestCreature(NPC_THALORIEN_REMAINS, 100.0f, true))
-                c->SetFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+                c->SetNpcFlag(UNIT_NPC_FLAG_GOSSIP);
             events.Reset();
             events.ScheduleEvent(EVENT_CHECK_PLAYER, 5000);
             events.ScheduleEvent(EVENT_SUMMON_SOLDIERS, 0);
@@ -193,7 +193,7 @@ public:
                 {
                     me->RemoveAurasDueToSpell(67541);
                     me->GetMotionMaster()->MoveCharge(11779.30f, -7065.43f, 24.92f, me->GetSpeed(MOVE_RUN), EVENT_CHARGE);
-                    switch(summon->GetEntry())
+                    switch (summon->GetEntry())
                     {
                         case NPC_SCOURGE_ZOMBIE:
                             events.ScheduleEvent(EVENT_SPAWN_WAVE_2, 3000);
@@ -215,7 +215,7 @@ public:
             {
                 damage = 0;
                 me->setActive(false);
-                EnterEvadeMode();
+                EnterEvadeMode(EVADE_REASON_OTHER);
             }
         }
 
@@ -243,7 +243,7 @@ public:
                             break;
                         }
                     me->setActive(false);
-                    EnterEvadeMode();
+                    EnterEvadeMode(EVADE_REASON_OTHER);
                     return;
                 case EVENT_SUMMON_SOLDIERS:
                     for (uint8 i = 0; i < SUNWELL_DEFENDER_NUM; ++i)
@@ -372,7 +372,7 @@ public:
                                 continue;
                             else
                                 c->AI()->Talk(SAY_MORLEN_4);
-                            c->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+                            c->SetImmuneToAll(false);
                             c->AI()->AttackStart(me);
                         }
                     break;
@@ -393,7 +393,7 @@ public:
                 case EVENT_DISAPPEAR:
                     me->SetVisible(false);
                     me->setActive(false);
-                    EnterEvadeMode();
+                    EnterEvadeMode(EVADE_REASON_OTHER);
                     break;
                 case EVENT_SET_FACING:
                     me->SetFacingTo(2.45f);
@@ -425,11 +425,11 @@ public:
                 events.ScheduleEvent(EVENT_SET_FACING, 0);
         }
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
             if (me->isActiveObject())
                 return;
-            ScriptedAI::EnterEvadeMode();
+            ScriptedAI::EnterEvadeMode(why);
         }
 
         void SetData(uint32 type, uint32 id) override
@@ -457,31 +457,20 @@ enum PurificationIds
     NPC_AURIC = 37765,
 };
 
-class spell_bh_cleanse_quel_delar : public SpellScriptLoader
+class spell_bh_cleanse_quel_delar : public SpellScript
 {
-public:
-    spell_bh_cleanse_quel_delar() : SpellScriptLoader("spell_bh_cleanse_quel_delar") { }
+    PrepareSpellScript(spell_bh_cleanse_quel_delar);
 
-    class spell_bh_cleanse_quel_delar_SpellScript : public SpellScript
+    void OnEffect(SpellEffIndex  /*effIndex*/)
     {
-        PrepareSpellScript(spell_bh_cleanse_quel_delar_SpellScript);
+        if (Unit* caster = GetCaster())
+            if (Creature* c = caster->FindNearestCreature(NPC_ROMMATH, 50.0f, true))
+                c->AI()->DoAction(-1);
+    }
 
-        void OnEffect(SpellEffIndex  /*effIndex*/)
-        {
-            if (Unit* caster = GetCaster())
-                if (Creature* c = caster->FindNearestCreature(NPC_ROMMATH, 50.0f, true))
-                    c->AI()->DoAction(-1);
-        }
-
-        void Register() override
-        {
-            OnEffectLaunch += SpellEffectFn(spell_bh_cleanse_quel_delar_SpellScript::OnEffect, EFFECT_0, SPELL_EFFECT_SEND_EVENT);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void Register() override
     {
-        return new spell_bh_cleanse_quel_delar_SpellScript();
+        OnEffectLaunch += SpellEffectFn(spell_bh_cleanse_quel_delar::OnEffect, EFFECT_0, SPELL_EFFECT_SEND_EVENT);
     }
 };
 
@@ -510,7 +499,7 @@ public:
 
         void MoveInLineOfSight(Unit* who) override
         {
-            if (!announced && who->GetTypeId() == TYPEID_PLAYER && who->GetPositionZ() < 30.0f)
+            if (!announced && who->IsPlayer() && who->GetPositionZ() < 30.0f)
             {
                 announced = true;
                 playerGUID = who->GetGUID();
@@ -611,7 +600,7 @@ public:
                     if (Creature* c = me->FindNearestCreature(NPC_SUNWELL_VISUAL_BUNNY, 60.0f, true))
                         c->DespawnOrUnsummon(1);
                     if (GameObject* go = me->FindNearestGameObject(GO_QUEL_DELAR, 60.0f))
-                        go->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE);
+                        go->RemoveGameObjectFlag(GO_FLAG_NOT_SELECTABLE);
                     me->SetWalk(true);
                     if (me->GetCreatureData())
                         me->GetMotionMaster()->MovePoint(0, me->GetCreatureData()->posX, me->GetCreatureData()->posY, me->GetCreatureData()->posZ);
@@ -658,7 +647,7 @@ public:
     {
         npc_greengill_slaveAI(Creature* creature) : ScriptedAI(creature) { }
 
-        void EnterCombat(Unit* /*who*/) override { }
+        void JustEngagedWith(Unit* /*who*/) override { }
 
         void SpellHit(Unit* caster, SpellInfo const* spellInfo) override
         {
@@ -692,7 +681,7 @@ void AddSC_isle_of_queldanas()
 {
     // OUR:
     new npc_bh_thalorien_dawnseeker();
-    new spell_bh_cleanse_quel_delar();
+    RegisterSpellScript(spell_bh_cleanse_quel_delar);
     new npc_grand_magister_rommath();
 
     // THEIR:

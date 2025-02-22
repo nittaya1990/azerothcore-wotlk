@@ -18,7 +18,7 @@
 #ifndef DEF_WAILING_CAVERNS_H
 #define DEF_WAILING_CAVERNS_H
 
-#include "CreatureAI.h"
+#define DataHeader "WC"
 
 enum DataTypes
 {

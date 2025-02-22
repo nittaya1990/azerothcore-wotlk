@@ -18,13 +18,9 @@
 #ifndef _CHANNEL_H
 #define _CHANNEL_H
 
-#include "Common.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
-#include <list>
-#include <map>
 #include <string>
-#include <utility>
 
 class Player;
 
@@ -182,9 +178,10 @@ public:
     Channel(std::string const& name, uint32 channel_id, uint32 channelDBId, TeamId teamId = TEAM_NEUTRAL, bool announce = true, bool ownership = true);
     [[nodiscard]] std::string const& GetName() const { return _name; }
     [[nodiscard]] uint32 GetChannelId() const { return _channelId; }
+    [[nodiscard]] uint32 GetChannelDBId() const { return _channelDBId; }
     [[nodiscard]] bool IsConstant() const { return _channelId != 0; }
     [[nodiscard]] bool IsAnnounce() const { return _announce; }
-    [[nodiscard]] bool IsLFG() const { return GetFlags() & CHANNEL_FLAG_LFG; }
+    [[nodiscard]] bool IsLFG() const { return HasFlag(CHANNEL_FLAG_LFG); }
     [[nodiscard]] std::string const& GetPassword() const { return _password; }
     void SetPassword(std::string const& npassword) { _password = npassword; }
     [[nodiscard]] uint32 GetNumPlayers() const { return playersStore.size(); }
@@ -269,6 +266,8 @@ private:
     void SendToAllButOne(WorldPacket* data, ObjectGuid who);
     void SendToOne(WorldPacket* data, ObjectGuid who);
     void SendToAllWatching(WorldPacket* data);
+
+    bool ShouldAnnouncePlayer(Player const* player) const;
 
     [[nodiscard]] bool IsOn(ObjectGuid who) const { return playersStore.find(who) != playersStore.end(); }
     [[nodiscard]] bool IsBanned(ObjectGuid guid) const;

@@ -18,7 +18,6 @@
 #ifndef ZONE_SCRIPT_H_
 #define ZONE_SCRIPT_H_
 
-#include "Common.h"
 #include "Creature.h"
 
 class GameObject;
@@ -39,6 +38,7 @@ public:
     virtual void OnGameObjectRemove(GameObject*) { }
 
     virtual void OnUnitDeath(Unit*) { }
+    virtual void OnCreatureEvade(Creature*) { }
 
     //All-purpose data storage 64 bit
     virtual ObjectGuid GetGuidData(uint32 /*DataId*/) const { return ObjectGuid::Empty; }

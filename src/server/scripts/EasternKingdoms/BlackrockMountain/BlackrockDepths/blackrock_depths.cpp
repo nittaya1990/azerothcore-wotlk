@@ -16,13 +16,14 @@
  */
 
 #include "blackrock_depths.h"
+#include "AreaTriggerScript.h"
+#include "CreatureScript.h"
+#include "GameObjectScript.h"
 #include "GameTime.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "ScriptedEscortAI.h"
 #include "ScriptedGossip.h"
-#include "WorldSession.h"
 
 enum IronhandData
 {
@@ -121,13 +122,13 @@ public:
     };
 };
 
-struct Wave
+struct WaveCreature
 {
     uint32 entry;
     uint32 amount;
 };
 
-static Wave RingMobs[] = // different amounts based on the type
+static WaveCreature RingMobs[] = // different amounts based on the type
 {
     {NPC_DREDGE_WORM, 3},
     {NPC_DEEP_STINGER, 3},
@@ -219,7 +220,7 @@ public:
 
         void Reset() override
         {
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
         }
 
         void JustSummoned(Creature* summon) override
@@ -302,7 +303,7 @@ public:
             bool doReset = false;
             if (resetTimer > 0)
             {
-                for (const auto& sum : summons)
+                for (auto const& sum : summons)
                 {
                     if (Creature* creature = ObjectAccessor::GetCreature(*me, sum))
                     {

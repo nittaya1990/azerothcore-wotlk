@@ -19,7 +19,6 @@
 #include "ArenaTeamMgr.h"
 #include "Guild.h"
 #include "GuildMgr.h"
-#include "Language.h"
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
@@ -91,8 +90,8 @@ void WorldSession::HandlePetitionBuyOpcode(WorldPacket& recvData)
     }
     else
     {
-        // TODO: find correct opcode
-        if (_player->getLevel() < sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
+        /// @todo: find correct opcode
+        if (_player->GetLevel() < sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
         {
             SendArenaTeamCommandResult(ERR_ARENA_TEAM_CREATE_S, "", _player->GetName(), ERR_ARENA_TEAM_TARGET_TOO_LOW_S);
             return;
@@ -127,7 +126,7 @@ void WorldSession::HandlePetitionBuyOpcode(WorldPacket& recvData)
         }
     }
 
-    sScriptMgr->PetitionBuy(_player, creature, charterid, cost, type);
+    sScriptMgr->OnPlayerPetitionBuy(_player, creature, charterid, cost, type);
 
     if (type == GUILD_CHARTER_TYPE)
     {
@@ -137,7 +136,7 @@ void WorldSession::HandlePetitionBuyOpcode(WorldPacket& recvData)
             return;
         }
 
-        if (sObjectMgr->IsReservedName(name) || !ObjectMgr::IsValidCharterName(name))
+        if (!ObjectMgr::IsValidCharterName(name))
         {
             Guild::SendCommandResult(this, GUILD_COMMAND_CREATE, ERR_GUILD_NAME_INVALID, name);
             return;
@@ -150,7 +149,7 @@ void WorldSession::HandlePetitionBuyOpcode(WorldPacket& recvData)
             SendArenaTeamCommandResult(ERR_ARENA_TEAM_CREATE_S, name, "", ERR_ARENA_TEAM_NAME_EXISTS_S);
             return;
         }
-        if (sObjectMgr->IsReservedName(name) || !ObjectMgr::IsValidCharterName(name))
+        if (!ObjectMgr::IsValidCharterName(name))
         {
             SendArenaTeamCommandResult(ERR_ARENA_TEAM_CREATE_S, name, "", ERR_ARENA_TEAM_NAME_INVALID);
             return;
@@ -351,7 +350,7 @@ void WorldSession::HandlePetitionRenameOpcode(WorldPacket& recvData)
             Guild::SendCommandResult(this, GUILD_COMMAND_CREATE, ERR_GUILD_NAME_EXISTS_S, newName);
             return;
         }
-        if (sObjectMgr->IsReservedName(newName) || !ObjectMgr::IsValidCharterName(newName))
+        if (!ObjectMgr::IsValidCharterName(newName))
         {
             Guild::SendCommandResult(this, GUILD_COMMAND_CREATE, ERR_GUILD_NAME_INVALID, newName);
             return;
@@ -364,7 +363,7 @@ void WorldSession::HandlePetitionRenameOpcode(WorldPacket& recvData)
             SendArenaTeamCommandResult(ERR_ARENA_TEAM_CREATE_S, newName, "", ERR_ARENA_TEAM_NAME_EXISTS_S);
             return;
         }
-        if (sObjectMgr->IsReservedName(newName) || !ObjectMgr::IsValidCharterName(newName))
+        if (!ObjectMgr::IsValidCharterName(newName))
         {
             SendArenaTeamCommandResult(ERR_ARENA_TEAM_CREATE_S, newName, "", ERR_ARENA_TEAM_NAME_INVALID);
             return;
@@ -414,19 +413,15 @@ void WorldSession::HandlePetitionSignOpcode(WorldPacket& recvData)
     if (!signatures)
         return;
 
-    // not let enemies sign guild charter
-    if (!sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GUILD) && GetPlayer()->GetTeamId() != sCharacterCache->GetCharacterTeamByGuid(petition->ownerGuid))
-    {
-        if (type != GUILD_CHARTER_TYPE)
-            SendArenaTeamCommandResult(ERR_ARENA_TEAM_INVITE_SS, "", "", ERR_ARENA_TEAM_NOT_ALLIED);
-        else
-            Guild::SendCommandResult(this, GUILD_COMMAND_CREATE, ERR_GUILD_NOT_ALLIED);
-        return;
-    }
-
     if (type != GUILD_CHARTER_TYPE)
     {
-        if (_player->getLevel() < sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
+        if (!sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_ARENA) && GetPlayer()->GetTeamId() != sCharacterCache->GetCharacterTeamByGuid(petition->ownerGuid))
+        {
+            SendArenaTeamCommandResult(ERR_ARENA_TEAM_INVITE_SS, "", "", ERR_ARENA_TEAM_NOT_ALLIED);
+            return;
+        }
+
+        if (_player->GetLevel() < sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
         {
             SendArenaTeamCommandResult(ERR_ARENA_TEAM_CREATE_S, "", _player->GetName().c_str(), ERR_ARENA_TEAM_TARGET_TOO_LOW_S);
             return;
@@ -450,6 +445,12 @@ void WorldSession::HandlePetitionSignOpcode(WorldPacket& recvData)
     }
     else
     {
+        if (!sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GUILD) && GetPlayer()->GetTeamId() != sCharacterCache->GetCharacterTeamByGuid(petition->ownerGuid))
+        {
+            Guild::SendCommandResult(this, GUILD_COMMAND_CREATE, ERR_GUILD_NOT_ALLIED);
+            return;
+        }
+
         if (_player->GetGuildId())
         {
             Guild::SendCommandResult(this, GUILD_COMMAND_INVITE, ERR_ALREADY_IN_GUILD_S, _player->GetName());
@@ -565,18 +566,15 @@ void WorldSession::HandleOfferPetitionOpcode(WorldPacket& recvData)
     if (!petition)
         return;
 
-    if (GetPlayer()->GetTeamId() != player->GetTeamId())
-    {
-        if (petition->petitionType != GUILD_CHARTER_TYPE)
-            SendArenaTeamCommandResult(ERR_ARENA_TEAM_INVITE_SS, "", "", ERR_ARENA_TEAM_NOT_ALLIED);
-        else
-            Guild::SendCommandResult(this, GUILD_COMMAND_CREATE, ERR_GUILD_NOT_ALLIED);
-        return;
-    }
-
     if (petition->petitionType != GUILD_CHARTER_TYPE)
     {
-        if (player->getLevel() < sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
+        if (GetPlayer()->GetTeamId() != player->GetTeamId() && !sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_ARENA))
+        {
+            SendArenaTeamCommandResult(ERR_ARENA_TEAM_INVITE_SS, "", "", ERR_ARENA_TEAM_NOT_ALLIED);
+            return;
+        }
+
+        if (player->GetLevel() < sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
         {
             // player is too low level to join an arena team
             SendArenaTeamCommandResult(ERR_ARENA_TEAM_CREATE_S, player->GetName().c_str(), "", ERR_ARENA_TEAM_TARGET_TOO_LOW_S);
@@ -602,6 +600,12 @@ void WorldSession::HandleOfferPetitionOpcode(WorldPacket& recvData)
     }
     else
     {
+        if (GetPlayer()->GetTeamId() != player->GetTeamId() && !sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GUILD))
+        {
+            Guild::SendCommandResult(this, GUILD_COMMAND_CREATE, ERR_GUILD_NOT_ALLIED);
+            return;
+        }
+
         if (player->GetGuildId())
         {
             Guild::SendCommandResult(this, GUILD_COMMAND_INVITE, ERR_ALREADY_IN_GUILD_S, _player->GetName());
@@ -836,7 +840,7 @@ void WorldSession::SendPetitionShowList(ObjectGuid guid)
 
     if (creature->IsTabardDesigner())
     {
-        sScriptMgr->PetitionShowList(_player, creature, CharterEntry, CharterDispayID, CharterCost);
+        sScriptMgr->OnPlayerPetitionShowList(_player, creature, CharterEntry, CharterDispayID, CharterCost);
 
         data << uint8(1);                                   // count
         data << uint32(1);                                  // index
@@ -855,7 +859,7 @@ void WorldSession::SendPetitionShowList(ObjectGuid guid)
 
         // 2v2
         data << uint8(3);                                   // count
-        sScriptMgr->PetitionShowList(_player, creature, CharterEntry, CharterDispayID, CharterCost);
+        sScriptMgr->OnPlayerPetitionShowList(_player, creature, CharterEntry, CharterDispayID, CharterCost);
         data << uint32(1);                                  // index
         data << CharterEntry;                               // charter entry
         data << CharterDispayID;                            // charter display id
@@ -869,7 +873,7 @@ void WorldSession::SendPetitionShowList(ObjectGuid guid)
         CharterCost = sWorld->getIntConfig(CONFIG_CHARTER_COST_ARENA_3v3);
 
         // 3v3
-        sScriptMgr->PetitionShowList(_player, creature, CharterEntry, CharterDispayID, CharterCost);
+        sScriptMgr->OnPlayerPetitionShowList(_player, creature, CharterEntry, CharterDispayID, CharterCost);
         data << uint32(2);                                  // index
         data << CharterEntry;                               // charter entry
         data << CharterDispayID;                            // charter display id
@@ -883,7 +887,7 @@ void WorldSession::SendPetitionShowList(ObjectGuid guid)
         CharterCost = sWorld->getIntConfig(CONFIG_CHARTER_COST_ARENA_5v5);
 
         // 5v5
-        sScriptMgr->PetitionShowList(_player, creature, CharterEntry, CharterDispayID, CharterCost);
+        sScriptMgr->OnPlayerPetitionShowList(_player, creature, CharterEntry, CharterDispayID, CharterCost);
         data << uint32(3);                                  // index
         data << CharterEntry;                               // charter entry
         data << CharterDispayID;                            // charter display id

@@ -25,9 +25,9 @@
 #include "ScriptMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
-#include "UpdateData.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <cmath>
 
 void WorldSession::HandleSplitItemOpcode(WorldPacket& recvData)
 {
@@ -319,7 +319,7 @@ void WorldSession::HandleDestroyItemOpcode(WorldPacket& recvData)
         return;
     }
 
-    if (pItem->GetTemplate()->Flags & ITEM_FLAG_NO_USER_DESTROY)
+    if (pItem->GetTemplate()->HasFlag(ITEM_FLAG_NO_USER_DESTROY))
     {
         _player->SendEquipError(EQUIP_ERR_CANT_DROP_SOULBOUND, nullptr, nullptr);
         return;
@@ -727,7 +727,6 @@ void WorldSession::HandleReadItem(WorldPacket& recvData)
 
 void WorldSession::HandleSellItemOpcode(WorldPacket& recvData)
 {
-    LOG_DEBUG("network", "WORLD: Received CMSG_SELL_ITEM");
     ObjectGuid vendorguid, itemguid;
     uint32 count;
 
@@ -744,7 +743,7 @@ void WorldSession::HandleSellItemOpcode(WorldPacket& recvData)
         return;
     }
 
-    if ((creature->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_NO_SELL_VENDOR) != 0)
+    if (creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_SELL_VENDOR))
     {
         _player->SendSellError(SELL_ERR_CANT_SELL_TO_THIS_MERCHANT, creature, itemguid, 0);
         return;
@@ -757,7 +756,7 @@ void WorldSession::HandleSellItemOpcode(WorldPacket& recvData)
     Item* pItem = _player->GetItemByGuid(itemguid);
     if (pItem)
     {
-        if (!sScriptMgr->CanSellItem(_player, pItem, creature))
+        if (!sScriptMgr->OnPlayerCanSellItem(_player, pItem, creature))
             return;
 
         // prevent sell not owner item
@@ -784,7 +783,7 @@ void WorldSession::HandleSellItemOpcode(WorldPacket& recvData)
         // prevent selling item for sellprice when the item is still refundable
         // this probably happens when right clicking a refundable item, the client sends both
         // CMSG_SELL_ITEM and CMSG_REFUND_ITEM (unverified)
-        if (pItem->HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_REFUNDABLE))
+        if (pItem->IsRefundable())
             return; // Therefore, no feedback to client
 
         // special case at auto sell (sell all)
@@ -807,8 +806,61 @@ void WorldSession::HandleSellItemOpcode(WorldPacket& recvData)
         {
             if (pProto->SellPrice > 0)
             {
+                uint32 money = pProto->SellPrice * count;
+                if (_player->GetMoney() >= MAX_MONEY_AMOUNT - money)               // prevent exceeding gold limit
+                {
+                    _player->SendEquipError(EQUIP_ERR_TOO_MUCH_GOLD, nullptr, nullptr);
+                    _player->SendSellError(SELL_ERR_UNK, creature, itemguid, 0);
+                    return;
+                }
+
                 if (sWorld->getBoolConfig(CONFIG_ITEMDELETE_VENDOR))
                     recoveryItem(pItem);
+
+                uint32 maxDurability = pItem->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+                if (maxDurability)
+                {
+                    uint32 curDurability = pItem->GetUInt32Value(ITEM_FIELD_DURABILITY);
+                    uint32 LostDurability = maxDurability - curDurability;
+
+                    if (LostDurability > 0)
+                    {
+                        DurabilityCostsEntry const* dcost = sDurabilityCostsStore.LookupEntry(pProto->ItemLevel);
+                        if (!dcost)
+                        {
+                            _player->SendSellError(SELL_ERR_CANT_SELL_ITEM, creature, itemguid, 0);
+                            LOG_ERROR("network.opcode", "WORLD: HandleSellItemOpcode - Wrong item lvl {} for item {} count = {}", pProto->ItemLevel, pItem->GetEntry(), count);
+                            return;
+                        }
+
+                        uint32 dQualitymodEntryId = (pProto->Quality + 1) * 2;
+                        DurabilityQualityEntry const* dQualitymodEntry = sDurabilityQualityStore.LookupEntry(dQualitymodEntryId);
+                        if (!dQualitymodEntry)
+                        {
+                            _player->SendSellError(SELL_ERR_CANT_SELL_ITEM, creature, itemguid, 0);
+                            LOG_ERROR("network.opcode", "WORLD: HandleSellItemOpcode - Wrong dQualityModEntry {} for item {} count = {}", dQualitymodEntryId, pItem->GetEntry(), count);
+                            return;
+                        }
+
+                        uint32 dmultiplier = dcost->multiplier[ItemSubClassToDurabilityMultiplierId(pProto->Class, pProto->SubClass)];
+                        uint32 refund = uint32(std::ceil(LostDurability * dmultiplier * double(dQualitymodEntry->quality_mod)));
+
+                        if (!refund)
+                        {
+                            refund = 1;
+                        }
+
+                        //starter items can cost more to refund than vendorprice
+                        if (refund > money)
+                        {
+                            money = 1;
+                        }
+                        else
+                        {
+                            money -= refund;
+                        }
+                    }
+                }
 
                 if (count < pItem->GetCount())               // need split items
                 {
@@ -820,13 +872,15 @@ void WorldSession::HandleSellItemOpcode(WorldPacket& recvData)
                         return;
                     }
 
+                    pNewItem->SetUInt32Value(ITEM_FIELD_DURABILITY, pItem->GetUInt32Value(ITEM_FIELD_DURABILITY));
+
                     pItem->SetCount(pItem->GetCount() - count);
                     _player->ItemRemovedQuestCheck(pItem->GetEntry(), count);
                     if (_player->IsInWorld())
                         pItem->SendUpdateToPlayer(_player);
                     pItem->SetState(ITEM_CHANGED, _player);
 
-                    _player->AddItemToBuyBackSlot(pNewItem);
+                    _player->AddItemToBuyBackSlot(pNewItem, money);
                     if (_player->IsInWorld())
                         pNewItem->SendUpdateToPlayer(_player);
                 }
@@ -835,11 +889,10 @@ void WorldSession::HandleSellItemOpcode(WorldPacket& recvData)
                     _player->ItemRemovedQuestCheck(pItem->GetEntry(), pItem->GetCount());
                     _player->RemoveItem(pItem->GetBagSlot(), pItem->GetSlot(), true);
                     pItem->RemoveFromUpdateQueueOf(_player);
-                    _player->AddItemToBuyBackSlot(pItem);
+                    _player->AddItemToBuyBackSlot(pItem, money);
                     _player->UpdateTitansGrip();
                 }
 
-                uint32 money = pProto->SellPrice * count;
                 _player->ModifyMoney(money);
                 _player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_MONEY_FROM_VENDORS, money);
             }
@@ -854,7 +907,6 @@ void WorldSession::HandleSellItemOpcode(WorldPacket& recvData)
 
 void WorldSession::HandleBuybackItem(WorldPacket& recvData)
 {
-    LOG_DEBUG("network", "WORLD: Received CMSG_BUYBACK_ITEM");
     ObjectGuid vendorguid;
     uint32 slot;
 
@@ -910,7 +962,6 @@ void WorldSession::HandleBuybackItem(WorldPacket& recvData)
 
 void WorldSession::HandleBuyItemInSlotOpcode(WorldPacket& recvData)
 {
-    LOG_DEBUG("network", "WORLD: Received CMSG_BUY_ITEM_IN_SLOT");
     ObjectGuid vendorguid, bagguid;
     uint32 item, slot, count;
     uint8 bagslot;
@@ -952,7 +1003,6 @@ void WorldSession::HandleBuyItemInSlotOpcode(WorldPacket& recvData)
 
 void WorldSession::HandleBuyItemOpcode(WorldPacket& recvData)
 {
-    LOG_DEBUG("network", "WORLD: Received CMSG_BUY_ITEM");
     ObjectGuid vendorguid;
     uint32 item, slot, count;
     uint8 unk1;
@@ -1024,7 +1074,7 @@ void WorldSession::SendListInventory(ObjectGuid vendorGuid, uint32 vendorEntry)
     WorldPacket data(SMSG_LIST_INVENTORY, 8 + 1 + itemCount * 8 * 4);
     data << vendorGuid;
 
-    size_t countPos = data.wpos();
+    std::size_t countPos = data.wpos();
     data << uint8(count);
 
     float discountMod = _player->GetReputationPriceDiscount(vendor);
@@ -1041,7 +1091,7 @@ void WorldSession::SendListInventory(ObjectGuid vendorGuid, uint32 vendorEntry)
                 }
                 // Only display items in vendor lists for the team the
                 // player is on. If GM on, display all items.
-                if (!_player->IsGameMaster() && ((itemTemplate->Flags2 & ITEM_FLAGS_EXTRA_HORDE_ONLY && _player->GetTeamId() == TEAM_ALLIANCE) || (itemTemplate->Flags2 & ITEM_FLAGS_EXTRA_ALLIANCE_ONLY && _player->GetTeamId() == TEAM_HORDE)))
+                if (!_player->IsGameMaster() && ((itemTemplate->HasFlag2(ITEM_FLAG2_FACTION_HORDE) && _player->GetTeamId() == TEAM_ALLIANCE) || (itemTemplate->HasFlag2(ITEM_FLAG2_FACTION_ALLIANCE) && _player->GetTeamId() == TEAM_HORDE)))
                 {
                     continue;
                 }
@@ -1061,7 +1111,7 @@ void WorldSession::SendListInventory(ObjectGuid vendorGuid, uint32 vendorEntry)
                 }
 
                 // reputation discount
-                int32 price = item->IsGoldRequired(itemTemplate) ? uint32(floor(itemTemplate->BuyPrice * discountMod)) : 0;
+                int32 price = item->IsGoldRequired(itemTemplate) ? uint32(std::floor(itemTemplate->BuyPrice * discountMod)) : 0;
 
                 data << uint32(slot + 1);       // client expects counting to start at 1
                 data << uint32(item->item);
@@ -1232,7 +1282,7 @@ void WorldSession::HandleWrapItemOpcode(WorldPacket& recvData)
         return;
     }
 
-    if (!(gift->GetTemplate()->Flags & ITEM_FLAG_IS_WRAPPER)) // cheating: non-wrapper wrapper
+    if (!(gift->GetTemplate()->HasFlag(ITEM_FLAG_IS_WRAPPER))) // cheating: non-wrapper wrapper
     {
         _player->SendEquipError(EQUIP_ERR_ITEM_NOT_FOUND, gift, nullptr);
         return;
@@ -1291,6 +1341,12 @@ void WorldSession::HandleWrapItemOpcode(WorldPacket& recvData)
 
     // maybe not correct check  (it is better than nothing)
     if (item->GetTemplate()->MaxCount > 0)
+    {
+        _player->SendEquipError(EQUIP_ERR_UNIQUE_CANT_BE_WRAPPED, item, nullptr);
+        return;
+    }
+
+    if (item->GetTemplate()->Duration > 0)
     {
         _player->SendEquipError(EQUIP_ERR_UNIQUE_CANT_BE_WRAPPED, item, nullptr);
         return;
@@ -1427,7 +1483,7 @@ void WorldSession::HandleSocketOpcode(WorldPacket& recvData)
         ItemTemplate const* iGemProto = Gems[i]->GetTemplate();
 
         // unique item (for new and already placed bit removed enchantments
-        if (iGemProto->Flags & ITEM_FLAG_UNIQUE_EQUIPPABLE)
+        if (iGemProto->HasFlag(ITEM_FLAG_UNIQUE_EQUIPPABLE))
         {
             for (int j = 0; j < MAX_GEM_SOCKETS; ++j)
             {

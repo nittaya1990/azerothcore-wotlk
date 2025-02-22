@@ -1,3 +1,37 @@
+## 7.0.0-dev.1 | Commit: [0c4feb674444210da295751a0c4e5eefb9c771f1
+](https://github.com/azerothcore/azerothcore-wotlk/commit/0c4feb674444210da295751a0c4e5eefb9c771f1
+
+
+### How to upgrade
+
+Motd is removed from config file
+
+Motd is can now be found in auth database table `motd`
+
+`realmid` = Realm ID or -1 for all realms.
+`text` = Text for Motd
+
+Specified realmId is prioritized over -1 (All Realms)
+
+For example:
+
+You have realm 1, 2, 3
+
+(-1, "This Motd will show for 2, 3")
+(1, "This Motd will show for 1")
+
+## 6.0.0-dev.3 | Commit: [44b7a0666c78dc99ab0bbc94045abb6685b3ad86
+](https://github.com/azerothcore/azerothcore-wotlk/commit/44b7a0666c78dc99ab0bbc94045abb6685b3ad86
+
+
+### Added
+
+- New hook for OnQuestComputeXP(). The intended use is to change the XP values for certain quests programmatically. The hook is triggered after XP calculation and before rewarding XP or gold to the player.
+
+### How to upgrade
+
+- No special changes needed. The new hook is available for use and should not interfere with any existing hooks or logic.
+
 ## 6.0.0-dev.2 | Commit: [680e60c68b1864596bf23d427e9f4742c6437b86
 ](https://github.com/azerothcore/azerothcore-wotlk/commit/680e60c68b1864596bf23d427e9f4742c6437b86
 
@@ -380,7 +414,7 @@ minimal-dynamic - builds commands and spells dynamically. Now don't support
 - Example loader script for modules:
 ```cpp
 /*
- * Copyright (C) 2016+ AzerothCore <www.azerothcore.org>, released under GNU AGPL v3 license: https://github.com/azerothcore/azerothcore-wotlk/blob/master/LICENSE-AGPL3
+ * Copyright (C) 2016+ AzerothCore <www.azerothcore.org>, released under GNU AGPL v3 license: https://github.com/azerothcore/azerothcore-wotlk/blob/master/LICENSE
  */
 
 // From SC

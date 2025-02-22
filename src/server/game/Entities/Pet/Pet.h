@@ -18,6 +18,7 @@
 #ifndef AZEROTHCORE_PET_H
 #define AZEROTHCORE_PET_H
 
+#include "CharmInfo.h"
 #include "PetDefines.h"
 #include "TemporarySummon.h"
 
@@ -45,7 +46,8 @@ public:
     void AddToWorld() override;
     void RemoveFromWorld() override;
 
-    void SetDisplayId(uint32 modelId) override;
+    float GetNativeObjectScale() const override;
+    void SetDisplayId(uint32 modelId, float displayScale = 1.f) override;
 
     PetType getPetType() const { return m_petType; }
     void setPetType(PetType type) { m_petType = type; }
@@ -59,7 +61,7 @@ public:
     bool CreateBaseAtCreatureInfo(CreatureTemplate const* cinfo, Unit* owner);
     bool CreateBaseAtTamed(CreatureTemplate const* cinfo, Map* map, uint32 phaseMask);
     static std::pair<PetStable::PetInfo const*, PetSaveMode> GetLoadPetInfo(PetStable const& stable, uint32 petEntry, uint32 petnumber, bool current);
-    bool LoadPetFromDB(Player* owner, uint32 petEntry, uint32 petnumber, bool current, uint32 healthPct = 0);
+    bool LoadPetFromDB(Player* owner, uint32 petEntry, uint32 petnumber, bool current, uint32 healthPct = 0, bool fullMana = false);
     bool isBeingLoaded() const override { return m_loading; }
     void SavePetToDB(PetSaveMode mode);
     void FillPetInfo(PetStable::PetInfo* petInfo) const;
@@ -95,7 +97,7 @@ public:
     void LearnPetPassives();
     void CastPetAuras(bool current);
 
-    void CastWhenWillAvailable(uint32 spellid, Unit* spellTarget, Unit* oldTarget, bool spellIsPositive = false);
+    void CastWhenWillAvailable(uint32 spellid, Unit* spellTarget, ObjectGuid oldTarget, bool spellIsPositive = false);
     void ClearCastWhenWillAvailable();
     void RemoveSpellCooldown(uint32 spell_id, bool update /* = false */);
 
@@ -143,6 +145,8 @@ public:
     void SetLoading(bool load) { m_loading = load; }
 
     [[nodiscard]] bool HasTempSpell() const { return m_tempspell != 0; }
+
+    std::string GetDebugInfo() const override;
 protected:
     Player* m_owner;
     int32   m_happinessTimer;
@@ -154,10 +158,10 @@ protected:
 
     std::unique_ptr<DeclinedName> m_declinedname;
 
-    Unit*   m_tempspellTarget;
-    Unit*   m_tempoldTarget;
-    bool    m_tempspellIsPositive;
-    uint32  m_tempspell;
+    ObjectGuid m_tempspellTarget;
+    ObjectGuid m_tempoldTarget;
+    bool       m_tempspellIsPositive;
+    uint32     m_tempspell;
 
 private:
     void SaveToDB(uint32, uint8, uint32) override                // override of Creature::SaveToDB     - must not be called

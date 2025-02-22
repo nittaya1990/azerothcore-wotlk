@@ -4,107 +4,117 @@ on:
     branches:
       - 'master'
   pull_request:
-    types: ['labeled', 'labeled', 'opened', 'synchronize', 'reopened']
+    types:
+      - labeled
+      - synchronize
 
 concurrency:
   group: ${{ github.head_ref }} || concat(${{ github.ref }}, ${{ github.workflow }})
   cancel-in-progress: true
 
+env:
+  COMPOSE_DOCKER_CLI_BUILD: 1
+  DOCKER_BUILDKIT: 1
+  RUNNING_ON_PRIMARY_BRANCH: |
+    ${{ (github.repository == 'azerothcore/azerothcore-wotlk' && github.ref_name == 'master') && 'true' || 'false' }}
+
 jobs:
-  docker-build-n-deploy:
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-20.04]
-    runs-on: ${{ matrix.os }}
-    if: github.repository == 'azerothcore/azerothcore-wotlk' && (github.ref == 'refs/heads/master' || contains(github.event.pull_request.labels.*.name, 'run-build') || github.event.label.name == 'run-build')
-    env:
-      COMPOSE_DOCKER_CLI_BUILD: 1
-      DOCKER_BUILDKIT: 1
-      BUILDKIT_INLINE_CACHE: 1
-
+  build-containers:
+    runs-on: "ubuntu-latest"
+    if: |
+      github.repository == 'azerothcore/azerothcore-wotlk'
+      && !github.event.pull_request.draft
+      && (github.ref_name == 'master' || contains(github.event.pull_request.labels.*.name, 'run-build') || github.event.label.name == 'run-build')
     steps:
-      - name: Extract branch name
-        shell: bash
-        run: echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
-        id: extract_branch
-
-      - uses: actions/checkout@v2
-
-      - name: Configure
+      - name: Free up disk space
         run: |
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          docker --version
-          docker-compose --version
 
-    # TODO: make it work
-    #   - uses: whoan/docker-build-with-cache-action@v5
-    #     with:
-    #       image_tag: master
-    #       username: ${{ secrets.DOCKERHUB_USERNAME }}
-    #       password: ${{ secrets.DOCKERHUB_TOKEN }}
-    #       compose_file: docker-compose.yml
+      - uses: actions/checkout@v4
+
+      # The containers created in this workflow are used by
+      # acore-docker, which has a dependency on mod-eluna.
+      #
+      # If you're wanting containers without mod-eluna, the best solution is to
+      # build them locally (such as with `docker compose build`)
+      - name: Download Eluna
+        if: github.repository == 'azerothcore/azerothcore-wotlk' && github.ref_name == 'master'
+        uses: actions/checkout@v4
+        with:
+          repository: azerothcore/mod-eluna
+          path: modules/mod-eluna
 
       - name: Login to Docker Hub
-        if: github.repository == 'azerothcore/azerothcore-wotlk' && steps.extract_branch.outputs.branch == 'master'
+        if: github.repository == 'azerothcore/azerothcore-wotlk' && github.ref_name == 'master'
         uses: docker/login-action@v1
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-
-      # before cache
-      # needed to avoid ccache injected into these images
-      - name: Build Dev
-        if: github.repository == 'azerothcore/azerothcore-wotlk'
-        env:
-          #DOCKER_IMAGE_TAG: ${{ steps.extract_branch.outputs.branch }}
-          DOCKER_EXTENDS_BIND: abstract-no-bind
-          DOCKER_CLIENT_TIMEOUT: 400
-          COMPOSE_HTTP_TIMEOUT: 400
+      - name: Get version
+        id: version
         run: |
-          export DOCKER_USER_ID=$(id -u)
-          export DOCKER_GROUP_ID=$(id -u)
-          docker-compose --profile dev --profile local build --parallel
+          version="$(jq -r '.version' acore.json)"
+          echo "version=$version" >> $GITHUB_OUTPUT
 
-      - name: Deploy Dev
-        #env:
-        #  DOCKER_IMAGE_TAG: ${{ steps.extract_branch.outputs.branch }}
-        if: github.repository == 'azerothcore/azerothcore-wotlk' && steps.extract_branch.outputs.branch == 'master'
-        run: |
-          docker-compose --profile dev --profile local push
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Cache
-        uses: actions/cache@v2
+      - name: build worldserver
+        uses: ./.github/actions/docker-tag-and-build
         with:
-          path: var/docker/ccache
-          key: ccache:${{ matrix.os }}:clang:without-modules:${{ github.ref }}:${{ github.sha }}
-          restore-keys: |
-            ccache:${{ matrix.os }}:clang:without-modules:${{ github.ref }}
-            ccache:${{ matrix.os }}:clang:without-modules
+          component-name: worldserver
+          version: ${{ steps.version.outputs.version }}
+          push: ${{ env.RUNNING_ON_PRIMARY_BRANCH }}
 
-      - name: Build Production images
-        if: github.repository == 'azerothcore/azerothcore-wotlk'
-        env:
-          #DOCKER_IMAGE_TAG: ${{ steps.extract_branch.outputs.branch }}
-          DOCKER_EXTENDS_BIND: abstract-no-bind
-          DOCKER_AC_BUILD_TARGET: build
-          DOCKER_CLIENT_TIMEOUT: 220
-          COMPOSE_HTTP_TIMEOUT: 220
-        run: |
-          export DOCKER_USER_ID=$(id -u)
-          export DOCKER_GROUP_ID=$(id -u)
-          docker-compose --profile build --profile prod build --parallel
-          docker-compose run --no-deps --name build ac-build echo "image created"
-          docker cp build:/azerothcore/var/ccache var/docker/
-          echo "ccache exported"
+      - name: build authserver
+        uses: ./.github/actions/docker-tag-and-build
+        with:
+          component-name: authserver
+          version: ${{ steps.version.outputs.version }}
+          push: ${{ env.RUNNING_ON_PRIMARY_BRANCH }}
 
-      - name: Deploy Production images
-        #env:
-        #  DOCKER_IMAGE_TAG: ${{ steps.extract_branch.outputs.branch }}
-        if: github.repository == 'azerothcore/azerothcore-wotlk' && steps.extract_branch.outputs.branch == 'master'
-        run: |
-          docker-compose --profile prod push
+      - name: build db-import
+        uses: ./.github/actions/docker-tag-and-build
+        with:
+          component-name: db-import
+          version: ${{ steps.version.outputs.version }}
+          push: ${{ env.RUNNING_ON_PRIMARY_BRANCH }}
+
+      - name: build client-data
+        uses: ./.github/actions/docker-tag-and-build
+        with:
+          component-name: client-data
+          version: ${{ steps.version.outputs.version }}
+          push: ${{ env.RUNNING_ON_PRIMARY_BRANCH }}
+
+      - name: build tools
+        uses: ./.github/actions/docker-tag-and-build
+        with:
+          component-name: tools
+          version: ${{ steps.version.outputs.version }}
+          push: ${{ env.RUNNING_ON_PRIMARY_BRANCH }}
+
+      - name: build dev-server
+        uses: ./.github/actions/docker-tag-and-build
+        with:
+          component-name: dev
+          version: ${{ steps.version.outputs.version }}
+          push: ${{ env.RUNNING_ON_PRIMARY_BRANCH }}
+          dockerfile: apps/docker/Dockerfile.dev-server
+
+      - name: Trigger acore-docker CI
+        if: github.repository == 'azerothcore/azerothcore-wotlk' && github.ref_name == 'master'
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.ACORE_DOCKER_REPO_ACCESS_TOKEN }}
+          repository: azerothcore/acore-docker
+          event-type: azerothcore-new-images
+          client-payload: >
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}"
+            }

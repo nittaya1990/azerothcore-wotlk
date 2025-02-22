@@ -20,7 +20,6 @@
 #include "Config.h"
 #include "GameTime.h"
 #include "GridNotifiers.h"
-#include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "InstanceScript.h"
 #include "Log.h"
@@ -33,6 +32,7 @@
 #include "Timer.h"
 #include "Transport.h"
 #include "World.h"
+#include "WorldSessionMgr.h"
 
 uint16 InstanceSaveMgr::ResetTimeDelay[] = {3600, 900, 300, 60, 0};
 PlayerBindStorage InstanceSaveMgr::playerBindStorage;
@@ -82,7 +82,7 @@ InstanceSave* InstanceSaveMgr::AddInstanceSave(uint32 mapId, uint32 instanceId, 
 
     if (difficulty >= (entry->IsRaid() ? MAX_RAID_DIFFICULTY : MAX_DUNGEON_DIFFICULTY))
     {
-        LOG_ERROR("instance.save", "InstanceSaveMgr::AddInstanceSave: mapid = {}, instanceid = {}, wrong dificalty {}!", mapId, instanceId, difficulty);
+        LOG_ERROR("instance.save", "InstanceSaveMgr::AddInstanceSave: mapid = {}, instanceid = {}, wrong difficulty {}!", mapId, instanceId, difficulty);
         return nullptr;
     }
 
@@ -94,7 +94,7 @@ InstanceSave* InstanceSaveMgr::AddInstanceSave(uint32 mapId, uint32 instanceId, 
     }
     else
     {
-        resetTime = GameTime::GetGameTime().count() + 3 * DAY; // normals expire after 3 days even if someone is still bound to them, cleared on startup
+        resetTime = GameTime::GetGameTime().count() + static_cast<long long>(3) * DAY; // normals expire after 3 days even if someone is still bound to them, cleared on startup
         extendedResetTime = 0;
     }
     InstanceSave* save = new InstanceSave(mapId, instanceId, difficulty, resetTime, extendedResetTime);
@@ -116,7 +116,7 @@ bool InstanceSaveMgr::DeleteInstanceSaveIfNeeded(uint32 InstanceId, bool skipMap
     return DeleteInstanceSaveIfNeeded(GetInstanceSave(InstanceId), skipMapCheck);
 }
 
-bool InstanceSaveMgr::DeleteInstanceSaveIfNeeded(InstanceSave* save, bool skipMapCheck)
+bool InstanceSaveMgr::DeleteInstanceSaveIfNeeded(InstanceSave* save, bool skipMapCheck, bool deleteSave /*= true*/)
 {
     // pussywizard: save is removed only when there are no more players bound AND the map doesn't exist
     // pussywizard: this function is called when unbinding a player and when unloading a map
@@ -132,11 +132,18 @@ bool InstanceSaveMgr::DeleteInstanceSaveIfNeeded(InstanceSave* save, bool skipMa
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_INSTANCE_BY_INSTANCE);
         stmt->SetData(0, save->GetInstanceId());
         CharacterDatabase.Execute(stmt);
+        DeleteInstanceSavedData(save->GetInstanceId());
 
         // clear respawn times (if map is loaded do it just to be sure, if already unloaded it won't do it by itself)
         Map::DeleteRespawnTimesInDB(save->GetMapId(), save->GetInstanceId());
 
-        delete save;
+        sScriptMgr->OnInstanceIdRemoved(save->GetInstanceId());
+
+        if (deleteSave)
+        {
+            delete save;
+        }
+
         return true;
     }
     return false;
@@ -216,11 +223,38 @@ void InstanceSave::AddPlayer(ObjectGuid guid)
 
 bool InstanceSave::RemovePlayer(ObjectGuid guid, InstanceSaveMgr* ism)
 {
-    std::lock_guard<std::mutex> guard(_lock);
-    m_playerList.remove(guid);
+    bool deleteSave = false;
+    {
+        std::lock_guard lg(_lock);
+        m_playerList.remove(guid);
 
-    // ism passed as an argument to avoid calling via singleton (might result in a deadlock)
-    return ism->DeleteInstanceSaveIfNeeded(this->GetInstanceId(), false);
+        // ism passed as an argument to avoid calling via singleton (might result in a deadlock)
+        deleteSave = ism->DeleteInstanceSaveIfNeeded(this, false, false);
+    }
+
+    // Delete save now (avoid mutex memory corruption)
+    if (deleteSave)
+    {
+        delete this;
+    }
+
+    return deleteSave;
+}
+
+void InstanceSaveMgr::SanitizeInstanceSavedData()
+{
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SANITIZE_INSTANCE_SAVED_DATA);
+    CharacterDatabase.Execute(stmt);
+}
+
+void InstanceSaveMgr::DeleteInstanceSavedData(uint32 instanceId)
+{
+    if (instanceId)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DELETE_INSTANCE_SAVED_DATA);
+        stmt->SetData(0, instanceId);
+        CharacterDatabase.Execute(stmt);
+    }
 }
 
 void InstanceSaveMgr::LoadInstances()
@@ -255,7 +289,10 @@ void InstanceSaveMgr::LoadInstances()
     LoadInstanceSaves();
     LoadCharacterBinds();
 
-    LOG_INFO("server.loading", ">> Loaded instances and binds in {} ms", GetMSTimeDiffToNow(oldMSTime));
+    // Sanitize pending rows on Instance_saved_data for data that wasn't deleted properly
+    SanitizeInstanceSavedData();
+
+    LOG_INFO("server.loading", ">> Loaded Instances And Binds in {} ms", GetMSTimeDiffToNow(oldMSTime));
     LOG_INFO("server.loading", " ");
 }
 
@@ -458,7 +495,9 @@ void InstanceSaveMgr::Update()
     {
         LOG_INFO("instance.save", "Instance ID reset occurred, sending updated calendar and raid info to all players!");
         WorldPacket dummy;
-        for (SessionMap::const_iterator itr = sWorld->GetAllSessions().begin(); itr != sWorld->GetAllSessions().end(); ++itr)
+
+        WorldSessionMgr::SessionMap const& sessionMap = sWorldSessionMgr->GetAllSessions();
+        for (WorldSessionMgr::SessionMap::const_iterator itr = sessionMap.begin(); itr != sessionMap.end(); ++itr)
             if (Player* plr = itr->second->GetPlayer())
             {
                 itr->second->HandleCalendarGetCalendar(dummy);
@@ -488,10 +527,13 @@ void InstanceSaveMgr::_ResetSave(InstanceSaveHashMap::iterator& itr)
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_INSTANCE_BY_INSTANCE);
         stmt->SetData(0, itr->second->GetInstanceId());
         CharacterDatabase.Execute(stmt);
+        DeleteInstanceSavedData(itr->second->GetInstanceId());
 
         // clear respawn times if the map is already unloaded and won't do it by itself
         if (!sMapMgr->FindMap(itr->second->GetMapId(), itr->second->GetInstanceId()))
             Map::DeleteRespawnTimesInDB(itr->second->GetMapId(), itr->second->GetInstanceId());
+
+        sScriptMgr->OnInstanceIdRemoved(itr->second->GetInstanceId());
 
         delete itr->second;
         m_instanceSaveById.erase(itr);
@@ -636,6 +678,9 @@ InstancePlayerBind* InstanceSaveMgr::PlayerBindToInstance(ObjectGuid guid, Insta
         stmt->SetData(1, save->GetInstanceId());
         stmt->SetData(2, permanent);
         CharacterDatabase.Execute(stmt);
+
+        if (player)
+            player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_COMPLETE_RAID, 1);
     }
 
     if (bind.save != save)
@@ -787,7 +832,12 @@ void InstanceSaveMgr::CopyBinds(ObjectGuid from, ObjectGuid to, Player* toPlr)
 
 void InstanceSaveMgr::UnbindAllFor(InstanceSave* save)
 {
-    GuidList& pList = save->m_playerList;
-    while (!pList.empty())
-        PlayerUnbindInstance(*(pList.begin()), save->GetMapId(), save->GetDifficulty(), true, ObjectAccessor::FindConnectedPlayer(*(pList.begin())));
+    uint32 mapId = save->GetMapId();
+    Difficulty difficulty = save->GetDifficulty();
+    GuidList players = save->m_playerList;
+
+    for (ObjectGuid const& guid : players)
+    {
+        PlayerUnbindInstance(guid, mapId, difficulty, true, ObjectAccessor::FindConnectedPlayer(guid));
+    }
 }

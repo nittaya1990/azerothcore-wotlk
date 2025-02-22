@@ -20,14 +20,13 @@
 #include "GameGraveyard.h"
 #include "GameObject.h"
 #include "GameTime.h"
-#include "Language.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "ScriptedCreature.h"
 #include "Transport.h"
 #include "Vehicle.h"
 #include "WorldPacket.h"
-#include "WorldSession.h"
+#include "WorldStatePackets.h"
 
 void BattlegroundICScore::BuildObjectivesBlock(WorldPacket& data)
 {
@@ -293,7 +292,7 @@ void BattlegroundIC::StartingEventOpenDoors()
     DoorOpen(BG_IC_GO_DOODAD_VR_PORTCULLIS01_2);
 
     for (uint8 i = 0; i < MAX_FORTRESS_TELEPORTERS_SPAWNS; ++i)
-        GetBGObject(BG_IC_Teleporters[i].type)->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE);
+        GetBGObject(BG_IC_Teleporters[i].type)->RemoveGameObjectFlag(GO_FLAG_NOT_SELECTABLE);
 
     for (uint8 i = 0; i < MAX_FORTRESS_TELEPORTER_EFFECTS_SPAWNS; ++i)
         GetBGObject(BG_IC_TeleporterEffects[i].type)->SetGoState(GO_STATE_ACTIVE);
@@ -383,21 +382,24 @@ bool BattlegroundIC::UpdatePlayerScore(Player* player, uint32 type, uint32 value
     return true;
 }
 
-void BattlegroundIC::FillInitialWorldStates(WorldPacket& data)
+void BattlegroundIC::FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet)
 {
-    data << uint32(BG_IC_ALLIANCE_RENFORT_SET) << uint32(1);
-    data << uint32(BG_IC_HORDE_RENFORT_SET) << uint32(1);
-    data << uint32(BG_IC_ALLIANCE_RENFORT) << uint32(factionReinforcements[TEAM_ALLIANCE]);
-    data << uint32(BG_IC_HORDE_RENFORT) << uint32(factionReinforcements[TEAM_HORDE]);
+    packet.Worldstates.reserve(4+MAX_FORTRESS_GATES_SPAWNS+MAX_NODE_TYPES+1);
+    packet.Worldstates.emplace_back(BG_IC_ALLIANCE_RENFORT_SET, 1);
+    packet.Worldstates.emplace_back(BG_IC_HORDE_RENFORT_SET, 1);
+    packet.Worldstates.emplace_back(BG_IC_ALLIANCE_RENFORT, factionReinforcements[TEAM_ALLIANCE]);
+    packet.Worldstates.emplace_back(BG_IC_HORDE_RENFORT, factionReinforcements[TEAM_HORDE]);
 
     for (uint8 i = 0; i < MAX_FORTRESS_GATES_SPAWNS; ++i)
     {
         uint32 uws = GetWorldStateFromGateEntry(BG_IC_ObjSpawnlocs[i].entry, (GateStatus[GetGateIDFromEntry(BG_IC_ObjSpawnlocs[i].entry)] == BG_IC_GATE_DESTROYED));
-        data << uint32(uws) << uint32(1);
+        packet.Worldstates.emplace_back(uws, 1);
     }
 
     for (uint8 i = 0; i < MAX_NODE_TYPES; ++i)
-        data << uint32(nodePoint[i].worldStates[nodePoint[i].nodeState]) << uint32(1);
+        packet.Worldstates.emplace_back(nodePoint[i].worldStates[nodePoint[i].nodeState], 1);
+
+    packet.Worldstates.emplace_back(BG_IC_HORDE_RENFORT_SET, 1);
 }
 
 bool BattlegroundIC::SetupBattleground()
@@ -740,7 +742,7 @@ void BattlegroundIC::HandleContestedNodes(ICNodePoint* nodePoint)
         for (std::list<Creature*>::const_iterator itr = cannons.begin(); itr != cannons.end(); ++itr)
         {
             (*itr)->GetVehicleKit()->RemoveAllPassengers();
-            (*itr)->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+            (*itr)->SetUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
         }
     }
     else if (nodePoint->nodeType == NODE_TYPE_WORKSHOP)
@@ -775,7 +777,7 @@ void BattlegroundIC::HandleCapturedNodes(ICNodePoint* nodePoint, bool recapture)
                     gunshipHorde->GetCreatureListWithEntryInGrid(cannons, NPC_HORDE_GUNSHIP_CANNON, 150.0f);
 
                 for (std::list<Creature*>::const_iterator itr = cannons.begin(); itr != cannons.end(); ++itr)
-                    (*itr)->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+                    (*itr)->RemoveUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
 
                 for (uint8 u = 0; u < MAX_HANGAR_TELEPORTERS_SPAWNS; ++u)
                 {

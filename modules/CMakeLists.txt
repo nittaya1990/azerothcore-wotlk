@@ -10,8 +10,6 @@
 # implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 #
 
-message("")
-
 # Make the script module list available in the current scope
 GetModuleSourceList(MODULES_MODULE_LIST)
 
@@ -78,8 +76,8 @@ foreach(SOURCE_MODULE ${MODULES_MODULE_LIST})
     set(${MODULE_MODULE_VARIABLE} "static")
   endif()
 
-  # Use only static for mod-eluna-lua-engine
-  if (SOURCE_MODULE MATCHES "mod-eluna-lua-engine")
+  # Use only static for mod-eluna
+  if (SOURCE_MODULE MATCHES "mod-eluna")
     ConfigureElunaModule(${SOURCE_MODULE})
   endif()
 
@@ -279,6 +277,10 @@ add_library(modules STATIC
     ${SCRIPT_MODULE_PRIVATE_SCRIPTLOADER}
     ${PRIVATE_SOURCES_MODULES})
 
+if (MOD_ELUNA_FOUND)
+    target_link_libraries(modules PUBLIC lualib)
+endif()
+
 target_link_libraries(modules
   PRIVATE
     acore-core-interface
@@ -290,7 +292,12 @@ target_include_directories(modules
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${PUBLIC_INCLUDES})
 
-set_target_properties(scripts
+# Enables Devs to Include a cmake file in their module that will get run inline with the config.
+foreach(SOURCE_MODULE ${MODULES_MODULE_LIST})
+	include("${CMAKE_SOURCE_DIR}/modules/${SOURCE_MODULE}/${SOURCE_MODULE}.cmake" OPTIONAL)
+endforeach()
+
+set_target_properties(modules
   PROPERTIES
     FOLDER
       "modules")

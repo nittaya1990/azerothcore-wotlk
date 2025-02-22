@@ -19,6 +19,7 @@
 #include "Log.h"
 #include "Player.h"
 #include "WorldPacket.h"
+#include "WorldStatePackets.h"
 
 BattlegroundBE::BattlegroundBE()
 {
@@ -40,7 +41,7 @@ void BattlegroundBE::StartingEventOpenDoors()
         DoorOpen(i);
 
     for (uint32 i = BG_BE_OBJECT_BUFF_1; i <= BG_BE_OBJECT_BUFF_2; ++i)
-        SpawnBGObject(i, 60);
+        SpawnBGObject(i, 90);
 }
 
 bool BattlegroundBE::HandlePlayerUnderMap(Player* player)
@@ -87,10 +88,10 @@ void BattlegroundBE::HandleAreaTrigger(Player* player, uint32 trigger)
     }
 }
 
-void BattlegroundBE::FillInitialWorldStates(WorldPacket& data)
+void BattlegroundBE::FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet)
 {
-    data << uint32(0x9f3) << uint32(1); // 9
-    Arena::FillInitialWorldStates(data);
+    packet.Worldstates.emplace_back(0x9f3, 1); // BATTLEGROUND_BLADES_EDGE_ARENA_SHOW
+    Arena::FillInitialWorldStates(packet);
 }
 
 bool BattlegroundBE::SetupBattleground()

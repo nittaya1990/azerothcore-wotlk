@@ -17,14 +17,16 @@
 
 #include "Arena.h"
 #include "ArenaTeamMgr.h"
+#include "GroupMgr.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
+#include "Pet.h"
 #include "Player.h"
+#include "ScriptMgr.h"
 #include "World.h"
 #include "WorldSession.h"
-#include "Pet.h"
-#include "ScriptMgr.h"
-//#include "WorldStatePackets.h"
+#include "WorldSessionMgr.h"
+#include "WorldStatePackets.h"
 
 void ArenaScore::AppendToPacket(WorldPacket& data)
 {
@@ -93,6 +95,47 @@ void Arena::AddPlayer(Player* player)
     }
 
     UpdateArenaWorldState();
+
+    Group* group = player->GetGroup();
+    if (group)
+    {
+        // Hackfix for crossfaction arenas, recreate group when joining
+        // Without this, players in a crossfaction arena group would not be able to cast beneficial spells on their teammates
+
+        std::vector<Player*> members;
+        bool isCrossfaction = false;
+        for (Group::member_citerator mitr = group->GetMemberSlots().begin(); mitr != group->GetMemberSlots().end(); ++mitr)
+        {
+            Player* member = ObjectAccessor::FindPlayer(mitr->guid);
+            if (!member || member->GetGUID() == player->GetGUID())
+            {
+                continue;
+            }
+            members.push_back(member);
+            if (member->GetTeamId(true) != player->GetTeamId(true))
+            {
+                isCrossfaction = true;
+            }
+        }
+
+        if (isCrossfaction)
+        {
+            for (Player* member : members)
+            {
+                member->RemoveFromGroup();
+            }
+            group->Disband();
+
+            group = new Group();
+            SetBgRaid(player->GetBgTeamId(), group);
+            group->Create(player);
+            sGroupMgr->AddGroup(group);
+            for (Player* member : members)
+            {
+                group->AddMember(member);
+            }
+        }
+    }
 }
 
 void Arena::RemovePlayer(Player* /*player*/)
@@ -104,10 +147,11 @@ void Arena::RemovePlayer(Player* /*player*/)
     CheckWinConditions();
 }
 
-void Arena::FillInitialWorldStates(WorldPacket& data)
+void Arena::FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet)
 {
-    data << uint32(ARENA_WORLD_STATE_ALIVE_PLAYERS_GREEN) << uint32(GetAlivePlayersCountByTeam(TEAM_HORDE));
-    data << uint32(ARENA_WORLD_STATE_ALIVE_PLAYERS_GOLD) << uint32(GetAlivePlayersCountByTeam(TEAM_ALLIANCE));
+    packet.Worldstates.reserve(2);
+    packet.Worldstates.emplace_back(ARENA_WORLD_STATE_ALIVE_PLAYERS_GREEN, GetAlivePlayersCountByTeam(TEAM_HORDE));
+    packet.Worldstates.emplace_back(ARENA_WORLD_STATE_ALIVE_PLAYERS_GOLD, GetAlivePlayersCountByTeam(TEAM_ALLIANCE));
 }
 
 void Arena::UpdateArenaWorldState()
@@ -150,6 +194,9 @@ void Arena::RemovePlayerAtLeave(Player* player)
 
 void Arena::CheckWinConditions()
 {
+    if (!sScriptMgr->OnBeforeArenaCheckWinConditions(this))
+        return;
+
     if (!GetAlivePlayersCountByTeam(TEAM_ALLIANCE) && GetPlayersCountByTeam(TEAM_HORDE))
         EndBattleground(TEAM_HORDE);
     else if (GetPlayersCountByTeam(TEAM_ALLIANCE) && !GetAlivePlayersCountByTeam(TEAM_HORDE))
@@ -179,7 +226,7 @@ void Arena::EndBattleground(TeamId winnerTeamId)
         {
             // pussywizard: arena logs in database
             uint32 fightId = sArenaTeamMgr->GetNextArenaLogId();
-            uint32 currOnline = sWorld->GetActiveSessionCount();
+            uint32 currOnline = sWorldSessionMgr->GetActiveSessionCount();
 
             CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
             CharacterDatabasePreparedStatement* stmt2 = CharacterDatabase.GetPreparedStatement(CHAR_INS_ARENA_LOG_FIGHT);
@@ -200,6 +247,7 @@ void Arena::EndBattleground(TeamId winnerTeamId)
             uint8 memberId = 0;
             for (auto const& [playerGuid, arenaLogEntryData] : ArenaLogEntries)
             {
+                auto const& score = PlayerScores.find(playerGuid.GetCounter());
                 stmt2 = CharacterDatabase.GetPreparedStatement(CHAR_INS_ARENA_LOG_MEMBERSTATS);
                 stmt2->SetData(0, fightId);
                 stmt2->SetData(1, ++memberId);
@@ -208,9 +256,18 @@ void Arena::EndBattleground(TeamId winnerTeamId)
                 stmt2->SetData(4, arenaLogEntryData.ArenaTeamId);
                 stmt2->SetData(5, arenaLogEntryData.Acc);
                 stmt2->SetData(6, arenaLogEntryData.IP);
-                stmt2->SetData(7, arenaLogEntryData.DamageDone);
-                stmt2->SetData(8, arenaLogEntryData.HealingDone);
-                stmt2->SetData(9, arenaLogEntryData.KillingBlows);
+                if (score != PlayerScores.end())
+                {
+                    stmt2->SetData(7, score->second->GetDamageDone());
+                    stmt2->SetData(8, score->second->GetHealingDone());
+                    stmt2->SetData(9, score->second->GetKillingBlows());
+                }
+                else
+                {
+                    stmt2->SetData(7, 0);
+                    stmt2->SetData(8, 0);
+                    stmt2->SetData(9, 0);
+                }
                 trans->Append(stmt2);
             }
 
@@ -311,6 +368,10 @@ void Arena::EndBattleground(TeamId winnerTeamId)
                 player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_PLAY_ARENA, GetMapId());
             }
         }
+
+        // update previous opponents for arena queue
+        winnerArenaTeam->SetPreviousOpponents(loserArenaTeam->GetId());
+        loserArenaTeam->SetPreviousOpponents(winnerArenaTeam->GetId());
 
         // save the stat changes
         if (bValidArena)

@@ -19,10 +19,12 @@
 #define AZEROTHCORE_GROUP_H
 
 #include "DBCEnums.h"
+#include "DataMap.h"
 #include "GroupRefMgr.h"
 #include "LootMgr.h"
 #include "QueryResult.h"
 #include "SharedDefines.h"
+#include <functional>
 
 class Battlefield;
 class Battleground;
@@ -43,7 +45,7 @@ struct MapEntry;
 #define MAX_RAID_SUBGROUPS MAXRAIDSIZE/MAXGROUPSIZE
 #define TARGETICONCOUNT 8
 
-enum RollVote
+enum RollVote : uint8
 {
     PASS              = 0,
     NEED              = 1,
@@ -213,7 +215,9 @@ public:
     bool isBFGroup()   const;
     bool isBGGroup()   const;
     bool IsCreated()   const;
+    GroupType GetGroupType() const;
     ObjectGuid GetLeaderGUID() const;
+    Player* GetLeader();
     ObjectGuid GetGUID() const;
     const char* GetLeaderName() const;
     LootMethod GetLootMethod() const;
@@ -239,10 +243,12 @@ public:
     GroupReference* GetFirstMember() { return m_memberMgr.getFirst(); }
     GroupReference const* GetFirstMember() const { return m_memberMgr.getFirst(); }
     uint32 GetMembersCount() const { return m_memberSlots.size(); }
+    uint32 GetInviteeCount() const { return m_invitees.size(); }
 
     uint8 GetMemberGroup(ObjectGuid guid) const;
 
     void ConvertToLFG(bool restricted = true);
+    bool CheckLevelForRaid();
     void ConvertToRaid();
 
     void SetBattlegroundGroup(Battleground* bg);
@@ -280,7 +286,7 @@ public:
     bool isRollLootActive() const;
     void SendLootStartRoll(uint32 CountDown, uint32 mapid, const Roll& r);
     void SendLootStartRollToPlayer(uint32 countDown, uint32 mapId, Player* p, bool canNeed, Roll const& r);
-    void SendLootRoll(ObjectGuid SourceGuid, ObjectGuid TargetGuid, uint8 RollNumber, uint8 RollType, const Roll& r);
+    void SendLootRoll(ObjectGuid SourceGuid, ObjectGuid TargetGuid, uint8 RollNumber, uint8 RollType, const Roll& r, bool autoPass = false);
     void SendLootRollWon(ObjectGuid SourceGuid, ObjectGuid TargetGuid, uint8 RollNumber, uint8 RollType, const Roll& r);
     void SendLootAllPassed(Roll const& roll);
     void SendLooter(Creature* creature, Player* pLooter);
@@ -312,6 +318,9 @@ public:
     uint32 GetDifficultyChangePreventionTime() const;
     DifficultyPreventionChangeType GetDifficultyChangePreventionReason() const { return _difficultyChangePreventionType; }
     void SetDifficultyChangePrevention(DifficultyPreventionChangeType type);
+    void DoForAllMembers(std::function<void(Player*)> const& worker);
+
+    DataMap CustomData;
 
 protected:
     void _homebindIfInstance(Player* player);

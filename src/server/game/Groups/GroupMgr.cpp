@@ -121,7 +121,7 @@ void GroupMgr::LoadGroups()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 group definitions. DB table `groups` is empty!");
+            LOG_WARN("server.loading", ">> Loaded 0 group definitions. DB table `groups` is empty!");
             LOG_INFO("server.loading", " ");
         }
         else
@@ -148,7 +148,7 @@ void GroupMgr::LoadGroups()
         }
     }
 
-    LOG_INFO("server.loading", "Loading Group members...");
+    LOG_INFO("server.loading", "Loading Group Members...");
     {
         uint32 oldMSTime = getMSTime();
 
@@ -161,7 +161,7 @@ void GroupMgr::LoadGroups()
         QueryResult result = CharacterDatabase.Query("SELECT guid, memberGuid, memberFlags, subgroup, roles FROM group_member ORDER BY guid");
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 group members. DB table `group_member` is empty!");
+            LOG_WARN("server.loading", ">> Loaded 0 group members. DB table `group_member` is empty!");
             LOG_INFO("server.loading", " ");
         }
         else

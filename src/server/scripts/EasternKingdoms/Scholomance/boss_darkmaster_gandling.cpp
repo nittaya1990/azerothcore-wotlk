@@ -15,9 +15,9 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
 #include "Map.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "SpellScript.h"
 #include "scholomance.h"
@@ -174,7 +174,7 @@ public:
             {
                 for (uint8 i = 0; i < 3; i++)
                 {
-                    if (Guardians[room][i] == nullptr)
+                    if (!Guardians[room][i])
                     {
                         Guardians[room][i] = cr;
                         break;
@@ -183,7 +183,7 @@ public:
             }
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
             DoZoneInCombat();
             instance->SetData(DATA_DARKMASTER_GANDLING, IN_PROGRESS);
@@ -387,9 +387,14 @@ public:
         int room;
         Unit* Gandling;
 
-        void IsSummonedBy(Unit* summoner) override
+        void IsSummonedBy(WorldObject* summoner) override
         {
-            Gandling = summoner;
+            if (!summoner->IsCreature())
+            {
+                return;
+            }
+
+            Gandling = summoner->ToCreature();
             if (instance)
             {
                 room = Gandling->GetAI()->GetData(GANDLING_ROOM_TO_USE); // it's set just before my spawn

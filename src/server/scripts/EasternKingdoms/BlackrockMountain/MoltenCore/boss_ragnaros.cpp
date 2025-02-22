@@ -15,9 +15,10 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "SpellScript.h"
+#include "SpellScriptLoader.h"
 #include "molten_core.h"
 
 enum Texts
@@ -78,7 +79,6 @@ enum Events
     EVENT_HAND_OF_RAGNAROS,
     EVENT_MIGHT_OF_RAGNAROS,
     EVENT_LAVA_BURST,
-    EVENT_MAGMA_BLAST_MELEE_CHECK,
     EVENT_MAGMA_BLAST,
     EVENT_SUBMERGE,
     EVENT_LAVA_BURST_TRIGGER,
@@ -122,6 +122,7 @@ public:
         boss_ragnarosAI(Creature* creature) : BossAI(creature, DATA_RAGNAROS),
             _isIntroDone(false),
             _hasYelledMagmaBurst(false),
+            _processingMagmaBurst(false),
             _hasSubmergedOnce(false),
             _isKnockbackEmoteAllowed(true)
         {
@@ -137,15 +138,18 @@ public:
                 extraEvents.Reset();
                 extraEvents.SetPhase(PHASE_EMERGED);
                 me->SetReactState(REACT_AGGRESSIVE);
-                me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE|UNIT_FLAG_IMMUNE_TO_PC|UNIT_FLAG_IMMUNE_TO_NPC|UNIT_FLAG_NOT_SELECTABLE);
+                me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE|UNIT_FLAG_NOT_SELECTABLE);
+                me->SetImmuneToAll(false);
                 me->SetUInt32Value(UNIT_NPC_EMOTESTATE, 0);
                 me->HandleEmoteCommand(EMOTE_ONESHOT_EMERGE);
             }
 
             _hasYelledMagmaBurst = false;
+            _processingMagmaBurst = false;
             _hasSubmergedOnce = false;
             _isKnockbackEmoteAllowed = true;
             me->SetUInt32Value(UNIT_NPC_EMOTESTATE, 0);
+            me->SetControlled(true, UNIT_STATE_ROOT);
             _lavaBurstGUIDS.clear();
         }
 
@@ -162,7 +166,7 @@ public:
             if (action == ACTION_FINISH_RAGNAROS_INTRO)
             {
                 extraEvents.SetPhase(PHASE_INTRO);
-                extraEvents.ScheduleEvent(EVENT_INTRO_SAY, 5000, 0, PHASE_INTRO);
+                extraEvents.ScheduleEvent(EVENT_INTRO_SAY, 5s, 0, PHASE_INTRO);
             }
         }
 
@@ -201,9 +205,9 @@ public:
             }
         }
 
-        void EnterCombat(Unit* /*victim*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
-            _EnterCombat();
+            _JustEngagedWith();
             events.SetPhase(PHASE_EMERGED);
             ScheduleCombatEvents();
         }
@@ -231,6 +235,28 @@ public:
             }
         }
 
+        void EnterEvadeMode(EvadeReason why) override
+        {
+            if (!me->GetThreatMgr().GetThreatList().empty())
+            {
+                if (!_processingMagmaBurst)
+                {
+                    // Boss try to evade, but still got some targets on threat list - it means that none of these targets are in melee range - cast magma blast
+                    _processingMagmaBurst = true;
+                    events.ScheduleEvent(EVENT_MAGMA_BLAST, 4s, PHASE_EMERGED, PHASE_EMERGED);
+                }
+            }
+            else
+            {
+                BossAI::EnterEvadeMode(why);
+            }
+        }
+
+        bool CanAIAttack(Unit const* victim) const override
+        {
+            return me->IsWithinMeleeRange(victim);
+        }
+
         void UpdateAI(uint32 diff) override
         {
             if (!extraEvents.Empty())
@@ -245,7 +271,7 @@ public:
                         case EVENT_INTRO_SAY:
                         {
                             Talk(SAY_ARRIVAL5_RAG);
-                            extraEvents.ScheduleEvent(EVENT_INTRO_MAKE_ATTACKABLE, 2500, 0, PHASE_INTRO);
+                            extraEvents.ScheduleEvent(EVENT_INTRO_MAKE_ATTACKABLE, 2500ms, 0, PHASE_INTRO);
                             break;
                         }
                         case EVENT_INTRO_MAKE_ATTACKABLE:
@@ -253,7 +279,8 @@ public:
                             _isIntroDone = true;
                             extraEvents.SetPhase(PHASE_EMERGED);
                             me->RemoveAurasDueToSpell(SPELL_RAGNAROS_SUBMERGE_EFFECT);
-                            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_NON_ATTACKABLE);
+                            me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+                            me->SetImmuneToAll(false);
                             me->SetReactState(REACT_AGGRESSIVE);
                             DoZoneInCombat();
                             break;
@@ -286,7 +313,7 @@ public:
                             }
                             else
                             {
-                                events.RescheduleEvent(EVENT_LAVA_BURST, 10000, PHASE_EMERGED, PHASE_EMERGED);
+                                events.RescheduleEvent(EVENT_LAVA_BURST, 10s, PHASE_EMERGED, PHASE_EMERGED);
                             }
 
                             break;
@@ -297,7 +324,10 @@ public:
 
             if (!UpdateVictim())
             {
-                return;
+                if (!_processingMagmaBurst)
+                {
+                    return;
+                }
             }
 
             events.Update(diff);
@@ -330,7 +360,7 @@ public:
                         {
                             Talk(SAY_KNOCKBACK);
                             _isKnockbackEmoteAllowed = false;
-                            extraEvents.RescheduleEvent(EVENT_RESET_KNOCKBACK_EMOTE, 5000);
+                            extraEvents.RescheduleEvent(EVENT_RESET_KNOCKBACK_EMOTE, 5s);
                         }
                         events.RepeatEvent(20000);
                         break;
@@ -340,38 +370,10 @@ public:
                         DoCastAOE(SPELL_LAVA_BURST);
                         break;
                     }
-                    case EVENT_MAGMA_BLAST_MELEE_CHECK:
-                    {
-                        if (Unit* target = ObjectAccessor::GetUnit(*me, me->GetTarget()))
-                        {
-                            if (!target->IsAlive())
-                            {
-                                me->SetTarget(ObjectGuid::Empty);
-                            }
-                        }
-
-                        if (!IsVictimWithinMeleeRange())
-                        {
-                            if (Unit* target = SelectTarget(SelectTargetMethod::MaxThreat, 0, [&](Unit* u) { return u && u->IsPlayer() && me->IsWithinMeleeRange(u); }))
-                            {
-                                me->AttackerStateUpdate(target);
-                                me->SetTarget(target->GetGUID());
-                                events.RepeatEvent(500);
-                            }
-                            else
-                            {
-                                events.ScheduleEvent(EVENT_MAGMA_BLAST, 4000, PHASE_EMERGED, PHASE_EMERGED);
-                            }
-                        }
-                        else
-                        {
-                            _hasYelledMagmaBurst = false;
-                            events.RepeatEvent(500);
-                        }
-                        break;
-                    }
                     case EVENT_MAGMA_BLAST:
                     {
+                        _processingMagmaBurst = false;
+
                         if (!IsVictimWithinMeleeRange())
                         {
                             DoCastRandomTarget(SPELL_MAGMA_BLAST);
@@ -383,7 +385,6 @@ public:
                             }
                         }
 
-                        events.RescheduleEvent(EVENT_MAGMA_BLAST_MELEE_CHECK, 500, PHASE_EMERGED, PHASE_EMERGED);
                         break;
                     }
                     case EVENT_MIGHT_OF_RAGNAROS:
@@ -397,7 +398,7 @@ public:
                             {
                                 Talk(SAY_KNOCKBACK, me);
                                 _isKnockbackEmoteAllowed = false;
-                                extraEvents.RescheduleEvent(EVENT_RESET_KNOCKBACK_EMOTE, 5000);
+                                extraEvents.RescheduleEvent(EVENT_RESET_KNOCKBACK_EMOTE, 5s);
                             }
                         }
                         events.RepeatEvent(urand(11000, 30000));
@@ -411,8 +412,8 @@ public:
                         me->SetReactState(REACT_PASSIVE);
                         me->InterruptNonMeleeSpells(false);
                         me->AttackStop();
-                        DoResetThreat();
-                        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE);
+                        DoResetThreatList();
+                        me->SetUnitFlag(UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE);
                         me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_SUBMERGED);
                         DoCastSelf(SPELL_RAGNA_SUBMERGE_VISUAL, true);
                         //me->HandleEmoteCommand(EMOTE_ONESHOT_SUBMERGE);
@@ -426,7 +427,7 @@ public:
                             _hasSubmergedOnce = true;
                         }
 
-                        extraEvents.ScheduleEvent(EVENT_EMERGE, 90000, PHASE_SUBMERGED, PHASE_SUBMERGED);
+                        extraEvents.ScheduleEvent(EVENT_EMERGE, 90s, PHASE_SUBMERGED, PHASE_SUBMERGED);
                         break;
                     }
                 }
@@ -444,6 +445,7 @@ public:
         EventMap extraEvents;
         bool _isIntroDone;
         bool _hasYelledMagmaBurst;
+        bool _processingMagmaBurst;
         bool _hasSubmergedOnce;
         bool _isKnockbackEmoteAllowed;  // Prevents possible text overlap
 
@@ -462,7 +464,7 @@ public:
             extraEvents.SetPhase(PHASE_EMERGED);
 
             me->SetReactState(REACT_AGGRESSIVE);
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE|UNIT_FLAG_NOT_SELECTABLE);
+            me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE|UNIT_FLAG_NOT_SELECTABLE);
             me->SetUInt32Value(UNIT_NPC_EMOTESTATE, 0);
             me->HandleEmoteCommand(EMOTE_ONESHOT_EMERGE);
 
@@ -476,13 +478,12 @@ public:
 
         void ScheduleCombatEvents()
         {
-            events.RescheduleEvent(EVENT_ERUPTION, 15000, PHASE_EMERGED, PHASE_EMERGED);
-            events.RescheduleEvent(EVENT_WRATH_OF_RAGNAROS, 30000, PHASE_EMERGED, PHASE_EMERGED);
-            events.RescheduleEvent(EVENT_HAND_OF_RAGNAROS, 25000, PHASE_EMERGED, PHASE_EMERGED);
-            events.RescheduleEvent(EVENT_LAVA_BURST, 10000, PHASE_EMERGED, PHASE_EMERGED);
-            events.RescheduleEvent(EVENT_MAGMA_BLAST_MELEE_CHECK, 10000, PHASE_EMERGED, PHASE_EMERGED);
-            events.RescheduleEvent(EVENT_SUBMERGE, 180000, PHASE_EMERGED, PHASE_EMERGED);
-            events.RescheduleEvent(EVENT_MIGHT_OF_RAGNAROS, 11000, PHASE_EMERGED, PHASE_EMERGED);
+            events.RescheduleEvent(EVENT_ERUPTION, 15s, PHASE_EMERGED, PHASE_EMERGED);
+            events.RescheduleEvent(EVENT_WRATH_OF_RAGNAROS, 30s, PHASE_EMERGED, PHASE_EMERGED);
+            events.RescheduleEvent(EVENT_HAND_OF_RAGNAROS, 25s, PHASE_EMERGED, PHASE_EMERGED);
+            events.RescheduleEvent(EVENT_LAVA_BURST, 10s, PHASE_EMERGED, PHASE_EMERGED);
+            events.RescheduleEvent(EVENT_SUBMERGE, 180s, PHASE_EMERGED, PHASE_EMERGED);
+            events.RescheduleEvent(EVENT_MIGHT_OF_RAGNAROS, 11s, PHASE_EMERGED, PHASE_EMERGED);
         }
 
         bool IsVictimWithinMeleeRange() const

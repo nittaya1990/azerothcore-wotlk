@@ -15,8 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "InstanceMapScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "Vehicle.h"
 #include "eye_of_eternity.h"
@@ -97,7 +97,7 @@ public:
 
         void OnCreatureCreate(Creature* creature) override
         {
-            switch(creature->GetEntry())
+            switch (creature->GetEntry())
             {
                 case NPC_MALYGOS:
                     NPC_MalygosGUID = creature->GetGUID();
@@ -107,7 +107,7 @@ public:
 
         void OnGameObjectCreate(GameObject* go) override
         {
-            switch(go->GetEntry())
+            switch (go->GetEntry())
             {
                 case GO_IRIS_N:
                 case GO_IRIS_H:
@@ -124,7 +124,7 @@ public:
 
         void SetData(uint32 type, uint32 data) override
         {
-            switch(type)
+            switch (type)
             {
                 case DATA_IRIS_ACTIVATED:
                     if (EncounterStatus == NOT_STARTED)
@@ -134,7 +134,7 @@ public:
                     break;
                 case DATA_ENCOUNTER_STATUS:
                     EncounterStatus = data;
-                    switch(data)
+                    switch (data)
                     {
                         case NOT_STARTED:
                             bPokeAchiev = false;
@@ -184,7 +184,7 @@ public:
 
         ObjectGuid GetGuidData(uint32 type) const override
         {
-            switch(type)
+            switch (type)
             {
                 case DATA_MALYGOS_GUID:
                     return NPC_MalygosGUID;
@@ -195,7 +195,7 @@ public:
 
         void ProcessEvent(WorldObject* /*unit*/, uint32 eventId) override
         {
-            switch(eventId)
+            switch (eventId)
             {
                 case 20158:
                     if (GameObject* go = instance->GetGameObject(GO_PlatformGUID))
@@ -208,56 +208,32 @@ public:
             }
         }
 
-        std::string GetSaveData() override
+        void ReadSaveDataMore(std::istringstream& data) override
         {
-            OUT_SAVE_INST_DATA;
-            std::ostringstream saveStream;
-            saveStream << "E E " << EncounterStatus;
-            str_data = saveStream.str();
-            OUT_SAVE_INST_DATA_COMPLETE;
-            return str_data;
+            data >> EncounterStatus;
+
+            switch (EncounterStatus)
+            {
+                case IN_PROGRESS:
+                    EncounterStatus = NOT_STARTED;
+                    break;
+                case DONE:
+                    // destroy platform, hide iris
+                    ProcessEvent(nullptr, 20158);
+                    if (GameObject* go = instance->GetGameObject(GO_IrisGUID))
+                        go->SetPhaseMask(2, true);
+                    break;
+            }
         }
 
-        void Load(const char* in) override
+        void WriteSaveDataMore(std::ostringstream& data) override
         {
-            if( !in )
-            {
-                OUT_LOAD_INST_DATA_FAIL;
-                return;
-            }
-
-            OUT_LOAD_INST_DATA(in);
-
-            char dataHead1, dataHead2;
-            uint32 data0;
-            std::istringstream loadStream(in);
-            loadStream >> dataHead1 >> dataHead2 >> data0;
-
-            if( dataHead1 == 'E' && dataHead2 == 'E' )
-            {
-                EncounterStatus = data0;
-                switch(EncounterStatus)
-                {
-                    case IN_PROGRESS:
-                        EncounterStatus = NOT_STARTED;
-                        break;
-                    case DONE:
-                        // destroy platform, hide iris
-                        ProcessEvent(nullptr, 20158);
-                        if (GameObject* go = instance->GetGameObject(GO_IrisGUID))
-                            go->SetPhaseMask(2, true);
-                        break;
-                }
-            }
-            else
-                OUT_LOAD_INST_DATA_FAIL;
-
-            OUT_LOAD_INST_DATA_COMPLETE;
+            data << EncounterStatus;
         }
 
         bool CheckAchievementCriteriaMeet(uint32 criteria_id, Player const* source, Unit const*  /*target*/, uint32  /*miscvalue1*/) override
         {
-            switch(criteria_id)
+            switch (criteria_id)
             {
                 case ACHIEV_CRITERIA_A_POKE_IN_THE_EYE_10:
                 case ACHIEV_CRITERIA_A_POKE_IN_THE_EYE_25:

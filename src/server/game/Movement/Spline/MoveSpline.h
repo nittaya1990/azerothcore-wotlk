@@ -15,8 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef TRINITYSERVER_MOVEPLINE_H
-#define TRINITYSERVER_MOVEPLINE_H
+#ifndef AC_MOVEPLINE_H
+#define AC_MOVEPLINE_H
 
 #include "MoveSplineInitArgs.h"
 #include "Spline.h"
@@ -71,7 +71,7 @@ namespace Movement
         void init_spline(const MoveSplineInitArgs& args);
 
     protected:
-        [[nodiscard]] const MySpline::ControlArray& getPath(bool visual) const { return spline.getPoints(visual); }
+        [[nodiscard]] const MySpline::ControlArray& getPath() const { return spline.getPoints(); }
         void computeParabolicElevation(float& el) const;
         void computeFallElevation(float& el) const;
 
@@ -117,8 +117,8 @@ namespace Movement
         [[nodiscard]] bool isCyclic() const { return splineflags.cyclic; }
         [[nodiscard]] bool isFalling() const { return splineflags.falling; }
         [[nodiscard]] bool isWalking() const { return splineflags.walkmode; }
-        [[nodiscard]] Vector3 FinalDestination() const { return Initialized() ? spline.getPoint(spline.last(), false) : Vector3(); }
-        [[nodiscard]] Vector3 CurrentDestination() const { return Initialized() ? spline.getPoint(point_Idx + 1, false) : Vector3(); }
+        [[nodiscard]] Vector3 FinalDestination() const { return Initialized() ? spline.getPoint(spline.last()) : Vector3(); }
+        [[nodiscard]] Vector3 CurrentDestination() const { return Initialized() ? spline.getPoint(point_Idx + 1) : Vector3(); }
         [[nodiscard]] int32 currentPathIdx() const;
 
         [[nodiscard]] bool HasAnimation() const { return splineflags.animation; }
@@ -132,4 +132,4 @@ namespace Movement
         }
     };
 }
-#endif // TRINITYSERVER_MOVEPLINE_H
+#endif // AC_MOVEPLINE_H

@@ -19,7 +19,8 @@
 #define DEF_PINNACLE_H
 
 #include "CreatureAIImpl.h"
-#include "Opcodes.h"
+
+#define DataHeader "UP"
 
 #define UtgardePinnacleScriptName "instance_utgarde_pinnacle"
 

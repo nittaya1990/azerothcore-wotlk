@@ -21,11 +21,12 @@
  */
 
 #include "CombatAI.h"
+#include "CreatureScript.h"
 #include "Pet.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "SpellAuras.h"
+#include "SpellMgr.h"
 
 enum MageSpells
 {
@@ -101,7 +102,7 @@ struct npc_pet_mage_mirror_image : CasterAI
         while (ref)
         {
             if (Unit* unit = ref->GetSource()->GetOwner())
-                unit->AddThreat(me, ref->getThreat() - ref->getTempThreatModifier());
+                unit->AddThreat(me, ref->GetThreat() - ref->getTempThreatModifier());
             ref = ref->next();
         }
 
@@ -133,7 +134,7 @@ struct npc_pet_mage_mirror_image : CasterAI
     }
 
     // Do not reload Creature templates on evade mode enter - prevent visual lost
-    void EnterEvadeMode() override
+    void EnterEvadeMode(EvadeReason /*why*/) override
     {
         if (me->IsInEvadeMode() || !me->IsAlive())
             return;
@@ -158,13 +159,13 @@ struct npc_pet_mage_mirror_image : CasterAI
             _ebonGargoyleGUID.Clear();
         }
         Unit* owner = me->GetOwner();
-        if (owner && owner->GetTypeId() == TYPEID_PLAYER)
+        if (owner && owner->IsPlayer())
         {
             Unit* selection = owner->ToPlayer()->GetSelectedUnit();
 
             if (selection)
             {
-                me->getThreatMgr().resetAllAggro();
+                me->GetThreatMgr().ResetAllThreat();
                 me->AddThreat(selection, 1000000.0f);
 
                 if (owner->IsInCombat())
@@ -172,7 +173,7 @@ struct npc_pet_mage_mirror_image : CasterAI
             }
 
             if (!owner->IsInCombat() && !me->GetVictim())
-                EnterEvadeMode();
+                EnterEvadeMode(EVADE_REASON_OTHER);
         }
     }
 

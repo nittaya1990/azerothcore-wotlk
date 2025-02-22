@@ -260,13 +260,13 @@ BOOL WheatyExceptionReport::_GetProcessorName(TCHAR* sProcessorName, DWORD maxco
     return TRUE;
 }
 
-template<size_t size>
+template<std::size_t size>
 void ToTchar(wchar_t const* src, TCHAR (&dst)[size], std::true_type)
 {
     wcstombs_s(nullptr, dst, src, size);
 }
 
-template<size_t size>
+template<std::size_t size>
 void ToTchar(wchar_t const* src, TCHAR (&dst)[size], std::false_type)
 {
     wcscpy_s(dst, src);
@@ -674,8 +674,13 @@ void WheatyExceptionReport::GenerateExceptionReport(
         // Initialize DbgHelp
         if (!SymInitialize(GetCurrentProcess(), 0, TRUE))
         {
-            Log(_T("\n\rCRITICAL ERROR.\n\r Couldn't initialize the symbol handler for process.\n\rError [%s].\n\r\n\r"),
-                ErrorMessage(GetLastError()));
+            Log(_T("\r\n"));
+            Log(_T("----\r\n"));
+            Log(_T("SYMBOL HANDLER ERROR (THIS IS NOT THE CRASH ERROR)\r\n\r\n"));
+            Log(_T("Couldn't initialize symbol handler for process when generating crash report\r\n"));
+            Log(_T("Error: %s\r\n"), ErrorMessage(GetLastError()));
+            Log(_T("THE BELOW CALL STACKS MIGHT HAVE MISSING OR INACCURATE FILE/FUNCTION NAMES\r\n\r\n"));
+            Log(_T("----\r\n"));
         }
 
         CONTEXT trashableContext = *pCtx;
@@ -1450,8 +1455,8 @@ void WheatyExceptionReport::FormatOutputValue(char* pszCurrBuffer,
         BasicType basicType,
         DWORD64 length,
         PVOID pAddress,
-        size_t bufferSize,
-        size_t countOverride)
+        std::size_t bufferSize,
+        std::size_t countOverride)
 {
     __try
     {
@@ -1672,7 +1677,7 @@ void WheatyExceptionReport::PrintSymbolDetail()
     }
 
     // Add appropriate indentation level (since this routine is recursive)
-    for (size_t i = 0; i < symbolDetails.size(); i++)
+    for (std::size_t i = 0; i < symbolDetails.size(); i++)
     {
         Log(_T("\t"));
     }

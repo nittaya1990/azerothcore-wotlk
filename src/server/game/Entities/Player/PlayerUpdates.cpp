@@ -15,6 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "AchievementMgr.h"
 #include "BattlefieldMgr.h"
 #include "CellImpl.h"
 #include "Channel.h"
@@ -35,10 +36,12 @@
 #include "SpellMgr.h"
 #include "UpdateFieldFlags.h"
 #include "Vehicle.h"
+#include "Weather.h"
 #include "WeatherMgr.h"
+#include "WorldState.h"
 #include "WorldStatePackets.h"
 
-// TODO: this import is not necessary for compilation and marked as unused by the IDE
+/// @todo: this import is not necessary for compilation and marked as unused by the IDE
 //  however, for some reasons removing it would cause a damn linking issue
 //  there is probably some underlying problem with imports which should properly addressed
 //  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
@@ -52,7 +55,7 @@ void Player::Update(uint32 p_time)
     if (!IsInWorld())
         return;
 
-    sScriptMgr->OnBeforePlayerUpdate(this, p_time);
+    sScriptMgr->OnPlayerBeforeUpdate(this, p_time);
 
     // undelivered mail
     if (m_nextMailDelivereTime && m_nextMailDelivereTime <= GameTime::GetGameTime().count())
@@ -76,6 +79,7 @@ void Player::Update(uint32 p_time)
 
     // used to implement delayed far teleports
     SetMustDelayTeleport(true);
+    ProcessSpellQueue();
     Unit::Update(p_time);
     SetMustDelayTeleport(false);
 
@@ -94,7 +98,7 @@ void Player::Update(uint32 p_time)
 
     // Xinef: update charm AI only if we are controlled by creature or
     // non-posses player charm
-    if (IsCharmed() && !HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_POSSESSED))
+    if (IsCharmed() && !HasUnitFlag(UNIT_FLAG_POSSESSED))
     {
         m_charmUpdateTimer += p_time;
         if (m_charmUpdateTimer >= 1000)
@@ -157,14 +161,14 @@ void Player::Update(uint32 p_time)
         }
     }
 
-    m_achievementMgr->UpdateTimedAchievements(p_time);
+    m_achievementMgr->Update(p_time);
 
     if (HasUnitState(UNIT_STATE_MELEE_ATTACKING) && !HasUnitState(UNIT_STATE_CASTING) && !HasUnitState(UNIT_STATE_CHARGING))
     {
         if (Unit* victim = GetVictim())
         {
             // default combat reach 10
-            // TODO add weapon, skill check
+            /// @todo add weapon, skill check
 
             if (isAttackReady(BASE_ATTACK))
             {
@@ -193,7 +197,7 @@ void Player::Update(uint32 p_time)
 
                     // prevent base and off attack in same time, delay attack at
                     // 0.2 sec
-                    if (haveOffhandWeapon())
+                    if (HasOffhandWeaponForAttack())
                         if (getAttackTimer(OFF_ATTACK) < ATTACK_DISPLAY_DELAY)
                             setAttackTimer(OFF_ATTACK, ATTACK_DISPLAY_DELAY);
 
@@ -203,7 +207,7 @@ void Player::Update(uint32 p_time)
                 }
             }
 
-            if (haveOffhandWeapon() && isAttackReady(OFF_ATTACK))
+            if (HasOffhandWeaponForAttack() && isAttackReady(OFF_ATTACK))
             {
                 if (!IsWithinMeleeRange(victim))
                     setAttackTimer(OFF_ATTACK, 100);
@@ -232,7 +236,7 @@ void Player::Update(uint32 p_time)
         }
     }
 
-    if (HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING))
+    if (HasPlayerFlag(PLAYER_FLAGS_RESTING))
     {
         if (now > lastTick && _restTime > 0) // freeze update
         {
@@ -263,7 +267,7 @@ void Player::Update(uint32 p_time)
 
     if (!IsPositionValid()) // pussywizard: will crash below at eg. GetZoneAndAreaId
     {
-        LOG_INFO("misc", "Player::Update - invalid position ({0:.1f}, {0:.1f}, {0:.1f})! Map: {}, MapId: {}, {}",
+        LOG_INFO("misc", "Player::Update - invalid position ({:0.1f}, {:0.1f}, {:0.1f})! Map: {}, MapId: {}, {}",
             GetPositionX(), GetPositionY(), GetPositionZ(), (FindMap() ? FindMap()->GetId() : 0), GetMapId(), GetGUID().ToString());
         GetSession()->KickPlayer("Invalid position");
         return;
@@ -277,10 +281,11 @@ void Player::Update(uint32 p_time)
             // supposed to be in one
             if (HasRestFlag(REST_FLAG_IN_TAVERN))
             {
-                AreaTrigger const* atEntry =
-                    sObjectMgr->GetAreaTrigger(GetInnTriggerId());
-                if (!atEntry || !IsInAreaTriggerRadius(atEntry))
+                AreaTrigger const* atEntry = sObjectMgr->GetAreaTrigger(GetInnTriggerId());
+                if (!atEntry || !IsInAreaTriggerRadius(atEntry, 5.f))
+                {
                     RemoveRestFlag(REST_FLAG_IN_TAVERN);
+                }
             }
 
             uint32 newzone, newarea;
@@ -310,7 +315,7 @@ void Player::Update(uint32 p_time)
         RegenerateAll();
     }
 
-    if (m_deathState == JUST_DIED)
+    if (m_deathState == DeathState::JustDied)
         KillPlayer();
 
     if (m_nextSave)
@@ -352,7 +357,7 @@ void Player::Update(uint32 p_time)
 
     // not auto-free ghost from body in instances
     if (m_deathTimer > 0 && !GetMap()->Instanceable() &&
-        !HasAuraType(SPELL_AURA_PREVENT_RESURRECTION))
+        !HasPreventResurectionAura())
     {
         if (p_time >= m_deathTimer)
         {
@@ -432,31 +437,65 @@ void Player::UpdateNextMailTimeAndUnreads()
 {
     // Update the next delivery time and unread mails
     time_t cTime = GameTime::GetGameTime().count();
-    // Get the next delivery time
-    CharacterDatabasePreparedStatement* stmtNextDeliveryTime =
-        CharacterDatabase.GetPreparedStatement(CHAR_SEL_NEXT_MAIL_DELIVERYTIME);
-    stmtNextDeliveryTime->SetData(0, GetGUID().GetCounter());
-    stmtNextDeliveryTime->SetData(1, uint32(cTime));
-    PreparedQueryResult resultNextDeliveryTime =
-        CharacterDatabase.Query(stmtNextDeliveryTime);
-    if (resultNextDeliveryTime)
-    {
-        Field* fields          = resultNextDeliveryTime->Fetch();
-        m_nextMailDelivereTime = time_t(fields[0].Get<uint32>());
-    }
 
-    // Get unread mails count
-    CharacterDatabasePreparedStatement* stmtUnreadAmount =
-        CharacterDatabase.GetPreparedStatement(
-            CHAR_SEL_CHARACTER_MAILCOUNT_UNREAD_SYNCH);
-    stmtUnreadAmount->SetData(0, GetGUID().GetCounter());
-    stmtUnreadAmount->SetData(1, uint32(cTime));
-    PreparedQueryResult resultUnreadAmount =
-        CharacterDatabase.Query(stmtUnreadAmount);
-    if (resultUnreadAmount)
+    m_nextMailDelivereTime = 0;
+    unReadMails = 0;
+
+    for (Mail const* mail : GetMails())
     {
-        Field* fields = resultUnreadAmount->Fetch();
-        unReadMails   = uint8(fields[0].Get<uint64>());
+        if (mail->deliver_time > cTime)
+        {
+            if (!m_nextMailDelivereTime || m_nextMailDelivereTime > mail->deliver_time)
+                m_nextMailDelivereTime = mail->deliver_time;
+        }
+
+        // must be not checked yet
+        if (mail->checked & MAIL_CHECK_MASK_READ)
+            continue;
+
+        // and already delivered or expired
+        if (cTime < mail->deliver_time || cTime > mail->expire_time)
+            continue;
+
+        unReadMails++;
+    }
+}
+
+void Player::UpdateLFGChannel()
+{
+    if (!sWorld->getBoolConfig(CONFIG_RESTRICTED_LFG_CHANNEL))
+        return;
+
+    ChannelMgr* cMgr = ChannelMgr::forTeam(GetTeamId());
+    if (!cMgr)
+        return;
+
+    ChatChannelsEntry const* cce = sChatChannelsStore.LookupEntry(26); /*LookingForGroup*/
+    Channel* cLFG = cMgr->GetJoinChannel(cce->pattern[m_session->GetSessionDbcLocale()], cce->ChannelID);
+    if (!cLFG)
+        return;
+
+    Channel* cUsed = nullptr;
+    for (Channel* channel : m_channels)
+        if (channel && channel->GetChannelId() == cce->ChannelID)
+        {
+            cUsed = cLFG;
+            break;
+        }
+
+    if (IsUsingLfg())
+    {
+        if (cUsed == cLFG)
+            return;
+
+        cLFG->JoinChannel(this, "");
+    }
+    else
+    {
+        if (cLFG != cUsed)
+            return;
+
+        cLFG->LeaveChannel(this, true);
     }
 }
 
@@ -488,12 +527,11 @@ void Player::UpdateLocalChannels(uint32 newZone)
         {
             Channel* usedChannel = nullptr;
 
-            for (JoinedChannelsList::iterator itr = m_channels.begin();
-                 itr != m_channels.end(); ++itr)
+            for (Channel* channel : m_channels)
             {
-                if ((*itr)->GetChannelId() == i)
+                if (channel && channel->GetChannelId() == i)
                 {
-                    usedChannel = *itr;
+                    usedChannel = channel;
                     break;
                 }
             }
@@ -512,17 +550,16 @@ void Player::UpdateLocalChannels(uint32 newZone)
                                   // names are not changing
 
                     char        new_channel_name_buf[100];
-                    char const* currentNameExt;
+                    std::string currentNameExt;
 
                     if (channel->flags & CHANNEL_DBC_FLAG_CITY_ONLY)
-                        currentNameExt = sObjectMgr->GetAcoreStringForDBCLocale(
-                            LANG_CHANNEL_CITY);
+                        currentNameExt = sObjectMgr->GetAcoreStringForDBCLocale(LANG_CHANNEL_CITY);
                     else
-                        currentNameExt = current_zone_name.c_str();
+                        currentNameExt = current_zone_name;
 
                     snprintf(new_channel_name_buf, 100,
                              channel->pattern[m_session->GetSessionDbcLocale()],
-                             currentNameExt);
+                             currentNameExt.c_str());
 
                     joinChannel = cMgr->GetJoinChannel(new_channel_name_buf,
                                                        channel->ChannelID);
@@ -671,7 +708,7 @@ void Player::UpdateAllRatings()
 // skill+step, checking for max value
 bool Player::UpdateSkill(uint32 skill_id, uint32 step)
 {
-    if (!skill_id)
+    if (!skill_id || !sScriptMgr->OnPlayerCanUpdateSkill(this, skill_id))
         return false;
 
     SkillStatusMap::iterator itr = mSkillStatus.find(skill_id);
@@ -682,6 +719,8 @@ bool Player::UpdateSkill(uint32 skill_id, uint32 step)
     uint32 data       = GetUInt32Value(valueIndex);
     uint32 value      = SKILL_VALUE(data);
     uint32 max        = SKILL_MAX(data);
+
+    sScriptMgr->OnPlayerBeforeUpdateSkill(this, skill_id, value, max, step);
 
     if ((!max) || (!value) || (value >= max))
         return false;
@@ -699,6 +738,8 @@ bool Player::UpdateSkill(uint32 skill_id, uint32 step)
         UpdateSkillEnchantments(skill_id, value, new_value);
         UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_REACH_SKILL_LEVEL,
                                   skill_id);
+
+        sScriptMgr->OnPlayerUpdateSkill(this, skill_id, value, max, step, new_value);
         return true;
     }
 
@@ -727,6 +768,7 @@ bool Player::UpdateGatherSkill(uint32 SkillId, uint32 SkillValue,
 
     uint32 gathering_skill_gain =
         sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING);
+    sScriptMgr->OnPlayerUpdateGatheringSkill(this, SkillId, SkillValue, RedLevel + 100, RedLevel + 50, RedLevel + 25, gathering_skill_gain);
 
     // For skinning and Mining chance decrease with level. 1-74 - no decrease,
     // 75-149 - 2 times, 225-299 - 8 times
@@ -794,8 +836,8 @@ bool Player::UpdateCraftSkill(uint32 spellid)
                 GetPureSkillValue(_spell_idx->second->SkillLine);
 
             // Alchemy Discoveries here
-            SpellInfo const* spellEntry = sSpellMgr->GetSpellInfo(spellid);
-            if (spellEntry && spellEntry->Mechanic == MECHANIC_DISCOVERY)
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellid);
+            if (spellInfo && spellInfo->Mechanic == MECHANIC_DISCOVERY)
             {
                 if (uint32 discoveredSpell = GetSkillDiscoverySpell(
                         _spell_idx->second->SkillLine, spellid, this))
@@ -804,6 +846,7 @@ bool Player::UpdateCraftSkill(uint32 spellid)
 
             uint32 craft_skill_gain =
                 sWorld->getIntConfig(CONFIG_SKILL_GAIN_CRAFTING);
+            sScriptMgr->OnPlayerUpdateCraftingSkill(this, _spell_idx->second, SkillValue, craft_skill_gain);
 
             return UpdateSkillPro(
                 _spell_idx->second->SkillLine,
@@ -864,7 +907,7 @@ bool Player::UpdateFishingSkill()
 // bonus abilities in sSkillLineAbilityStore
 // Used only to avoid scan DBC at each skill grow
 static uint32       bonusSkillLevels[] = {75, 150, 225, 300, 375, 450};
-static const size_t bonusSkillLevelsSize =
+static const std::size_t bonusSkillLevelsSize =
     sizeof(bonusSkillLevels) / sizeof(uint32);
 
 bool Player::UpdateSkillPro(uint16 SkillId, int32 Chance, uint32 step)
@@ -872,7 +915,7 @@ bool Player::UpdateSkillPro(uint16 SkillId, int32 Chance, uint32 step)
     LOG_DEBUG("entities.player.skills",
               "UpdateSkillPro(SkillId {}, Chance {:3.1f}%)", SkillId,
               Chance / 10.0f);
-    if (!SkillId)
+    if (!SkillId || !sScriptMgr->OnPlayerCanUpdateSkill(this, SkillId))
         return false;
 
     if (Chance <= 0) // speedup in 0 chance case
@@ -890,8 +933,10 @@ bool Player::UpdateSkillPro(uint16 SkillId, int32 Chance, uint32 step)
     uint32 valueIndex = PLAYER_SKILL_VALUE_INDEX(itr->second.pos);
 
     uint32 data       = GetUInt32Value(valueIndex);
-    uint16 SkillValue = SKILL_VALUE(data);
-    uint16 MaxValue   = SKILL_MAX(data);
+    uint32 SkillValue = SKILL_VALUE(data);
+    uint32 MaxValue   = SKILL_MAX(data);
+
+    sScriptMgr->OnPlayerBeforeUpdateSkill(this, SkillId, SkillValue, MaxValue, step);
 
     if (!MaxValue || !SkillValue || SkillValue >= MaxValue)
         return false;
@@ -908,7 +953,7 @@ bool Player::UpdateSkillPro(uint16 SkillId, int32 Chance, uint32 step)
         if (itr->second.uState != SKILL_NEW)
             itr->second.uState = SKILL_CHANGED;
 
-        for (size_t i = 0; i < bonusSkillLevelsSize; ++i)
+        for (std::size_t i = 0; i < bonusSkillLevelsSize; ++i)
         {
             uint32 bsl = bonusSkillLevels[i];
             if (SkillValue < bsl && new_value >= bsl)
@@ -923,6 +968,8 @@ bool Player::UpdateSkillPro(uint16 SkillId, int32 Chance, uint32 step)
         LOG_DEBUG("entities.player.skills",
                   "Player::UpdateSkillPro Chance={:3.1f}% taken",
                   Chance / 10.0f);
+
+        sScriptMgr->OnPlayerUpdateSkill(this, SkillId, SkillValue, MaxValue, step, new_value);
         return true;
     }
 
@@ -939,9 +986,7 @@ void Player::UpdateWeaponSkill(Unit* victim, WeaponAttackType attType, Item* ite
     if (GetShapeshiftForm() == FORM_TREE)
         return; // use weapon but not skill up
 
-    if (victim->GetTypeId() == TYPEID_UNIT &&
-        (victim->ToCreature()->GetCreatureTemplate()->flags_extra &
-         CREATURE_FLAG_EXTRA_NO_SKILL_GAINS))
+    if (victim->IsCreature() && victim->ToCreature()->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_SKILL_GAINS))
         return;
 
     uint32 weapon_skill_gain = sWorld->getIntConfig(CONFIG_SKILL_GAIN_WEAPON);
@@ -979,42 +1024,56 @@ void Player::UpdateWeaponSkill(Unit* victim, WeaponAttackType attType, Item* ite
 
 void Player::UpdateCombatSkills(Unit* victim, WeaponAttackType attType, bool defence, Item* item /*= nullptr*/)
 {
-    uint8 plevel    = getLevel(); // if defense than victim == attacker
-    uint8 greylevel = Acore::XP::GetGrayLevel(plevel);
-    uint8 moblevel  = victim->getLevelForTarget(this);
+    uint8  playerLevel = GetLevel();
+    uint16 currentSkillValue = defence ? GetBaseDefenseSkillValue() : GetBaseWeaponSkillValue(attType);
+    uint16 currentSkillMax = 5 * playerLevel;
+    int32  skillDiff = currentSkillMax - currentSkillValue;
+
+    // Max skill reached for level.
+    // Can in some cases be less than 0: having max skill and then .level -1 as example.
+    if (skillDiff <= 0)
+    {
+        return;
+    }
+
+    uint8 greylevel = Acore::XP::GetGrayLevel(playerLevel);
+    uint8 moblevel = defence ? victim->getLevelForTarget(this) : victim->GetLevel(); // if defense than victim == attacker
     /*if (moblevel < greylevel)
         return;*/
     // Patch 3.0.8 (2009-01-20): You can no longer skill up weapons on mobs that are immune to damage.
 
-    if (moblevel > plevel + 5)
-        moblevel = plevel + 5;
+    if (moblevel > playerLevel + 5)
+    {
+        moblevel = playerLevel + 5;
+    }
 
-    uint8 lvldif = moblevel - greylevel;
+    int16 lvldif = moblevel - greylevel;
     if (lvldif < 3)
+    {
         lvldif = 3;
+    }
 
-    uint32 skilldif = 5 * plevel - (defence ? GetBaseDefenseSkillValue()
-                                            : GetBaseWeaponSkillValue(attType));
-    if (skilldif <= 0)
-        return;
-
-    float chance = float(3 * lvldif * skilldif) / plevel;
+    float chance = float(3 * lvldif * skillDiff) / playerLevel;
     if (!defence)
-        if (getClass() == CLASS_WARRIOR || getClass() == CLASS_ROGUE)
-            chance += chance * 0.02f * GetStat(STAT_INTELLECT);
+    {
+        chance += chance * 0.02f * GetStat(STAT_INTELLECT);
+    }
 
-    chance =
-        chance < 1.0f ? 1.0f : chance; // minimum chance to increase skill is 1%
+    chance = chance < 1.0f ? 1.0f : chance; // minimum chance to increase skill is 1%
+
+    LOG_DEBUG("entities.player", "Player::UpdateCombatSkills(defence:{}, playerLevel:{}, moblevel:{}) -> ({}/{}) chance to increase skill is {}%", defence, playerLevel, moblevel, currentSkillValue, currentSkillMax, chance);
 
     if (roll_chance_f(chance))
     {
         if (defence)
+        {
             UpdateDefense();
+        }
         else
+        {
             UpdateWeaponSkill(victim, attType, item);
+        }
     }
-    else
-        return;
 }
 
 void Player::UpdateSkillsForLevel()
@@ -1113,7 +1172,7 @@ bool Player::UpdatePosition(float x, float y, float z, float orientation,
         SetGroupUpdateFlag(GROUP_UPDATE_FLAG_POSITION);
 
     if (GetTrader() && !IsWithinDistInMap(GetTrader(), INTERACTION_DISTANCE))
-        GetSession()->SendCancelTrade();
+        GetSession()->SendCancelTrade(TRADE_STATUS_TRADE_CANCELED);
 
     CheckAreaExploreAndOutdoor();
 
@@ -1192,10 +1251,15 @@ void Player::UpdateArea(uint32 newArea)
 
 void Player::UpdateZone(uint32 newZone, uint32 newArea)
 {
+    if (!newZone)
+        return;
+
     if (m_zoneUpdateId != newZone)
     {
         sOutdoorPvPMgr->HandlePlayerLeaveZone(this, m_zoneUpdateId);
         sOutdoorPvPMgr->HandlePlayerEnterZone(this, newZone);
+        sWorldState->HandlePlayerLeaveZone(this, static_cast<WorldStateZoneId>(m_zoneUpdateId));
+        sWorldState->HandlePlayerEnterZone(this, static_cast<WorldStateZoneId>(newZone));
         sBattlefieldMgr->HandlePlayerLeaveZone(this, m_zoneUpdateId);
         sBattlefieldMgr->HandlePlayerEnterZone(this, newZone);
         SendInitWorldStates(newZone,
@@ -1204,6 +1268,8 @@ void Player::UpdateZone(uint32 newZone, uint32 newArea)
         if (Guild* guild = GetGuild())
             guild->UpdateMemberData(this, GUILD_MEMBER_DATA_ZONEID, newZone);
     }
+
+    GetMap()->UpdatePlayerZoneStats(m_zoneUpdateId, newZone);
 
     // group update
     if (GetGroup())
@@ -1303,7 +1369,7 @@ void Player::UpdateEquipSpellsAtFormChange()
     }
 
     // item set bonuses not dependent from item broken state
-    for (size_t setindex = 0; setindex < ItemSetEff.size(); ++setindex)
+    for (std::size_t setindex = 0; setindex < ItemSetEff.size(); ++setindex)
     {
         ItemSetEffect* eff = ItemSetEff[setindex];
         if (!eff)
@@ -1317,7 +1383,7 @@ void Player::UpdateEquipSpellsAtFormChange()
 
             ApplyEquipSpell(spellInfo, nullptr, false,
                             true); // remove spells that not fit to form
-            if (!sScriptMgr->CanApplyEquipSpellsItemSet(this, eff))
+            if (!sScriptMgr->OnPlayerCanApplyEquipSpellsItemSet(this, eff))
                 break;
             ApplyEquipSpell(spellInfo, nullptr, true,
                             true); // add spells that fit form but not active
@@ -1379,7 +1445,7 @@ void Player::UpdatePvPState()
     }
     else // in friendly area
     {
-        if (IsPvP() && !HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_IN_PVP) &&
+        if (IsPvP() && !HasPlayerFlag(PLAYER_FLAGS_IN_PVP) &&
             pvpInfo.EndTimer == 0)
             pvpInfo.EndTimer = GameTime::GetGameTime().count(); // start toggle-off
     }
@@ -1387,7 +1453,7 @@ void Player::UpdatePvPState()
 
 void Player::UpdateFFAPvPState(bool reset /*= true*/)
 {
-    // TODO: should we always synchronize UNIT_FIELD_BYTES_2, 1 of controller
+    /// @todo: should we always synchronize UNIT_FIELD_BYTES_2, 1 of controller
     // and controlled? no, we shouldn't, those are checked for affecting player
     // by client
     if (!pvpInfo.IsInNoPvPArea && !IsGameMaster() &&
@@ -1395,6 +1461,7 @@ void Player::UpdateFFAPvPState(bool reset /*= true*/)
     {
         if (!IsFFAPvP())
         {
+            sScriptMgr->OnPlayerFfaPvpStateUpdate(this, true);
             SetByteFlag(UNIT_FIELD_BYTES_2, 1, UNIT_BYTE2_FLAG_FFA_PVP);
             for (ControlSet::iterator itr = m_Controlled.begin();
                  itr != m_Controlled.end(); ++itr)
@@ -1413,8 +1480,11 @@ void Player::UpdateFFAPvPState(bool reset /*= true*/)
             !pvpInfo.EndTimer)
         {
             pvpInfo.FFAPvPEndTimer = time_t(0);
-
-            RemoveByteFlag(UNIT_FIELD_BYTES_2, 1, UNIT_BYTE2_FLAG_FFA_PVP);
+            if (HasByteFlag(UNIT_FIELD_BYTES_2, 1, UNIT_BYTE2_FLAG_FFA_PVP))
+            {
+                RemoveByteFlag(UNIT_FIELD_BYTES_2, 1, UNIT_BYTE2_FLAG_FFA_PVP);
+                sScriptMgr->OnPlayerFfaPvpStateUpdate(this, false);
+            }
             for (ControlSet::iterator itr = m_Controlled.begin();
                  itr != m_Controlled.end(); ++itr)
                 (*itr)->RemoveByteFlag(UNIT_FIELD_BYTES_2, 1,
@@ -1467,7 +1537,7 @@ void Player::UpdatePvP(bool state, bool _override)
         SetPvP(state);
     }
 
-    RemoveFlag(PLAYER_FLAGS, PLAYER_FLAGS_PVP_TIMER);
+    RemovePlayerFlag(PLAYER_FLAGS_PVP_TIMER);
     sScriptMgr->OnPlayerPVPFlagChange(this, state);
 }
 
@@ -1543,6 +1613,10 @@ void Player::UpdateVisibilityForPlayer(bool mapChange)
 
 void Player::UpdateObjectVisibility(bool forced, bool fromUpdate)
 {
+    // Prevent updating visibility if player is not in world (example: LoadFromDB sets drunkstate which updates invisibility while player is not in map)
+    if (!IsInWorld())
+        return;
+
     if (!forced)
         AddToNotify(NOTIFY_VISIBILITY_CHANGED);
     else if (!isBeingLoaded())
@@ -1643,7 +1717,7 @@ void Player::UpdateVisibilityOf(WorldObject* target)
     {
         if (!CanSeeOrDetect(target, false, true))
         {
-            if (target->GetTypeId() == TYPEID_UNIT)
+            if (target->IsCreature())
                 BeforeVisibilityDestroy<Creature>(target->ToCreature(), this);
 
             target->DestroyForPlayer(this);
@@ -1660,7 +1734,7 @@ void Player::UpdateVisibilityOf(WorldObject* target)
             // target aura duration for caster show only if target exist at
             // caster client send data at target visibility change (adding to
             // client)
-            if (target->isType(TYPEMASK_UNIT))
+            if (target->IsUnit())
                 GetInitialVisiblePackets((Unit*) target);
         }
     }
@@ -1685,9 +1759,8 @@ void Player::UpdateTriggerVisibility()
             // Update fields of triggers, transformed units or unselectable
             // units (values dependent on GM state)
             if (!creature || (!creature->IsTrigger() &&
-                              !creature->HasAuraType(SPELL_AURA_TRANSFORM) &&
-                              !creature->HasFlag(UNIT_FIELD_FLAGS,
-                                                 UNIT_FLAG_NOT_SELECTABLE)))
+                              !creature->HasTransformAura() &&
+                              !creature->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE)))
                 continue;
 
             creature->SetFieldNotifyFlag(UF_FLAG_PUBLIC);
@@ -1709,7 +1782,7 @@ void Player::UpdateTriggerVisibility()
     if (!udata.HasData())
         return;
 
-    udata.BuildPacket(&packet);
+    udata.BuildPacket(packet);
     GetSession()->SendPacket(&packet);
 }
 
@@ -1734,29 +1807,34 @@ void Player::UpdateForQuestWorldObjects()
                 continue;
 
             // check if this unit requires quest specific flags
-            if (!obj->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
-                continue;
-
-            SpellClickInfoMapBounds clickPair = sObjectMgr->GetSpellClickInfoMapBounds(obj->GetEntry());
-            for (SpellClickInfoContainer::const_iterator _itr = clickPair.first; _itr != clickPair.second; ++_itr)
+            if (obj->HasNpcFlag(UNIT_NPC_FLAG_SPELLCLICK))
             {
-                //! This code doesn't look right, but it was logically converted to condition system to do the exact
-                //! same thing it did before. It definitely needs to be overlooked for intended functionality.
-                ConditionList conds = sConditionMgr->GetConditionsForSpellClickEvent(obj->GetEntry(), _itr->second.spellId);
-                bool buildUpdateBlock = false;
-                for (ConditionList::const_iterator jtr = conds.begin(); jtr != conds.end() && !buildUpdateBlock; ++jtr)
-                    if ((*jtr)->ConditionType == CONDITION_QUESTREWARDED || (*jtr)->ConditionType == CONDITION_QUESTTAKEN)
-                        buildUpdateBlock = true;
-
-                if (buildUpdateBlock)
+                SpellClickInfoMapBounds clickPair = sObjectMgr->GetSpellClickInfoMapBounds(obj->GetEntry());
+                for (SpellClickInfoContainer::const_iterator _itr = clickPair.first; _itr != clickPair.second; ++_itr)
                 {
-                    obj->BuildValuesUpdateBlockForPlayer(&udata, this);
-                    break;
+                    //! This code doesn't look right, but it was logically converted to condition system to do the exact
+                    //! same thing it did before. It definitely needs to be overlooked for intended functionality.
+                    ConditionList conds = sConditionMgr->GetConditionsForSpellClickEvent(obj->GetEntry(), _itr->second.spellId);
+                    bool buildUpdateBlock = false;
+                    for (ConditionList::const_iterator jtr = conds.begin(); jtr != conds.end() && !buildUpdateBlock; ++jtr)
+                        if ((*jtr)->ConditionType == CONDITION_QUESTREWARDED || (*jtr)->ConditionType == CONDITION_QUESTTAKEN)
+                            buildUpdateBlock = true;
+
+                    if (buildUpdateBlock)
+                    {
+                        obj->BuildValuesUpdateBlockForPlayer(&udata, this);
+                        break;
+                    }
                 }
+            }
+            else if (obj->HasNpcFlag(UNIT_NPC_FLAG_VENDOR_MASK | UNIT_NPC_FLAG_TRAINER))
+            {
+                obj->BuildValuesUpdateBlockForPlayer(&udata, this);
             }
         }
     }
-    udata.BuildPacket(&packet);
+
+    udata.BuildPacket(packet);
     GetSession()->SendPacket(&packet);
 }
 
@@ -1882,7 +1960,7 @@ void Player::UpdateCharmedAI()
 
     // Xinef: we should be killed if caster enters evade mode and charm is
     // infinite
-    if (charmer->GetTypeId() == TYPEID_UNIT &&
+    if (charmer->IsCreature() &&
         charmer->ToCreature()->IsInEvadeMode())
     {
         AuraEffectList const& auras =
@@ -1915,7 +1993,7 @@ void Player::UpdateCharmedAI()
                           1 << (CLASS_PRIEST - 1));
 
     // Xinef: charmer type specific actions
-    if (charmer->GetTypeId() == TYPEID_PLAYER)
+    if (charmer->IsPlayer())
     {
         bool follow = false;
         if (!target)
@@ -1946,7 +2024,7 @@ void Player::UpdateCharmedAI()
 
     if (!target || !IsValidAttackTarget(target))
     {
-        target = SelectNearbyTarget(nullptr, 30);
+        target = SelectNearbyTarget(nullptr, GetMap()->IsDungeon() ? 100.f : 30.f);
         if (!target)
         {
             if (!HasUnitState(UNIT_STATE_FOLLOW))
@@ -2220,4 +2298,104 @@ void Player::ProcessTerrainStatusUpdate()
     }
     else
         m_MirrorTimerFlags &= ~(UNDERWATER_INWATER | UNDERWATER_INLAVA | UNDERWATER_INSLIME | UNDERWATER_INDARKWATER);
+}
+
+uint32 Player::GetSpellQueueWindow() const
+{
+    return sWorld->getIntConfig(CONFIG_SPELL_QUEUE_WINDOW);
+}
+
+bool Player::CanExecutePendingSpellCastRequest(SpellInfo const* spellInfo)
+{
+    if (GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo))
+        return false;
+
+    if (GetSpellCooldownDelay(spellInfo->Id) > GetSpellQueueWindow())
+        return false;
+
+    for (CurrentSpellTypes spellSlot : {CURRENT_MELEE_SPELL, CURRENT_GENERIC_SPELL})
+        if (Spell* spell = GetCurrentSpell(spellSlot))
+        {
+            bool autoshot = spell->m_spellInfo->IsAutoRepeatRangedSpell();
+            if (IsNonMeleeSpellCast(false, true, true, autoshot))
+                return false;
+        }
+    return true;
+}
+
+const PendingSpellCastRequest* Player::GetCastRequest(uint32 category) const
+{
+    for (const PendingSpellCastRequest& request : SpellQueue)
+        if (request.category == category)
+            return &request;
+    return nullptr;
+}
+
+bool Player::CanRequestSpellCast(SpellInfo const* spellInfo)
+{
+    if (!sWorld->getBoolConfig(CONFIG_SPELL_QUEUE_ENABLED))
+        return false;
+
+    // Check for existing cast request with the same category
+    if (GetCastRequest(spellInfo->GetCategory()))
+        return false;
+
+    if (GetGlobalCooldownMgr().GetGlobalCooldown(spellInfo) > GetSpellQueueWindow())
+        return false;
+
+    if (GetSpellCooldownDelay(spellInfo->Id) > GetSpellQueueWindow())
+        return false;
+
+    // If there is an existing cast that will last longer than the allowable
+    // spell queue window, then we can't request a new spell cast
+    for (CurrentSpellTypes spellSlot : { CURRENT_MELEE_SPELL, CURRENT_GENERIC_SPELL })
+        if (Spell* spell = GetCurrentSpell(spellSlot))
+            if (spell->GetCastTimeRemaining() > static_cast<int32>(GetSpellQueueWindow()))
+                return false;
+
+    return true;
+}
+
+void Player::ExecuteOrCancelSpellCastRequest(PendingSpellCastRequest* request, bool isCancel /* = false*/)
+{
+    if (isCancel)
+        request->cancelInProgress = true;
+
+    if (WorldSession* session = GetSession())
+    {
+        if (request->isItem)
+            session->HandleUseItemOpcode(request->requestPacket);
+        else
+            session->HandleCastSpellOpcode(request->requestPacket);
+    }
+}
+
+void Player::ProcessSpellQueue()
+{
+    while (!SpellQueue.empty())
+    {
+        PendingSpellCastRequest& request = SpellQueue.front(); // Peek at the first spell
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(request.spellId);
+        if (!spellInfo)
+        {
+            LOG_ERROR("entities.player", "Player::ProcessSpellQueue: Invalid spell {}", request.spellId);
+            SpellQueue.clear();
+            break;
+        }
+        if (CanExecutePendingSpellCastRequest(spellInfo))
+        {
+            ExecuteOrCancelSpellCastRequest(&request);
+
+            // ExecuteOrCancelSpellCastRequest() can lead to clearing the SpellQueue.
+            // Example scenario:
+            //   Handling a spell → Dealing damage to yourself (e.g., spell_pri_vampiric_touch) →
+            //   Killing yourself → Player::setDeathState() → SpellQueue.clear().
+            // Calling std::deque::pop_front() on an empty deque results in undefined behavior,
+            // so an additional check is added.
+            if (!SpellQueue.empty())
+                SpellQueue.pop_front();
+        }
+        else // If the first spell can't execute, stop processing
+            break;
+    }
 }

@@ -17,8 +17,9 @@
 
 #include "Position.h"
 #include "ByteBuffer.h"
-#include "GridDefines.h"
 #include "Geometry.h"
+#include "GridDefines.h"
+#include "Random.h"
 #include <G3D/g3dmath.h>
 #include <sstream>
 
@@ -207,4 +208,11 @@ ByteBuffer& operator<<(ByteBuffer& buf, Position::PositionXYZOStreamer const& st
     streamer.m_pos->GetPosition(x, y, z, o);
     buf << x << y << z << o;
     return buf;
+}
+
+std::string WorldLocation::GetDebugInfo() const
+{
+    std::stringstream sstr;
+    sstr << "MapID: " << m_mapId << " " << Position::ToString();
+    return sstr.str();
 }

@@ -18,9 +18,9 @@
 #include "ChannelMgr.h"
 #include "Log.h"
 #include "Player.h"
-#include "World.h"
-#include "Tokenize.h"
 #include "StringConvert.h"
+#include "Tokenize.h"
+#include "World.h"
 
 ChannelMgr::~ChannelMgr()
 {
@@ -56,7 +56,7 @@ void ChannelMgr::LoadChannels()
     QueryResult result = CharacterDatabase.Query("SELECT channelId, name, team, announce, ownership, password FROM channels ORDER BY channelId ASC");
     if (!result)
     {
-        LOG_INFO("server.loading", ">> Loaded 0 channels. DB table `channels` is empty.");
+        LOG_WARN("server.loading", ">> Loaded 0 channels. DB table `channels` is empty.");
         return;
     }
 
@@ -74,7 +74,7 @@ void ChannelMgr::LoadChannels()
         if (!Utf8toWStr(channelName, channelWName))
         {
             LOG_ERROR("server.loading", "Failed to load channel '{}' from database - invalid utf8 sequence? Deleted.", channelName);
-            toDelete.push_back({ channelName, team });
+            toDelete.emplace_back(channelName, team);
             continue;
         }
 
@@ -82,7 +82,7 @@ void ChannelMgr::LoadChannels()
         if (!mgr)
         {
             LOG_ERROR("server.loading", "Failed to load custom chat channel '{}' from database - invalid team {}. Deleted.", channelName, team);
-            toDelete.push_back({ channelName, team });
+            toDelete.emplace_back(channelName, team);
             continue;
         }
 
@@ -106,7 +106,7 @@ void ChannelMgr::LoadChannels()
         ++count;
     } while (result->NextRow());
 
-    for (auto pair : toDelete)
+    for (auto& pair : toDelete)
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHANNEL);
         stmt->SetData(0, pair.first);
@@ -171,7 +171,7 @@ void ChannelMgr::LoadChannelRights()
     QueryResult result = CharacterDatabase.Query("SELECT name, flags, speakdelay, joinmessage, delaymessage, moderators FROM channels_rights");
     if (!result)
     {
-        LOG_INFO("server.loading", ">>  Loaded 0 Channel Rights!");
+        LOG_WARN("server.loading", ">> Loaded 0 Channel Rights!");
         LOG_INFO("server.loading", " ");
         return;
     }

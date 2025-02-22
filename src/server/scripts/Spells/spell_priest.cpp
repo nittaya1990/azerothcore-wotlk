@@ -15,18 +15,19 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
+#include "GridNotifiers.h"
+#include "Player.h"
+#include "SpellAuraEffects.h"
+#include "SpellMgr.h"
+#include "SpellScript.h"
+#include "SpellScriptLoader.h"
+#include "TemporarySummon.h"
 /*
  * Scripts for spells with SPELLFAMILY_PRIEST and SPELLFAMILY_GENERIC spells used by priest players.
  * Ordered alphabetically using scriptname.
  * Scriptnames of files in this file should be prefixed with "spell_pri_".
  */
-
-#include "GridNotifiers.h"
-#include "Player.h"
-#include "ScriptMgr.h"
-#include "SpellAuraEffects.h"
-#include "SpellMgr.h"
-#include "SpellScript.h"
 
 enum PriestSpells
 {
@@ -37,6 +38,7 @@ enum PriestSpells
     SPELL_PRIEST_GLYPH_OF_PRAYER_OF_HEALING_HEAL    = 56161,
     SPELL_PRIEST_GUARDIAN_SPIRIT_HEAL               = 48153,
     SPELL_PRIEST_ITEM_EFFICIENCY                    = 37595,
+    SPELL_PRIEST_LIGHTWELL_CHARGES                  = 59907,
     SPELL_PRIEST_MANA_LEECH_PROC                    = 34650,
     SPELL_PRIEST_PENANCE_R1                         = 47540,
     SPELL_PRIEST_PENANCE_R1_DAMAGE                  = 47758,
@@ -46,6 +48,9 @@ enum PriestSpells
     SPELL_PRIEST_SHADOW_WORD_DEATH                  = 32409,
     SPELL_PRIEST_T9_HEALING_2P                      = 67201,
     SPELL_PRIEST_VAMPIRIC_TOUCH_DISPEL              = 64085,
+    SPELL_PRIEST_T4_4P_FLEXIBILITY                  = 37565,
+    SPELL_PRIEST_GLYPH_OF_SHADOWFIEND               = 58228,
+    SPELL_PRIEST_GLYPH_OF_SHADOWFIEND_MANA          = 58227,
 
     SPELL_GENERIC_ARENA_DAMPENING                   = 74410,
     SPELL_GENERIC_BATTLEGROUND_DAMPENING            = 74411,
@@ -59,6 +64,16 @@ enum PriestSpellIcons
     PRIEST_ICON_ID_BORROWED_TIME                    = 2899,
     PRIEST_ICON_ID_EMPOWERED_RENEW_TALENT           = 3021,
     PRIEST_ICON_ID_PAIN_AND_SUFFERING               = 2874,
+};
+
+enum Mics
+{
+    PRIEST_LIGHTWELL_NPC_1                          = 31897,
+    PRIEST_LIGHTWELL_NPC_2                          = 31896,
+    PRIEST_LIGHTWELL_NPC_3                          = 31895,
+    PRIEST_LIGHTWELL_NPC_4                          = 31894,
+    PRIEST_LIGHTWELL_NPC_5                          = 31893,
+    PRIEST_LIGHTWELL_NPC_6                          = 31883
 };
 
 class spell_pri_shadowfiend_scaling : public AuraScript
@@ -105,7 +120,7 @@ class spell_pri_shadowfiend_scaling : public AuraScript
             amount = CalculatePct(std::max<int32>(0, shadow), 30);
 
             // xinef: Update appropriate player field
-            if (owner->GetTypeId() == TYPEID_PLAYER)
+            if (owner->IsPlayer())
                 owner->SetUInt32Value(PLAYER_PET_SPELL_POWER, (uint32)amount);
         }
     }
@@ -191,7 +206,7 @@ class spell_pri_divine_aegis : public AuraScript
         if (AuraEffect const* aegis = eventInfo.GetProcTarget()->GetAuraEffect(SPELL_PRIEST_DIVINE_AEGIS, EFFECT_0))
             absorb += aegis->GetAmount();
 
-        absorb = std::min(absorb, eventInfo.GetProcTarget()->getLevel() * 125);
+        absorb = std::min(absorb, eventInfo.GetProcTarget()->GetLevel() * 125);
 
         GetTarget()->CastCustomSpell(SPELL_PRIEST_DIVINE_AEGIS, SPELLVALUE_BASE_POINT0, absorb, eventInfo.GetProcTarget(), true, nullptr, aurEff);
     }
@@ -359,6 +374,48 @@ class spell_pri_item_greater_heal_refund : public AuraScript
     }
 };
 
+// 60123 - Lightwell
+class spell_pri_lightwell : public SpellScript
+{
+    PrepareSpellScript(spell_pri_lightwell);
+
+    bool Load() override
+    {
+        return GetCaster()->IsCreature();
+    }
+
+    void HandleScriptEffect(SpellEffIndex /* effIndex */)
+    {
+        Creature* caster = GetCaster()->ToCreature();
+        if (!caster || !caster->IsSummon())
+            return;
+
+        uint32 lightwellRenew = 0;
+        switch (caster->GetEntry())
+        {
+            case PRIEST_LIGHTWELL_NPC_1: lightwellRenew = 7001; break;
+            case PRIEST_LIGHTWELL_NPC_2: lightwellRenew = 27873; break;
+            case PRIEST_LIGHTWELL_NPC_3: lightwellRenew = 27874; break;
+            case PRIEST_LIGHTWELL_NPC_4: lightwellRenew = 28276; break;
+            case PRIEST_LIGHTWELL_NPC_5: lightwellRenew = 48084; break;
+            case PRIEST_LIGHTWELL_NPC_6: lightwellRenew = 48085; break;
+        }
+
+        // proc a spellcast
+        if (Aura* chargesAura = caster->GetAura(SPELL_PRIEST_LIGHTWELL_CHARGES))
+        {
+            caster->CastSpell(GetHitUnit(), lightwellRenew, caster->ToTempSummon()->GetSummonerGUID());
+            if (chargesAura->ModCharges(-1))
+                caster->ToTempSummon()->UnSummon();
+        }
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_pri_lightwell::HandleScriptEffect, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
 // -7001 - Lightwell Renew
 class spell_pri_lightwell_renew : public AuraScript
 {
@@ -374,9 +431,26 @@ class spell_pri_lightwell_renew : public AuraScript
         }
     }
 
+    void HandleUpdateSpellclick(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Unit* caster = GetCaster())
+        {
+            if (Player* player = GetTarget()->ToPlayer())
+            {
+                UpdateData data;
+                WorldPacket packet;
+                caster->BuildValuesUpdateBlockForPlayer(&data, player);
+                data.BuildPacket(packet);
+                player->SendDirectMessage(&packet);
+            }
+        }
+    }
+
     void Register() override
     {
         DoEffectCalcAmount += AuraEffectCalcAmountFn(spell_pri_lightwell_renew::CalculateAmount, EFFECT_0, SPELL_AURA_PERIODIC_HEAL);
+        AfterEffectApply += AuraEffectApplyFn(spell_pri_lightwell_renew::HandleUpdateSpellclick, EFFECT_0, SPELL_AURA_PERIODIC_HEAL, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_pri_lightwell_renew::HandleUpdateSpellclick, EFFECT_0, SPELL_AURA_PERIODIC_HEAL, AURA_EFFECT_HANDLE_REAL);
     }
 };
 
@@ -480,7 +554,7 @@ class spell_pri_penance : public SpellScript
 
     bool Load() override
     {
-        return GetCaster()->GetTypeId() == TYPEID_PLAYER;
+        return GetCaster()->IsPlayer();
     }
 
     bool Validate(SpellInfo const* spellInfo) override
@@ -710,7 +784,7 @@ class spell_pri_renew : public AuraScript
 
     bool Load() override
     {
-        return GetCaster() && GetCaster()->GetTypeId() == TYPEID_PLAYER;
+        return GetCaster() && GetCaster()->IsPlayer();
     }
 
     bool Validate(SpellInfo const* /*spellInfo*/) override
@@ -787,7 +861,18 @@ class spell_pri_vampiric_touch : public AuraScript
 
     bool CheckProc(ProcEventInfo& eventInfo)
     {
-        return eventInfo.GetActionTarget() && eventInfo.GetActionTarget()->IsAlive() && GetOwner()->GetGUID() == eventInfo.GetActionTarget()->GetGUID();
+        if (!eventInfo.GetActionTarget() || GetOwner()->GetGUID() != eventInfo.GetActionTarget()->GetGUID())
+        {
+            return false;
+        }
+
+        SpellInfo const* spellInfo = eventInfo.GetSpellInfo();
+        if (!spellInfo || spellInfo->SpellFamilyName != SPELLFAMILY_PRIEST || !(spellInfo->SpellFamilyFlags[0] & 0x00002000))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
@@ -844,6 +929,60 @@ class spell_pri_mind_control : public AuraScript
     }
 };
 
+// 37565 - Flexibility | Item - Priest T4 Holy/Discipline 4P Bonus
+class spell_pri_t4_4p_bonus : public AuraScript
+{
+    PrepareAuraScript(spell_pri_t4_4p_bonus);
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_PRIEST_T4_4P_FLEXIBILITY });
+    }
+
+    void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& /*eventInfo*/)
+    {
+        PreventDefaultAction();
+        GetTarget()->RemoveAurasDueToSpell(SPELL_PRIEST_T4_4P_FLEXIBILITY);
+    }
+
+    void Register() override
+    {
+        OnEffectProc += AuraEffectProcFn(spell_pri_t4_4p_bonus::HandleProc, EFFECT_ALL, SPELL_AURA_OVERRIDE_CLASS_SCRIPTS);
+    }
+};
+
+// 57989 - Shadowfiend Death
+class spell_pri_shadowfiend_death : public AuraScript
+{
+    PrepareAuraScript(spell_pri_shadowfiend_death);
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_PRIEST_GLYPH_OF_SHADOWFIEND_MANA });
+    }
+
+    bool AfterCheckProc(ProcEventInfo& eventInfo, bool isTriggeredAtSpellProcEvent)
+    {
+        if (!isTriggeredAtSpellProcEvent)
+            return false;
+        return eventInfo.GetTypeMask() & PROC_FLAG_KILLED;
+    }
+
+    void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& /*eventInfo*/)
+    {
+        PreventDefaultAction();
+        if (Unit* owner = GetTarget()->GetOwner())
+            if (owner->HasAura(SPELL_PRIEST_GLYPH_OF_SHADOWFIEND))
+                owner->CastSpell(owner, SPELL_PRIEST_GLYPH_OF_SHADOWFIEND_MANA, true);
+    }
+
+    void Register() override
+    {
+        DoAfterCheckProc += AuraAfterCheckProcFn(spell_pri_shadowfiend_death::AfterCheckProc);
+        OnEffectProc += AuraEffectProcFn(spell_pri_shadowfiend_death::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
 void AddSC_priest_spell_scripts()
 {
     RegisterSpellScript(spell_pri_shadowfiend_scaling);
@@ -854,6 +993,7 @@ void AddSC_priest_spell_scripts()
     RegisterSpellScript(spell_pri_guardian_spirit);
     RegisterSpellScript(spell_pri_hymn_of_hope);
     RegisterSpellScript(spell_pri_item_greater_heal_refund);
+    RegisterSpellScript(spell_pri_lightwell);
     RegisterSpellScript(spell_pri_lightwell_renew);
     RegisterSpellScript(spell_pri_mana_burn);
     RegisterSpellScript(spell_pri_mana_leech);
@@ -866,4 +1006,6 @@ void AddSC_priest_spell_scripts()
     RegisterSpellScript(spell_pri_shadow_word_death);
     RegisterSpellScript(spell_pri_vampiric_touch);
     RegisterSpellScript(spell_pri_mind_control);
+    RegisterSpellScript(spell_pri_t4_4p_bonus);
+    RegisterSpellScript(spell_pri_shadowfiend_death);
 }

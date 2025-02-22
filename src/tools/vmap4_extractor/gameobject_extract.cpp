@@ -19,7 +19,6 @@
 #include "dbcfile.h"
 #include "model.h"
 #include "vmapexport.h"
-#include <algorithm>
 #include <cstdio>
 
 bool ExtractSingleModel(std::string& fname)
@@ -107,7 +106,7 @@ void ExtractGameobjectModels()
         }
         else if (!strcmp(ch_ext, ".mdl"))
         {
-            // TODO: extract .mdl files, if needed
+            /// @todo: extract .mdl files, if needed
             continue;
         }
         else //if (!strcmp(ch_ext, ".mdx") || !strcmp(ch_ext, ".m2"))

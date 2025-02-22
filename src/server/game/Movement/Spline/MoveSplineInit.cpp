@@ -101,7 +101,9 @@ namespace Movement
             moveFlags = (moveFlags & ~(MOVEMENTFLAG_FORWARD)) | MOVEMENTFLAG_BACKWARD;
         }
 
-        if (moveFlags & MOVEMENTFLAG_ROOT)
+        bool isOrientationOnly = args.path.size() == 2 && args.path[0] == args.path[1];
+
+        if ((moveFlags & MOVEMENTFLAG_ROOT) || isOrientationOnly)
             moveFlags &= ~MOVEMENTFLAG_MASK_MOVING;
 
         if (!args.HasVelocity)
@@ -134,11 +136,6 @@ namespace Movement
             data << unit->GetTransGUID().WriteAsPacked();
             data << int8(unit->GetTransSeat());
         }
-
-        Movement::SplineBase::ControlArray* visualPoints = const_cast<Movement::SplineBase::ControlArray*>(move_spline._Spline().allocateVisualPoints());
-        visualPoints->resize(move_spline._Spline().getPointCount());
-        // Xinef: Apply hover in creature movement packet
-        std::copy(move_spline._Spline().getPoints(false).begin(), move_spline._Spline().getPoints(false).end(), visualPoints->begin());
 
         PacketBuilder::WriteMonsterMove(move_spline, data);
         unit->SendMessageToSet(&data, true);

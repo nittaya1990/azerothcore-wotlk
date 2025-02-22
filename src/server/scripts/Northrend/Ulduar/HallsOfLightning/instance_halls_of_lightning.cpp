@@ -15,7 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
+#include "InstanceMapScript.h"
 #include "ScriptedCreature.h"
 #include "halls_of_lightning.h"
 
@@ -51,6 +52,7 @@ public:
 
         void Initialize() override
         {
+            SetHeaders(DataHeader);
             memset(&m_auiEncounter, 0, sizeof(m_auiEncounter));
 
             volkhanAchievement = false;
@@ -71,7 +73,7 @@ public:
 
         void OnCreatureCreate(Creature* pCreature) override
         {
-            switch(pCreature->GetEntry())
+            switch (pCreature->GetEntry())
             {
                 case NPC_BJARNGRIM:
                     m_uiGeneralBjarngrimGUID = pCreature->GetGUID();
@@ -90,7 +92,7 @@ public:
 
         void OnGameObjectCreate(GameObject* pGo) override
         {
-            switch(pGo->GetEntry())
+            switch (pGo->GetEntry())
             {
                 case GO_BJARNGRIM_DOOR:
                     m_uiBjarngrimDoorGUID = pGo->GetGUID();
@@ -124,7 +126,7 @@ public:
 
         bool CheckAchievementCriteriaMeet(uint32 criteria_id, Player const*  /*source*/, Unit const*  /*target*/, uint32  /*miscvalue1*/) override
         {
-            switch(criteria_id)
+            switch (criteria_id)
             {
                 case 7321: //Shatter Resistant (2042)
                     return volkhanAchievement;
@@ -137,7 +139,7 @@ public:
         void SetData(uint32 uiType, uint32 uiData) override
         {
             m_auiEncounter[uiType] = uiData;
-            if( uiType == TYPE_LOKEN_INTRO )
+            if (uiType == TYPE_LOKEN_INTRO)
                 SaveToDB();
 
             // Achievements
@@ -146,10 +148,10 @@ public:
             else if (uiType == DATA_VOLKHAN_ACHIEVEMENT)
                 volkhanAchievement = (bool)uiData;
 
-            if( uiData != DONE )
+            if (uiData != DONE)
                 return;
 
-            switch(uiType)
+            switch (uiType)
             {
                 case TYPE_BJARNGRIM:
                     HandleGameObject(m_uiBjarngrimDoorGUID, true);
@@ -172,50 +174,20 @@ public:
             SaveToDB();
         }
 
-        std::string GetSaveData() override
+        void ReadSaveDataMore(std::istringstream& data) override
         {
-            OUT_SAVE_INST_DATA;
-
-            std::ostringstream saveStream;
-            saveStream << "H L " << m_auiEncounter[0] << ' ' << m_auiEncounter[1] << ' '
-                       << m_auiEncounter[2] << ' ' << m_auiEncounter[3] << ' ' << m_auiEncounter[4];
-
-            OUT_SAVE_INST_DATA_COMPLETE;
-            return saveStream.str();
+            data >> m_auiEncounter[0];
+            data >> m_auiEncounter[1];
+            data >> m_auiEncounter[2];
+            data >> m_auiEncounter[3];
         }
 
-        void Load(const char* in) override
+        void WriteSaveDataMore(std::ostringstream& data) override
         {
-            if (!in)
-            {
-                OUT_LOAD_INST_DATA_FAIL;
-                return;
-            }
-
-            OUT_LOAD_INST_DATA(in);
-
-            char dataHead1, dataHead2;
-            uint32 data0, data1, data2, data3, data4;
-
-            std::istringstream loadStream(in);
-            loadStream >> dataHead1 >> dataHead2 >> data0 >> data1 >> data2 >> data3 >> data4;
-
-            if (dataHead1 == 'H' && dataHead2 == 'L')
-            {
-                m_auiEncounter[0] = data0;
-                m_auiEncounter[1] = data1;
-                m_auiEncounter[2] = data2;
-                m_auiEncounter[3] = data3;
-                m_auiEncounter[4] = data4;
-
-                for (uint8 i = 0; i < TYPE_LOKEN_INTRO; ++i)
-                    if (m_auiEncounter[i] == IN_PROGRESS)
-                        m_auiEncounter[i] = NOT_STARTED;
-
-                OUT_LOAD_INST_DATA_COMPLETE;
-            }
-            else
-                OUT_LOAD_INST_DATA_FAIL;
+            data << m_auiEncounter[0] << ' '
+                << m_auiEncounter[1] << ' '
+                << m_auiEncounter[2] << ' '
+                << m_auiEncounter[3] << ' ';
         }
 
         uint32 GetData(uint32 uiType) const override
@@ -225,7 +197,7 @@ public:
 
         ObjectGuid GetGuidData(uint32 uiData) const override
         {
-            switch(uiData)
+            switch (uiData)
             {
                 case TYPE_BJARNGRIM:
                     return m_uiGeneralBjarngrimGUID;

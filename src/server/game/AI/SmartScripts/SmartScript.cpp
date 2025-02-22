@@ -24,7 +24,6 @@
 #include "GossipDef.h"
 #include "GridDefines.h"
 #include "GridNotifiers.h"
-#include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "InstanceScript.h"
 #include "Language.h"
@@ -36,6 +35,13 @@
 #include "SmartAI.h"
 #include "SpellMgr.h"
 #include "Vehicle.h"
+#include "WorldState.h"
+
+/// @todo: this import is not necessary for compilation and marked as unused by the IDE
+//  however, for some reasons removing it would cause a damn linking issue
+//  there is probably some underlying problem with imports which should properly addressed
+//  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
+#include "GridNotifiersImpl.h"
 
 SmartScript::SmartScript()
 {
@@ -44,7 +50,6 @@ SmartScript::SmartScript()
     trigger = nullptr;
     mEventPhase = 0;
     mPathId = 0;
-    mTargetStorage = new ObjectListMap();
     mTextTimer = 0;
     mLastTextID = 0;
     mUseTextTimer = false;
@@ -52,25 +57,53 @@ SmartScript::SmartScript()
     mTemplate = SMARTAI_TEMPLATE_BASIC;
     mScriptType = SMART_SCRIPT_TYPE_CREATURE;
     isProcessingTimedActionList = false;
-
-    // Xinef: Fix Combat Movement
-    mActualCombatDist = 0;
-    mMaxCombatDist = 0;
-
-    smartCasterActualDist = 0.0f;
-    smartCasterMaxDist = 0.0f;
-    smartCasterPowerType = POWER_MANA;
-
+    mCurrentPriority = 0;
+    mEventSortingRequired = false;
     _allowPhaseReset = true;
 }
 
 SmartScript::~SmartScript()
 {
-    for (ObjectListMap::iterator itr = mTargetStorage->begin(); itr != mTargetStorage->end(); ++itr)
-        delete itr->second;
+}
 
-    delete mTargetStorage;
-    mCounterList.clear();
+bool SmartScript::IsSmart(Creature* c, bool silent) const
+{
+    if (!c)
+        return false;
+
+    bool smart = true;
+    if (!dynamic_cast<SmartAI*>(c->AI()))
+        smart = false;
+
+    if (!smart && !silent)
+        LOG_ERROR("sql.sql", "SmartScript: Action target Creature(entry: {}) is not using SmartAI, action skipped to prevent crash.", c ? c->GetEntry() : (me ? me->GetEntry() : 0));
+
+    return smart;
+}
+
+bool SmartScript::IsSmart(GameObject* g, bool silent) const
+{
+    if (!g)
+        return false;
+
+    bool smart = true;
+    if (!dynamic_cast<SmartGameObjectAI*>(g->AI()))
+        smart = false;
+
+    if (!smart && !silent)
+        LOG_ERROR("sql.sql", "SmartScript: Action target GameObject(entry: {}) is not using SmartGameObjectAI, action skipped to prevent crash.", g ? g->GetEntry() : (go ? go->GetEntry() : 0));
+
+    return smart;
+}
+
+bool SmartScript::IsSmart(bool silent) const
+{
+    if (me)
+        return IsSmart(me, silent);
+    if (go)
+        return IsSmart(go, silent);
+
+    return false;
 }
 
 void SmartScript::OnReset()
@@ -87,14 +120,16 @@ void SmartScript::OnReset()
             InitTimer((*i));
             (*i).runOnce = false;
         }
+
+        if ((*i).priority != SmartScriptHolder::DEFAULT_PRIORITY)
+        {
+            (*i).priority = SmartScriptHolder::DEFAULT_PRIORITY;
+            mEventSortingRequired = true;
+        }
     }
     ProcessEventsFor(SMART_EVENT_RESET);
     mLastInvoker.Clear();
     mCounterList.clear();
-
-    // Xinef: Fix Combat Movement
-    RestoreMaxCombatDist();
-    RestoreCasterMaxDist();
 }
 
 void SmartScript::ProcessEventsFor(SMART_EVENT e, Unit* unit, uint32 var0, uint32 var1, bool bvar, SpellInfo const* spell, GameObject* gob)
@@ -105,1780 +140,1721 @@ void SmartScript::ProcessEventsFor(SMART_EVENT e, Unit* unit, uint32 var0, uint3
         if (eventType == SMART_EVENT_LINK)//special handling
             continue;
 
-        if (eventType == e/* && (!(*i).event.event_phase_mask || IsInPhase((*i).event.event_phase_mask)) && !((*i).event.event_flags & SMART_EVENT_FLAG_NOT_REPEATABLE && (*i).runOnce)*/)
+        if (eventType == e)
         {
             ConditionList conds = sConditionMgr->GetConditionsForSmartEvent((*i).entryOrGuid, (*i).event_id, (*i).source_type);
             ConditionSourceInfo info = ConditionSourceInfo(unit, GetBaseObject(), me ? me->GetVictim() : nullptr);
 
             if (sConditionMgr->IsObjectMeetToConditions(info, conds))
-                ProcessEvent(*i, unit, var0, var1, bvar, spell, gob);
+            {
+                ASSERT(executionStack.empty());
+                executionStack.emplace_back(SmartScriptFrame{ *i, unit, var0, var1, bvar, spell, gob });
+                while (!executionStack.empty())
+                {
+                    auto [stack_holder , stack_unit, stack_var0, stack_var1, stack_bvar, stack_spell, stack_gob] = executionStack.back();
+                    executionStack.pop_back();
+                    ProcessEvent(stack_holder, stack_unit, stack_var0, stack_var1, stack_bvar, stack_spell, stack_gob);
+                }
+            }
         }
     }
 }
 
 void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, uint32 var1, bool bvar, SpellInfo const* spell, GameObject* gob)
 {
+    e.runOnce = true;//used for repeat check
+
     //calc random
-    if (e.GetEventType() != SMART_EVENT_LINK && e.event.event_chance < 100 && e.event.event_chance)
+    if (e.event.event_chance < 100 && e.event.event_chance && !(e.event.event_flags & SMART_EVENT_FLAG_TEMP_IGNORE_CHANCE_ROLL))
     {
-        uint32 rnd = urand(0, 100);
+        uint32 rnd = urand(1, 100);
         if (e.event.event_chance <= rnd)
             return;
     }
-    e.runOnce = true;//used for repeat check
+
+    // Remove SMART_EVENT_FLAG_TEMP_IGNORE_CHANCE_ROLL flag after processing roll chances as it's not needed anymore
+    e.event.event_flags &= ~SMART_EVENT_FLAG_TEMP_IGNORE_CHANCE_ROLL;
 
     if (unit)
         mLastInvoker = unit->GetGUID();
+    else if (gob)
+        mLastInvoker = gob->GetGUID();
 
-    if (Unit* tempInvoker = GetLastInvoker())
+    if (WorldObject* tempInvoker = GetLastInvoker())
         LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: Invoker: {} ({})", tempInvoker->GetName(), tempInvoker->GetGUID().ToString());
 
     bool isControlled = e.action.moveToPos.controlled > 0;
 
+    ObjectVector targets;
+    WorldObject* invoker = nullptr;
+    if (unit)
+        invoker = unit;
+    else if (gob)
+        invoker = gob;
+
+    GetTargets(targets, e, invoker);
+
     switch (e.GetActionType())
     {
         case SMART_ACTION_TALK:
+        {
+            Creature* talker = e.target.type == 0 ? me : nullptr;
+            WorldObject* talkTarget = nullptr;
+
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                Creature* talker = e.target.type == 0 ? me : nullptr;
-                Unit* talkTarget = nullptr;
-                if (targets)
+                if (IsCreature((target)) && !target->ToCreature()->IsPet()) // Prevented sending text to pets.
                 {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                    if (e.action.talk.useTalkTarget)
                     {
-                        if (IsCreature((*itr)) && !(*itr)->ToCreature()->IsPet()) // Prevented sending text to pets.
-                        {
-                            if (e.action.talk.useTalkTarget)
-                            {
-                                talker = me;
-                                talkTarget = (*itr)->ToCreature();
-                            }
-                            else
-                                talker = (*itr)->ToCreature();
-                            break;
-                        }
-                        else if (IsPlayer((*itr)))
-                        {
-                            talker = me; // xinef: added
-                            talkTarget = (*itr)->ToPlayer();
-                            break;
-                        }
+                        talker = me;
+                        talkTarget = target->ToCreature();
                     }
-
-                    delete targets;
-                }
-
-                if (!talkTarget)
-                    talkTarget = GetLastInvoker();
-
-                if (!talker)
+                    else
+                        talker = target->ToCreature();
                     break;
-
-                if (!sCreatureTextMgr->TextExist(talker->GetEntry(), uint8(e.action.talk.textGroupID)))
+                }
+                else if (IsPlayer((target)))
                 {
-                    LOG_ERROR("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_TALK: EntryOrGuid {} SourceType {} EventType {} TargetType {} using non-existent Text id {} for talker {}, ignored.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetTargetType(), e.action.talk.textGroupID, talker->GetEntry());
+                    talker = me; // xinef: added
+                    talkTarget = target->ToPlayer();
                     break;
                 }
+            }
 
-                mTalkerEntry = talker->GetEntry();
-                mLastTextID = e.action.talk.textGroupID;
-                mTextTimer = e.action.talk.duration;
-                mUseTextTimer = true;
-                sCreatureTextMgr->SendChat(talker, uint8(e.action.talk.textGroupID), talkTarget);
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_TALK: talker: {} ({}), textId: {}", talker->GetName(), talker->GetGUID().ToString(), mLastTextID);
+            if (!talkTarget)
+                talkTarget = GetLastInvoker();
+
+            if (!talker)
+                break;
+
+            if (!sCreatureTextMgr->TextExist(talker->GetEntry(), uint8(e.action.talk.textGroupID)))
+            {
+                LOG_ERROR("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_TALK: EntryOrGuid {} SourceType {} EventType {} TargetType {} using non-existent Text id {} for talker {}, ignored.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetTargetType(), e.action.talk.textGroupID, talker->GetEntry());
                 break;
             }
+
+            mTalkerEntry = talker->GetEntry();
+            mLastTextID = e.action.talk.textGroupID;
+            mTextTimer = e.action.talk.duration;
+            mUseTextTimer = true;
+            sCreatureTextMgr->SendChat(talker, uint8(e.action.talk.textGroupID), talkTarget);
+            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_TALK: talker: {} ({}), textId: {}", talker->GetName(), talker->GetGUID().ToString(), mLastTextID);
+            break;
+        }
         case SMART_ACTION_SIMPLE_TALK:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
+                if (IsCreature(target))
+                    sCreatureTextMgr->SendChat(target->ToCreature(), uint8(e.action.simpleTalk.textGroupID), IsPlayer(GetLastInvoker()) ? GetLastInvoker() : 0);
+                else if (IsPlayer(target) && me)
                 {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        if (IsCreature(*itr))
-                            sCreatureTextMgr->SendChat((*itr)->ToCreature(), uint8(e.action.simpleTalk.textGroupID), IsPlayer(GetLastInvoker()) ? GetLastInvoker() : 0);
-                        else if (IsPlayer(*itr) && me)
-                        {
-                            Unit* templastInvoker = GetLastInvoker();
-                            sCreatureTextMgr->SendChat(me, uint8(e.action.simpleTalk.textGroupID), IsPlayer(templastInvoker) ? templastInvoker : 0, CHAT_MSG_ADDON, LANG_ADDON, TEXT_RANGE_NORMAL, 0, TEAM_NEUTRAL, false, (*itr)->ToPlayer());
-                        }
-
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SIMPLE_TALK: talker: {} ({}), textGroupId: {}",
-                                       (*itr)->GetName(), (*itr)->GetGUID().ToString(), uint8(e.action.simpleTalk.textGroupID));
-                    }
-
-                    delete targets;
+                    WorldObject* templastInvoker = GetLastInvoker();
+                    sCreatureTextMgr->SendChat(me, uint8(e.action.simpleTalk.textGroupID), IsPlayer(templastInvoker) ? templastInvoker : 0, CHAT_MSG_ADDON, LANG_ADDON, TEXT_RANGE_NORMAL, 0, TEAM_NEUTRAL, false, target->ToPlayer());
                 }
-                break;
+
+                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SIMPLE_TALK: talker: {} ({}), textGroupId: {}",
+                               target->GetName(), target->GetGUID().ToString(), uint8(e.action.simpleTalk.textGroupID));
             }
+            break;
+        }
         case SMART_ACTION_PLAY_EMOTE:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
+                if (IsUnit(target))
                 {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        if (IsUnit(*itr))
-                        {
-                            (*itr)->ToUnit()->HandleEmoteCommand(e.action.emote.emote);
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_PLAY_EMOTE: target: {} ({}), emote: {}",
-                                           (*itr)->GetName(), (*itr)->GetGUID().ToString(), e.action.emote.emote);
-                        }
-                    }
-
-                    delete targets;
+                    target->ToUnit()->HandleEmoteCommand(e.action.emote.emote);
+                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_PLAY_EMOTE: target: {} ({}), emote: {}",
+                                   target->GetName(), target->GetGUID().ToString(), e.action.emote.emote);
                 }
-                break;
             }
+            break;
+        }
         case SMART_ACTION_SOUND:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
+                if (IsUnit(target))
                 {
-                    for (auto& target : *targets)
-                    {
-                        if (IsUnit(target))
-                        {
-                            if (e.action.sound.distance == 1)
-                                target->PlayDistanceSound(e.action.sound.sound, e.action.sound.onlySelf ? target->ToPlayer() : nullptr);
-                            else
-                                target->PlayDirectSound(e.action.sound.sound, e.action.sound.onlySelf ? target->ToPlayer() : nullptr);
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SOUND: target: {} ({}), sound: {}, onlyself: {}",
-                                           target->GetName(), target->GetGUID().ToString(), e.action.sound.sound, e.action.sound.onlySelf);
-                        }
-                    }
-
-                    delete targets;
+                    if (e.action.sound.distance == 1)
+                        target->PlayDistanceSound(e.action.sound.sound, e.action.sound.onlySelf ? target->ToPlayer() : nullptr);
+                    else
+                        target->PlayDirectSound(e.action.sound.sound, e.action.sound.onlySelf ? target->ToPlayer() : nullptr);
+                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SOUND: target: {} ({}), sound: {}, onlyself: {}",
+                                   target->GetName(), target->GetGUID().ToString(), e.action.sound.sound, e.action.sound.onlySelf);
                 }
+            }
+            break;
+        }
+        case SMART_ACTION_RANDOM_SOUND:
+        {
+            uint32 sounds[4];
+            sounds[0] = e.action.randomSound.sound1;
+            sounds[1] = e.action.randomSound.sound2;
+            sounds[2] = e.action.randomSound.sound3;
+            sounds[3] = e.action.randomSound.sound4;
+            uint32 temp[4];
+            uint32 count = 0;
+            for (unsigned int sound : sounds)
+            {
+                if (sound)
+                {
+                    temp[count] = sound;
+                    ++count;
+                }
+            }
+
+            if (count == 0)
+            {
                 break;
             }
-        case SMART_ACTION_RANDOM_SOUND:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
 
-                uint32 sounds[4];
-                sounds[0] = e.action.randomSound.sound1;
-                sounds[1] = e.action.randomSound.sound2;
-                sounds[2] = e.action.randomSound.sound3;
-                sounds[3] = e.action.randomSound.sound4;
-                uint32 temp[4];
-                uint32 count = 0;
-                for (uint8 i = 0; i < 4; i++)
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
                 {
-                    if (sounds[i])
+                    uint32 sound = temp[urand(0, count - 1)];
+                    target->PlayDirectSound(sound, e.action.randomSound.onlySelf ? target->ToPlayer() : nullptr);
+                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_RANDOM_SOUND: target: {} ({}), sound: {}, onlyself: {}",
+                              target->GetName(), target->GetGUID().ToString(), sound, e.action.randomSound.onlySelf);
+                }
+            }
+
+            break;
+        }
+        case SMART_ACTION_MUSIC:
+        {
+            ObjectVector targets;
+
+            if (e.action.music.type > 0)
+            {
+                if (me && me->FindMap())
+                {
+                    Map::PlayerList const& players = me->GetMap()->GetPlayers();
+
+                    if (!players.IsEmpty())
                     {
-                        temp[count] = sounds[i];
-                        ++count;
+                        for (Map::PlayerList::const_iterator i = players.begin(); i != players.end(); ++i)
+                            if (Player* player = i->GetSource())
+                            {
+                                if (player->GetZoneId() == me->GetZoneId())
+                                {
+                                    if (e.action.music.type > 1)
+                                    {
+                                        if (player->GetAreaId() == me->GetAreaId())
+                                            targets.push_back(player);
+                                    }
+                                    else
+                                        targets.push_back(player);
+                                }
+                            }
                     }
                 }
+            }
+            else
+                GetTargets(targets, e);
 
-                if (count == 0)
-                {
-                    delete targets;
-                    break;
-                }
-
-                for (auto& target : *targets)
+            if (!targets.empty())
+            {
+                for (WorldObject* target : targets)
                 {
                     if (IsUnit(target))
                     {
-                        uint32 sound = temp[urand(0, count - 1)];
-                        if (e.action.randomSound.distance == 1)
-                            target->PlayDistanceSound(sound, e.action.randomSound.onlySelf ? target->ToPlayer() : nullptr);
-                        else
-                            target->PlayDirectSound(sound, e.action.randomSound.onlySelf ? target->ToPlayer() : nullptr);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_RANDOM_SOUND: target: {} ({}), sound: {}, onlyself: {}",
-                                       target->GetName(), target->GetGUID().ToString(), sound, e.action.randomSound.onlySelf);
+                        target->SendPlayMusic(e.action.music.sound, e.action.music.onlySelf > 0);
+                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_MUSIC: target: {} ({}), sound: {}, onlySelf: {}, type: {}",
+                                  target->GetName(), target->GetGUID().ToString(), e.action.music.sound, e.action.music.onlySelf, e.action.music.type);
                     }
                 }
-
-                delete targets;
-                break;
             }
-        case SMART_ACTION_MUSIC:
-            {
-                ObjectList* targets = nullptr;
-
-                if (e.action.music.type > 0)
-                {
-                    if (me && me->FindMap())
-                    {
-                        Map::PlayerList const& players = me->GetMap()->GetPlayers();
-                        targets = new ObjectList();
-
-                        if (!players.IsEmpty())
-                        {
-                            for (Map::PlayerList::const_iterator i = players.begin(); i != players.end(); ++i)
-                                if (Player* player = i->GetSource())
-                                {
-                                    if (player->GetZoneId() == me->GetZoneId())
-                                    {
-                                        if (e.action.music.type > 1)
-                                        {
-                                            if (player->GetAreaId() == me->GetAreaId())
-                                                targets->push_back(player);
-                                        }
-                                        else
-                                            targets->push_back(player);
-                                    }
-                                }
-                        }
-                    }
-                }
-                else
-                    targets = GetTargets(e, unit);
-
-                if (targets)
-                {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        if (IsUnit(*itr))
-                        {
-                            (*itr)->SendPlayMusic(e.action.music.sound, e.action.music.onlySelf > 0);
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_MUSIC: target: {} ({}), sound: {}, onlySelf: {}, type: {}",
-                                           (*itr)->GetName(), (*itr)->GetGUID().ToString(), e.action.music.sound, e.action.music.onlySelf, e.action.music.type);
-                        }
-                    }
-
-                    delete targets;
-                }
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_RANDOM_MUSIC:
+        {
+            ObjectVector targets;
+
+            if (e.action.randomMusic.type > 0)
             {
-                ObjectList* targets = nullptr;
-
-                if (e.action.randomMusic.type > 0)
+                if (me && me->FindMap())
                 {
-                    if (me && me->FindMap())
-                    {
-                        Map::PlayerList const& players = me->GetMap()->GetPlayers();
-                        targets = new ObjectList();
+                    Map::PlayerList const& players = me->GetMap()->GetPlayers();
 
-                        if (!players.IsEmpty())
-                        {
-                            for (Map::PlayerList::const_iterator i = players.begin(); i != players.end(); ++i)
-                                if (Player* player = i->GetSource())
+                    if (!players.IsEmpty())
+                    {
+                        for (Map::PlayerList::const_iterator i = players.begin(); i != players.end(); ++i)
+                            if (Player* player = i->GetSource())
+                            {
+                                if (player->GetZoneId() == me->GetZoneId())
                                 {
-                                    if (player->GetZoneId() == me->GetZoneId())
+                                    if (e.action.randomMusic.type > 1)
                                     {
-                                        if (e.action.randomMusic.type > 1)
-                                        {
-                                            if (player->GetAreaId() == me->GetAreaId())
-                                                targets->push_back(player);
-                                        }
-                                        else
-                                            targets->push_back(player);
+                                        if (player->GetAreaId() == me->GetAreaId())
+                                            targets.push_back(player);
                                     }
+                                    else
+                                        targets.push_back(player);
                                 }
-                        }
+                            }
                     }
                 }
-                else
-                    targets = GetTargets(e, unit);
+            }
+            else
+                GetTargets(targets, e);
 
-                if (!targets)
-                    break;
+            if (targets.empty())
+                break;
 
-                uint32 sounds[4];
-                sounds[0] = e.action.randomMusic.sound1;
-                sounds[1] = e.action.randomMusic.sound2;
-                sounds[2] = e.action.randomMusic.sound3;
-                sounds[3] = e.action.randomMusic.sound4;
-                uint32 temp[4];
-                uint32 count = 0;
-                for (uint8 i = 0; i < 4; i++)
+            uint32 sounds[4];
+            sounds[0] = e.action.randomMusic.sound1;
+            sounds[1] = e.action.randomMusic.sound2;
+            sounds[2] = e.action.randomMusic.sound3;
+            sounds[3] = e.action.randomMusic.sound4;
+            uint32 temp[4];
+            uint32 count = 0;
+            for (unsigned int sound : sounds)
+            {
+                if (sound)
                 {
-                    if (sounds[i])
-                    {
-                        temp[count] = sounds[i];
-                        ++count;
-                    }
+                    temp[count] = sound;
+                    ++count;
                 }
+            }
 
-                if (count == 0)
-                {
-                    delete targets;
-                    break;
-                }
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
-                    {
-                        uint32 sound = temp[urand(0, count - 1)];
-                        (*itr)->SendPlayMusic(sound, e.action.randomMusic.onlySelf > 0);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_RANDOM_MUSIC: target: {} ({}), sound: {}, onlyself: {}, type: {}",
-                                       (*itr)->GetName(), (*itr)->GetGUID().ToString(), sound, e.action.randomMusic.onlySelf, e.action.randomMusic.type);
-                    }
-                }
-
-                delete targets;
+            if (count == 0)
+            {
                 break;
             }
+
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    uint32 sound = temp[urand(0, count - 1)];
+                    target->SendPlayMusic(sound, e.action.randomMusic.onlySelf > 0);
+                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_RANDOM_MUSIC: target: {} ({}), sound: {}, onlyself: {}, type: {}",
+                                   target->GetName(), target->GetGUID().ToString(), sound, e.action.randomMusic.onlySelf, e.action.randomMusic.type);
+                }
+            }
+
+            break;
+        }
         case SMART_ACTION_SET_FACTION:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
+                if (IsCreature(target))
                 {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                    if (e.action.faction.factionID)
                     {
-                        if (IsCreature(*itr))
+                        target->ToCreature()->SetFaction(e.action.faction.factionID);
+                        LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_SET_FACTION: Creature entry {}, GuidLow {} set faction to {}",
+                                  target->GetEntry(), target->GetGUID().ToString(), e.action.faction.factionID);
+                    }
+                    else
+                    {
+                        if (CreatureTemplate const* ci = sObjectMgr->GetCreatureTemplate(target->ToCreature()->GetEntry()))
                         {
-                            if (e.action.faction.factionID)
+                            if (target->ToCreature()->GetFaction() != ci->faction)
                             {
-                                (*itr)->ToCreature()->SetFaction(e.action.faction.factionID);
-                                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SET_FACTION: Creature entry {} ({}) set faction to {}",
-                                               (*itr)->GetEntry(), (*itr)->GetGUID().ToString(), e.action.faction.factionID);
+                                target->ToCreature()->SetFaction(ci->faction);
+                                LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_SET_FACTION: Creature entry {}, GuidLow {} set faction to {}",
+                                          target->GetEntry(), target->GetGUID().ToString(), ci->faction);
                             }
-                            else
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (!IsCreature(target))
+                    continue;
+
+                if (e.action.morphOrMount.creature || e.action.morphOrMount.model)
+                {
+                    //set model based on entry from creature_template
+                    if (e.action.morphOrMount.creature)
+                    {
+                        if (CreatureTemplate const* ci = sObjectMgr->GetCreatureTemplate(e.action.morphOrMount.creature))
+                        {
+                            CreatureModel const* model = ObjectMgr::ChooseDisplayId(ci);
+                            target->ToCreature()->SetDisplayId(model->CreatureDisplayID, model->DisplayScale);
+                            LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL: Creature entry {}, GuidLow {} set displayid to {}",
+                                      target->GetEntry(), target->GetGUID().ToString(), model->CreatureDisplayID);
+                        }
+                    }
+                        //if no param1, then use value from param2 (modelId)
+                    else
+                    {
+                        target->ToCreature()->SetDisplayId(e.action.morphOrMount.model);
+                        LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL: Creature entry {}, GuidLow {} set displayid to {}",
+                                  target->GetEntry(), target->GetGUID().ToString(), e.action.morphOrMount.model);
+                    }
+                }
+                else
+                {
+                    target->ToCreature()->DeMorph();
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL: Creature entry {}, GuidLow {} demorphs.",
+                              target->GetEntry(), target->GetGUID().ToString());
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_FAIL_QUEST:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (IsPlayer(target))
+                {
+                    target->ToPlayer()->FailQuest(e.action.quest.quest);
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_FAIL_QUEST: Player guidLow {} fails quest {}",
+                              target->GetGUID().ToString(), e.action.quest.quest);
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_OFFER_QUEST:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (Player* player = target->ToPlayer())
+                {
+                    if (Quest const* q = sObjectMgr->GetQuestTemplate(e.action.questOffer.questID))
+                    {
+                        if (me && e.action.questOffer.directAdd == 0)
+                        {
+                            if (player->CanTakeQuest(q, true))
                             {
-                                if (CreatureTemplate const* ci = sObjectMgr->GetCreatureTemplate((*itr)->ToCreature()->GetEntry()))
+                                if (WorldSession* session = player->GetSession())
                                 {
-                                    if ((*itr)->ToCreature()->GetFaction() != ci->faction)
-                                    {
-                                        (*itr)->ToCreature()->SetFaction(ci->faction);
-                                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SET_FACTION: Creature entry {} ({}) set faction to {}",
-                                                       (*itr)->GetEntry(), (*itr)->GetGUID().ToString(), ci->faction);
-                                    }
+                                    PlayerMenu menu(session);
+                                    menu.SendQuestGiverQuestDetails(q, me->GetGUID(), true);
+                                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_OFFER_QUEST: Player guidLow {} - offering quest {}",
+                                              player->GetGUID().ToString(), e.action.questOffer.questID);
                                 }
                             }
                         }
-                    }
-
-                    delete targets;
-                }
-                break;
-            }
-        case SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (!IsCreature(*itr))
-                        continue;
-
-                    if (e.action.morphOrMount.creature || e.action.morphOrMount.model)
-                    {
-                        //set model based on entry from creature_template
-                        if (e.action.morphOrMount.creature)
-                        {
-                            if (CreatureTemplate const* ci = sObjectMgr->GetCreatureTemplate(e.action.morphOrMount.creature))
-                            {
-                                uint32 displayId = ObjectMgr::ChooseDisplayId(ci);
-                                (*itr)->ToCreature()->SetDisplayId(displayId);
-                                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL: Creature entry {} ({}) set displayid to {}",
-                                               (*itr)->GetEntry(), (*itr)->GetGUID().ToString(), displayId);
-                            }
-                        }
-                        //if no param1, then use value from param2 (modelId)
                         else
                         {
-                            (*itr)->ToCreature()->SetDisplayId(e.action.morphOrMount.model);
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL: Creature entry {} ({}) set displayid to {}",
-                                           (*itr)->GetEntry(), (*itr)->GetGUID().ToString(), e.action.morphOrMount.model);
-                        }
-                    }
-                    else
-                    {
-                        (*itr)->ToCreature()->DeMorph();
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL: Creature entry {} ({}) demorphs.",
-                                       (*itr)->GetEntry(), (*itr)->GetGUID().ToString());
-                    }
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_FAIL_QUEST:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsPlayer(*itr))
-                    {
-                        (*itr)->ToPlayer()->FailQuest(e.action.quest.quest);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_FAIL_QUEST: Player {} fails quest {}",
-                                       (*itr)->GetGUID().ToString(), e.action.quest.quest);
-                    }
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_OFFER_QUEST:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (Player* pTarget = (*itr)->ToPlayer())
-                    {
-                        if (Quest const* q = sObjectMgr->GetQuestTemplate(e.action.questOffer.questID))
-                        {
-                            if (me && e.action.questOffer.directAdd == 0)
-                            {
-                                if (pTarget->CanTakeQuest(q, true))
-                                    if (WorldSession* session = pTarget->GetSession())
-                                    {
-                                        PlayerMenu menu(session);
-                                        menu.SendQuestGiverQuestDetails(q, me->GetGUID(), true);
-                                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_OFFER_QUEST: Player {}- offering quest {}",
-                                            (*itr)->GetGUID().ToString(), e.action.questOffer.questID);
-                                    }
-                            }
-                            else
-                            {
-                                (*itr)->ToPlayer()->AddQuestAndCheckCompletion(q, nullptr);
-                               LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_OFFER_QUEST: Player {} - quest {} added",
-                                    (*itr)->GetGUID().ToString(), e.action.questOffer.questID);
-                            }
+                            player->AddQuestAndCheckCompletion(q, nullptr);
+                            LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_OFFER_QUEST: Player guidLow {} - quest {} added",
+                                      player->GetGUID().ToString(), e.action.questOffer.questID);
                         }
                     }
                 }
-
-                delete targets;
-                break;
             }
+            break;
+        }
         case SMART_ACTION_SET_REACT_STATE:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                if (!IsCreature(target))
+                    continue;
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (!IsCreature(*itr))
-                        continue;
-
-                    (*itr)->ToCreature()->SetReactState(ReactStates(e.action.react.state));
-                }
-
-                delete targets;
-                break;
+                target->ToCreature()->SetReactState(ReactStates(e.action.react.state));
             }
+            break;
+        }
         case SMART_ACTION_RANDOM_EMOTE:
+        {
+            std::vector<uint32> emotes;
+            std::copy_if(e.action.randomEmote.emotes.begin(), e.action.randomEmote.emotes.end(),
+                         std::back_inserter(emotes), [](uint32 emote) { return emote != 0; });
+
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                uint32 emotes[SMART_ACTION_PARAM_COUNT];
-                emotes[0] = e.action.randomEmote.emote1;
-                emotes[1] = e.action.randomEmote.emote2;
-                emotes[2] = e.action.randomEmote.emote3;
-                emotes[3] = e.action.randomEmote.emote4;
-                emotes[4] = e.action.randomEmote.emote5;
-                emotes[5] = e.action.randomEmote.emote6;
-                uint32 temp[SMART_ACTION_PARAM_COUNT];
-                uint32 count = 0;
-                for (uint8 i = 0; i < SMART_ACTION_PARAM_COUNT; i++)
+                if (IsUnit(target))
                 {
-                    if (emotes[i])
-                    {
-                        temp[count] = emotes[i];
-                        ++count;
-                    }
+                    uint32 emote = Acore::Containers::SelectRandomContainerElement(emotes);
+                    target->ToUnit()->HandleEmoteCommand(emote);
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_RANDOM_EMOTE: Creature guidLow {} handle random emote {}",
+                              target->GetGUID().ToString(), emote);
                 }
-
-                if (count == 0)
-                {
-                    delete targets;
-                    break;
-                }
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
-                    {
-                        uint32 emote = temp[urand(0, count - 1)];
-                        (*itr)->ToUnit()->HandleEmoteCommand(emote);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_RANDOM_EMOTE: Creature {} handle random emote {}",
-                                       (*itr)->GetGUID().ToString(), emote);
-                    }
-                }
-
-                delete targets;
-                break;
             }
+            break;
+        }
         case SMART_ACTION_THREAT_ALL_PCT:
-            {
-                if (!me)
-                    break;
-
-                ThreatContainer::StorageType threatList = me->getThreatMgr().getThreatList();
-                for (ThreatContainer::StorageType::const_iterator i = threatList.begin(); i != threatList.end(); ++i)
-                {
-                    if (Unit* target = ObjectAccessor::GetUnit(*me, (*i)->getUnitGuid()))
-                    {
-                        me->getThreatMgr().modifyThreatPercent(target, e.action.threatPCT.threatINC ? (int32)e.action.threatPCT.threatINC : -(int32)e.action.threatPCT.threatDEC);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_THREAT_ALL_PCT: Creature {} modify threat for unit {}, value {}",
-                                       me->GetGUID().ToString(), target->GetGUID().ToString(), e.action.threatPCT.threatINC ? (int32)e.action.threatPCT.threatINC : -(int32)e.action.threatPCT.threatDEC);
-                    }
-                }
+        {
+            if (!me)
                 break;
+
+            ThreatContainer::StorageType threatList = me->GetThreatMgr().GetThreatList();
+            for (ThreatContainer::StorageType::const_iterator i = threatList.begin(); i != threatList.end(); ++i)
+            {
+                if (Unit* target = ObjectAccessor::GetUnit(*me, (*i)->getUnitGuid()))
+                {
+                    me->GetThreatMgr().ModifyThreatByPercent(target, e.action.threatPCT.threatINC ? (int32)e.action.threatPCT.threatINC : -(int32)e.action.threatPCT.threatDEC);
+                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_THREAT_ALL_PCT: Creature {} modify threat for unit {}, value {}",
+                                   me->GetGUID().ToString(), target->GetGUID().ToString(), e.action.threatPCT.threatINC ? (int32)e.action.threatPCT.threatINC : -(int32)e.action.threatPCT.threatDEC);
+                }
             }
+            break;
+        }
         case SMART_ACTION_THREAT_SINGLE_PCT:
-            {
-                if (!me)
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
-                    {
-                        me->getThreatMgr().modifyThreatPercent((*itr)->ToUnit(), e.action.threatPCT.threatINC ? (int32)e.action.threatPCT.threatINC : -(int32)e.action.threatPCT.threatDEC);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_THREAT_SINGLE_PCT: Creature {} modify threat for unit {}, value {}",
-                                       me->GetGUID().ToString(), (*itr)->GetGUID().ToString(), e.action.threatPCT.threatINC ? (int32)e.action.threatPCT.threatINC : -(int32)e.action.threatPCT.threatDEC);
-                    }
-                }
-
-                delete targets;
+        {
+            if (!me)
                 break;
+
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    me->GetThreatMgr().ModifyThreatByPercent(target->ToUnit(), e.action.threatPCT.threatINC ? (int32)e.action.threatPCT.threatINC : -(int32)e.action.threatPCT.threatDEC);
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_THREAT_SINGLE_PCT: Creature guidLow {} modify threat for unit {}, value {}",
+                              me->GetGUID().ToString(), target->GetGUID().ToString(), e.action.threatPCT.threatINC ? (int32)e.action.threatPCT.threatINC : -(int32)e.action.threatPCT.threatDEC);
+                }
             }
+            break;
+        }
         case SMART_ACTION_CALL_AREAEXPLOREDOREVENTHAPPENS:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                // Special handling for vehicles
+                if (IsUnit(target))
+                    if (Vehicle* vehicle = target->ToUnit()->GetVehicleKit())
+                        for (auto & Seat : vehicle->Seats)
+                            if (Player* player = ObjectAccessor::GetPlayer(*target, Seat.second.Passenger.Guid))
+                                player->AreaExploredOrEventHappens(e.action.quest.quest);
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (IsPlayer(target))
                 {
-                    // Special handling for vehicles
-                    if (IsUnit(*itr))
-                    {
-                        if (Vehicle* vehicle = (*itr)->ToUnit()->GetVehicleKit())
-                            for (SeatMap::iterator it = vehicle->Seats.begin(); it != vehicle->Seats.end(); ++it)
-                                if (Player* player = ObjectAccessor::GetPlayer(*(*itr), it->second.Passenger.Guid))
-                                    player->AreaExploredOrEventHappens(e.action.quest.quest);
+                    target->ToPlayer()->AreaExploredOrEventHappens(e.action.quest.quest);
 
-                        if (Player* player = (*itr)->ToUnit()->GetCharmerOrOwnerPlayerOrPlayerItself())
-                        {
-                            player->GroupEventHappens(e.action.quest.quest, GetBaseObject());
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_CALL_AREAEXPLOREDOREVENTHAPPENS: Player {} credited quest {}",
-                                           (*itr)->GetGUID().ToString(), e.action.quest.quest);
-                        }
-                    }
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_CALL_AREAEXPLOREDOREVENTHAPPENS: Player guidLow {} credited quest {}",
+                              target->GetGUID().ToString(), e.action.quest.quest);
                 }
-
-                delete targets;
-                break;
             }
+            break;
+        }
         case SMART_ACTION_CAST:
+        {
+            if (targets.empty())
+                break;
+
+            Unit* caster = me;
+            // Areatrigger Cast!
+            if (e.GetScriptType() == SMART_SCRIPT_TYPE_AREATRIGGER)
+                caster = unit->SummonTrigger(unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ(), unit->GetOrientation(), 5000);
+
+            if (e.action.cast.targetsLimit)
+                Acore::Containers::RandomResize(targets, e.action.cast.targetsLimit);
+
+            bool failedSpellCast = false, successfulSpellCast = false;
+
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                // may be nullptr
+                if (go)
+                    go->CastSpell(target->ToUnit(), e.action.cast.spell);
 
-                Unit* caster = me;
-                // Areatrigger Cast!
-                if (e.GetScriptType() == SMART_SCRIPT_TYPE_AREATRIGGER)
-                    caster = unit->SummonTrigger(unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ(), unit->GetOrientation(), 5000);
+                if (!IsUnit(target))
+                    continue;
 
-                if (e.action.cast.targetsLimit > 0 && targets->size() > e.action.cast.targetsLimit)
-                    Acore::Containers::RandomResize(*targets, e.action.cast.targetsLimit);
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (caster && caster != me) // Areatrigger cast
                 {
-                    if (go)
-                    {
-                        // Xinef: may be nullptr!
-                        go->CastSpell((*itr)->ToUnit(), e.action.cast.spell);
-                    }
-
-                    if (!IsUnit(*itr))
+                    caster->CastSpell(target->ToUnit(), e.action.cast.spell, (e.action.cast.castFlags & SMARTCAST_TRIGGERED));
+                }
+                else if (me)
+                {
+                    // If target has the aura, skip
+                    if ((e.action.cast.castFlags & SMARTCAST_AURA_NOT_PRESENT) && target->ToUnit()->HasAura(e.action.cast.spell))
                         continue;
 
-                    if (caster && caster != me) // Areatrigger cast
-                    {
-                        caster->CastSpell((*itr)->ToUnit(), e.action.cast.spell, (e.action.cast.flags & SMARTCAST_TRIGGERED));
-                    }
-                    else if (me && (!(e.action.cast.flags & SMARTCAST_AURA_NOT_PRESENT) || !(*itr)->ToUnit()->HasAura(e.action.cast.spell)))
-                    {
-                        if (e.action.cast.flags & SMARTCAST_INTERRUPT_PREVIOUS)
-                            me->InterruptNonMeleeSpells(false);
+                    // If the threatlist is a singleton, cancel
+                    if (e.action.cast.castFlags & SMARTCAST_THREATLIST_NOT_SINGLE)
+                        if (me->GetThreatMgr().GetThreatListSize() <= 1)
+                            break;
 
-                        // Xinef: flag usable only if caster has max dist set
-                        if ((e.action.cast.flags & SMARTCAST_COMBAT_MOVE) && GetCasterMaxDist() > 0.0f && me->GetMaxPower(GetCasterPowerType()) > 0)
-                        {
-                            // Xinef: check mana case only and operate movement accordingly, LoS and range is checked in targetet movement generator
-                            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(e.action.cast.spell);
-                            int32 currentPower = me->GetPower(GetCasterPowerType());
-
-                            if ((spellInfo && (currentPower < spellInfo->CalcPowerCost(me, spellInfo->GetSchoolMask()) || me->IsSpellProhibited(spellInfo->GetSchoolMask()))) || me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SILENCED))
-                            {
-                                SetCasterActualDist(0);
-                                CAST_AI(SmartAI, me->AI())->SetForcedCombatMove(0);
-                            }
-                            else if (GetCasterActualDist() == 0.0f && me->GetPowerPct(GetCasterPowerType()) > 30.0f)
-                            {
-                                RestoreCasterMaxDist();
-                                CAST_AI(SmartAI, me->AI())->SetForcedCombatMove(GetCasterActualDist());
-                            }
-                        }
-
-                        me->CastSpell((*itr)->ToUnit(), e.action.cast.spell, (e.action.cast.flags & SMARTCAST_TRIGGERED));
-                    }
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_INVOKER_CAST:
-            {
-                Unit* tempLastInvoker = GetLastInvoker(unit); // xinef: can be used for area triggers cast
-                if (!tempLastInvoker)
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                if (e.action.cast.targetsLimit > 0 && targets->size() > e.action.cast.targetsLimit)
-                    Acore::Containers::RandomResize(*targets, e.action.cast.targetsLimit);
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (!IsUnit(*itr))
+                    // If target does not use mana, skip
+                    if ((e.action.cast.castFlags & SMARTCAST_TARGET_POWER_MANA) && !target->ToUnit()->GetPower(POWER_MANA))
                         continue;
 
-                    if (!(e.action.cast.flags & SMARTCAST_AURA_NOT_PRESENT) || !(*itr)->ToUnit()->HasAura(e.action.cast.spell))
-                    {
-                        if (e.action.cast.flags & SMARTCAST_INTERRUPT_PREVIOUS)
-                            tempLastInvoker->InterruptNonMeleeSpells(false);
+                    // Interrupts current spellcast
+                    if (e.action.cast.castFlags & SMARTCAST_INTERRUPT_PREVIOUS)
+                        me->InterruptNonMeleeSpells(false);
 
-                        tempLastInvoker->CastSpell((*itr)->ToUnit(), e.action.cast.spell, (e.action.cast.flags & SMARTCAST_TRIGGERED));
+                    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(e.action.cast.spell);
+                    float distanceToTarget = me->GetDistance(target->ToUnit());
+                    float spellMaxRange = me->GetSpellMaxRangeForTarget(target->ToUnit(), spellInfo);
+                    float spellMinRange = me->GetSpellMinRangeForTarget(target->ToUnit(), spellInfo);
+                    float meleeRange = me->GetMeleeRange(target->ToUnit());
+
+                    bool isWithinLOSInMap = me->IsWithinLOSInMap(target->ToUnit());
+                    bool isWithinMeleeRange = distanceToTarget <= meleeRange;
+                    bool isRangedAttack = spellMaxRange > NOMINAL_MELEE_RANGE;
+                    bool isTargetRooted = target->ToUnit()->HasUnitState(UNIT_STATE_ROOT);
+                    // To prevent running back and forth when OOM, we must have more than 10% mana.
+                    bool canCastSpell = me->GetPowerPct(POWER_MANA) > 10.0f && spellInfo->CalcPowerCost(me, spellInfo->GetSchoolMask()) < (int32)me->GetPower(POWER_MANA) && !me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SILENCED);
+                    bool isSpellIgnoreLOS = spellInfo->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT);
+
+                    // If target is rooted we move out of melee range before casting, but not further than spell max range.
+                    if (isWithinLOSInMap && isWithinMeleeRange && isRangedAttack && isTargetRooted && canCastSpell && !me->IsVehicle())
+                    {
+                        failedSpellCast = true; // Mark spellcast as failed so we can retry it later
+
+                        if (me->IsRooted()) // Rooted inhabit type, never move/reposition
+                            continue;
+
+                        float minDistance = std::max(meleeRange, spellMinRange) - distanceToTarget + NOMINAL_MELEE_RANGE;
+                        CAST_AI(SmartAI, me->AI())->MoveAway(std::min(minDistance, spellMaxRange));
+                        continue;
                     }
-                }
 
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_ADD_AURA:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
+                    // Let us not try to cast spell if we know it is going to fail anyway. Stick to chasing and continue.
+                    if (distanceToTarget > spellMaxRange && isWithinLOSInMap)
                     {
-                        (*itr)->ToUnit()->AddAura(e.action.addAura.spell, (*itr)->ToUnit());
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_ADD_AURA: Adding aura {} to unit {}",
-                                       e.action.addAura.spell, (*itr)->GetGUID().ToString());
+                        failedSpellCast = true;
+
+                        if (me->IsRooted()) // Rooted inhabit type, never move/reposition
+                            continue;
+
+                        CAST_AI(SmartAI, me->AI())->SetCombatMove(true, std::max(spellMaxRange - NOMINAL_MELEE_RANGE, 0.0f));
+                        continue;
                     }
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_ACTIVATE_GOBJECT:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsGameObject(*itr))
+                    else if (distanceToTarget < spellMinRange || !(isWithinLOSInMap || isSpellIgnoreLOS))
                     {
-                        GameObject* go = (*itr)->ToGameObject();
+                        failedSpellCast = true;
 
-                        // Activate
-                        if (go->GetGoType() != GAMEOBJECT_TYPE_DOOR)
-                        {
-                            go->SetLootState(GO_READY);
-                        }
+                        if (me->IsRooted()) // Rooted inhabit type, never move/reposition
+                            continue;
 
-                        go->UseDoorOrButton(0, !!e.action.activateObject.alternative, unit);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_ACTIVATE_GOBJECT. Gameobject {} activated", go->GetGUID().ToString());
+                        CAST_AI(SmartAI, me->AI())->SetCombatMove(true);
+                        continue;
                     }
-                }
 
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_RESET_GOBJECT:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsGameObject(*itr))
+                    TriggerCastFlags triggerFlags = TRIGGERED_NONE;
+                    if (e.action.cast.castFlags & SMARTCAST_TRIGGERED)
                     {
-                        (*itr)->ToGameObject()->ResetDoorOrButton();
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_RESET_GOBJECT. Gameobject {} reset",
-                                       (*itr)->GetGUID().ToString());
-                    }
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_SET_EMOTE_STATE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
-                    {
-                        (*itr)->ToUnit()->SetUInt32Value(UNIT_NPC_EMOTESTATE, e.action.emote.emote);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SET_EMOTE_STATE. Unit {} set emotestate to {}",
-                                       (*itr)->GetGUID().ToString(), e.action.emote.emote);
-                    }
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_SET_UNIT_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
-                    {
-                        if (!e.action.unitFlag.type)
-                        {
-                            (*itr)->ToUnit()->SetFlag(UNIT_FIELD_FLAGS, e.action.unitFlag.flag);
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SET_UNIT_FLAG. Unit {} added flag {} to UNIT_FIELD_FLAGS",
-                            (*itr)->GetGUID().ToString(), e.action.unitFlag.flag);
-                        }
+                        if (e.action.cast.triggerFlags)
+                            triggerFlags = TriggerCastFlags(e.action.cast.triggerFlags);
                         else
-                        {
-                            (*itr)->ToUnit()->SetFlag(UNIT_FIELD_FLAGS_2, e.action.unitFlag.flag);
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SET_UNIT_FLAG. Unit {} added flag {} to UNIT_FIELD_FLAGS_2",
-                            (*itr)->GetGUID().ToString(), e.action.unitFlag.flag);
-                        }
+                            triggerFlags = TRIGGERED_FULL_MASK;
                     }
-                }
 
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_REMOVE_UNIT_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                    SpellCastResult result = me->CastSpell(target->ToUnit(), e.action.cast.spell, triggerFlags);
+                    bool spellCastFailed = (result != SPELL_CAST_OK && result != SPELL_FAILED_SPELL_IN_PROGRESS);
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
+                    if (e.action.cast.castFlags & SMARTCAST_COMBAT_MOVE)
                     {
-                        if (!e.action.unitFlag.type)
-                        {
-                            (*itr)->ToUnit()->RemoveFlag(UNIT_FIELD_FLAGS, e.action.unitFlag.flag);
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_REMOVE_UNIT_FLAG. Unit {} removed flag {} to UNIT_FIELD_FLAGS",
-                            (*itr)->GetGUID().ToString(), e.action.unitFlag.flag);
-                        }
+                        // If cast flag SMARTCAST_COMBAT_MOVE is set combat movement will not be allowed unless target is outside spell range, out of mana, or LOS.
+                        if (result == SPELL_FAILED_OUT_OF_RANGE)
+                            // if we are just out of range, we only chase until we are back in spell range.
+                            CAST_AI(SmartAI, me->AI())->SetCombatMove(true, std::max(spellMaxRange - NOMINAL_MELEE_RANGE, 0.0f));
                         else
-                        {
-                            (*itr)->ToUnit()->RemoveFlag(UNIT_FIELD_FLAGS_2, e.action.unitFlag.flag);
-                            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_REMOVE_UNIT_FLAG. Unit {} removed flag {} to UNIT_FIELD_FLAGS_2",
-                            (*itr)->GetGUID().ToString(), e.action.unitFlag.flag);
-                        }
+                            // if spell fail for any other reason, we chase to melee range, or stay where we are if spellcast was successful.
+                            CAST_AI(SmartAI, me->AI())->SetCombatMove(spellCastFailed);
                     }
+
+                    if (spellCastFailed)
+                        failedSpellCast = true;
+                    else
+                        successfulSpellCast = true;
+
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_CAST: Unit {} casts spell {} on target {} with castflags {}",
+                              me->GetGUID().ToString(), e.action.cast.spell, target->GetGUID().ToString(), e.action.cast.castFlags);
                 }
-
-                delete targets;
-                break;
             }
-        case SMART_ACTION_AUTO_ATTACK:
-            {
-                if (!IsSmart())
-                    break;
 
-                CAST_AI(SmartAI, me->AI())->SetAutoAttack(e.action.autoAttack.attack);
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_AUTO_ATTACK: Creature: {} bool on = {}",
-                               me->GetGUID().ToString(), e.action.autoAttack.attack);
-                break;
+            // If there is at least 1 failed cast and no successful casts at all, retry again on next loop
+            if (failedSpellCast && !successfulSpellCast)
+            {
+                RetryLater(e, true);
+                // Don't execute linked events
+                return;
             }
-        case SMART_ACTION_ALLOW_COMBAT_MOVEMENT:
-            {
-                if (!IsSmart())
-                    break;
 
-                // Xinef: Fix Combat Movement
-                bool move = e.action.combatMove.move;
-                if (move && GetMaxCombatDist() && e.GetEventType() == SMART_EVENT_MANA_PCT)
+            break;
+        }
+        case SMART_ACTION_SELF_CAST:
+        {
+            if (targets.empty())
+                break;
+
+            if (e.action.cast.targetsLimit)
+                Acore::Containers::RandomResize(targets, e.action.cast.targetsLimit);
+
+            TriggerCastFlags triggerFlags = TRIGGERED_NONE;
+            if (e.action.cast.castFlags & SMARTCAST_TRIGGERED)
+            {
+                if (e.action.cast.triggerFlags)
                 {
-                    SetActualCombatDist(0);
-                    CAST_AI(SmartAI, me->AI())->SetForcedCombatMove(0);
+                    triggerFlags = TriggerCastFlags(e.action.cast.triggerFlags);
                 }
                 else
-                    CAST_AI(SmartAI, me->AI())->SetCombatMove(move);
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_ALLOW_COMBAT_MOVEMENT: Creature {} bool on = {}",
-                               me->GetGUID().ToString(), e.action.combatMove.move);
-                break;
-            }
-        case SMART_ACTION_SET_EVENT_PHASE:
-            {
-                if (!GetBaseObject())
-                    break;
-
-                SetPhase(e.action.setEventPhase.phase);
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SET_EVENT_PHASE: Creature {} set event phase {}",
-                               GetBaseObject()->GetGUID().ToString(), e.action.setEventPhase.phase);
-                break;
-            }
-        case SMART_ACTION_INC_EVENT_PHASE:
-            {
-                if (!GetBaseObject())
-                    break;
-
-                IncPhase(e.action.incEventPhase.inc);
-                DecPhase(e.action.incEventPhase.dec);
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_INC_EVENT_PHASE: Creature {} inc event phase by {}, "
-                               "decrease by {}", GetBaseObject()->GetGUID().ToString(), e.action.incEventPhase.inc, e.action.incEventPhase.dec);
-                break;
-            }
-        case SMART_ACTION_EVADE:
-            {
-                if (!GetBaseObject())
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature((*itr)))
-                        if ((*itr)->ToCreature()->IsAIEnabled)
-                            (*itr)->ToCreature()->AI()->EnterEvadeMode();
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_FLEE_FOR_ASSIST:
-            {
-                // Xinef: do not allow to flee without control (stun, fear etc)
-                if (!me || me->HasUnitState(UNIT_STATE_LOST_CONTROL) || me->GetSpeed(MOVE_RUN) < 0.1f)
-                    break;
-
-                me->DoFleeToGetAssistance();
-                if (e.action.flee.withEmote)
                 {
-                    Acore::BroadcastTextBuilder builder(me, CHAT_MSG_MONSTER_EMOTE, BROADCAST_TEXT_FLEE_FOR_ASSIST, me->getGender());
-                    sCreatureTextMgr->SendChatPacket(me, builder, CHAT_MSG_MONSTER_EMOTE);
+                    triggerFlags = TRIGGERED_FULL_MASK;
                 }
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_FLEE_FOR_ASSIST: Creature {} DoFleeToGetAssistance", me->GetGUID().ToString());
+            }
+
+            for (WorldObject* target : targets)
+            {
+                Unit* uTarget = target->ToUnit();
+                if (!uTarget)
+                    continue;
+
+                if (!(e.action.cast.castFlags & SMARTCAST_AURA_NOT_PRESENT) || !uTarget->HasAura(e.action.cast.spell))
+                {
+                    if (e.action.cast.castFlags & SMARTCAST_INTERRUPT_PREVIOUS)
+                    {
+                        uTarget->InterruptNonMeleeSpells(false);
+                    }
+
+                    uTarget->CastSpell(uTarget, e.action.cast.spell, triggerFlags);
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_INVOKER_CAST:
+        {
+            // Can be used for area trigger cast
+            WorldObject* tempLastInvoker = GetLastInvoker(unit);
+            if (!tempLastInvoker)
+                break;
+
+            if (targets.empty())
+                break;
+
+            if (e.action.cast.targetsLimit)
+                Acore::Containers::RandomResize(targets, e.action.cast.targetsLimit);
+
+            for (WorldObject* target : targets)
+            {
+                if (!IsUnit(target))
+                    continue;
+
+                if (!IsUnit(tempLastInvoker))
+                    continue;
+
+                if (!(e.action.cast.castFlags & SMARTCAST_AURA_NOT_PRESENT) || !target->ToUnit()->HasAura(e.action.cast.spell))
+                {
+                    if (e.action.cast.castFlags & SMARTCAST_INTERRUPT_PREVIOUS)
+                    {
+                        tempLastInvoker->ToUnit()->InterruptNonMeleeSpells(false);
+                    }
+
+                    TriggerCastFlags triggerFlags = TRIGGERED_NONE;
+                    if (e.action.cast.castFlags & SMARTCAST_TRIGGERED)
+                    {
+                        if (e.action.cast.triggerFlags)
+                        {
+                            triggerFlags = TriggerCastFlags(e.action.cast.triggerFlags);
+                        }
+                        else
+                        {
+                            triggerFlags = TRIGGERED_FULL_MASK;
+                        }
+                    }
+
+                    tempLastInvoker->ToUnit()->CastSpell(target->ToUnit(), e.action.cast.spell, triggerFlags);
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_INVOKER_CAST: Invoker {} casts spell {} on target {} with castflags {}",
+                              tempLastInvoker->GetGUID().ToString(), e.action.cast.spell, target->GetGUID().ToString(), e.action.cast.castFlags);
+                }
+                else
+                {
+                    LOG_DEBUG("scripts.ai", "Spell {} not cast because it has flag SMARTCAST_AURA_NOT_PRESENT and the target {} already has the aura",
+                              e.action.cast.spell, target->GetGUID().ToString());
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_ADD_AURA:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    target->ToUnit()->AddAura(e.action.cast.spell, target->ToUnit());
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_ADD_AURA: Adding aura {} to unit {}",
+                              e.action.cast.spell, target->GetGUID().ToString());
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_ACTIVATE_GOBJECT:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (IsGameObject(target))
+                {
+                    GameObject* go = target->ToGameObject();
+
+                    // Activate
+                    if (go->GetGoType() != GAMEOBJECT_TYPE_DOOR)
+                    {
+                        go->SetLootState(GO_READY);
+                    }
+
+                    go->UseDoorOrButton(0, !!e.action.activateObject.alternative, unit);
+                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_ACTIVATE_GOBJECT. Gameobject {} activated", go->GetGUID().ToString());
+                }
+            }
+
+            break;
+        }
+        case SMART_ACTION_RESET_GOBJECT:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (IsGameObject(target))
+                {
+                    target->ToGameObject()->ResetDoorOrButton();
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_RESET_GOBJECT. Gameobject {} (entry: {}) reset",
+                              target->GetGUID().ToString(), target->GetEntry());
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_SET_EMOTE_STATE:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    target->ToUnit()->SetUInt32Value(UNIT_NPC_EMOTESTATE, e.action.emote.emote);
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_SET_EMOTE_STATE. Unit {} set emotestate to {}",
+                              target->GetGUID().ToString(), e.action.emote.emote);
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_SET_UNIT_FLAG:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    if (!e.action.unitFlag.type)
+                    {
+                        target->ToUnit()->SetFlag(UNIT_FIELD_FLAGS, e.action.unitFlag.flag);
+                        LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_SET_UNIT_FLAG. Unit {} added flag {} to UNIT_FIELD_FLAGS",
+                                  target->GetGUID().ToString(), e.action.unitFlag.flag);
+                    }
+                    else
+                    {
+                        target->ToUnit()->SetFlag(UNIT_FIELD_FLAGS_2, e.action.unitFlag.flag);
+                        LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_SET_UNIT_FLAG. Unit {} added flag {} to UNIT_FIELD_FLAGS_2",
+                                  target->GetGUID().ToString(), e.action.unitFlag.flag);
+                    }
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_REMOVE_UNIT_FLAG:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    if (!e.action.unitFlag.type)
+                    {
+                        target->ToUnit()->RemoveFlag(UNIT_FIELD_FLAGS, e.action.unitFlag.flag);
+                        LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_REMOVE_UNIT_FLAG. Unit {} removed flag {} to UNIT_FIELD_FLAGS",
+                                  target->GetGUID().ToString(), e.action.unitFlag.flag);
+                    }
+                    else
+                    {
+                        target->ToUnit()->RemoveFlag(UNIT_FIELD_FLAGS_2, e.action.unitFlag.flag);
+                        LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_REMOVE_UNIT_FLAG. Unit {} removed flag {} to UNIT_FIELD_FLAGS_2",
+                                  target->GetGUID().ToString(), e.action.unitFlag.flag);
+                    }
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_AUTO_ATTACK:
+        {
+            if (!IsSmart())
+                break;
+
+            CAST_AI(SmartAI, me->AI())->SetAutoAttack(e.action.autoAttack.attack);
+            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_AUTO_ATTACK: Creature: {} bool on = {}",
+                           me->GetGUID().ToString(), e.action.autoAttack.attack);
+            break;
+        }
+        case SMART_ACTION_ALLOW_COMBAT_MOVEMENT:
+        {
+            if (!IsSmart())
+                break;
+
+            bool move = e.action.combatMove.move;
+            CAST_AI(SmartAI, me->AI())->SetCombatMove(move);
+            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_ALLOW_COMBAT_MOVEMENT: Creature {} bool on = {}",
+                           me->GetGUID().ToString(), e.action.combatMove.move);
+            break;
+        }
+        case SMART_ACTION_SET_EVENT_PHASE:
+        {
+            if (!GetBaseObject())
+                break;
+
+            SetPhase(e.action.setEventPhase.phase);
+            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SET_EVENT_PHASE: Creature {} set event phase {}",
+                           GetBaseObject()->GetGUID().ToString(), e.action.setEventPhase.phase);
+            break;
+        }
+        case SMART_ACTION_INC_EVENT_PHASE:
+        {
+            if (!GetBaseObject())
+                break;
+
+            IncPhase(e.action.incEventPhase.inc);
+            DecPhase(e.action.incEventPhase.dec);
+            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_INC_EVENT_PHASE: Creature {} inc event phase by {}, "
+                           "decrease by {}", GetBaseObject()->GetGUID().ToString(), e.action.incEventPhase.inc, e.action.incEventPhase.dec);
+            break;
+        }
+        case SMART_ACTION_EVADE:
+        {
+            if (!GetBaseObject())
+                break;
+
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    if (target->ToCreature()->IsAIEnabled)
+                        target->ToCreature()->AI()->EnterEvadeMode();
+
+            break;
+        }
+        case SMART_ACTION_FLEE_FOR_ASSIST:
+        {
+            // Xinef: do not allow to flee without control (stun, fear etc)
+            if (!me || me->HasUnitState(UNIT_STATE_LOST_CONTROL) || me->GetSpeed(MOVE_RUN) < 0.1f)
+                break;
+
+            me->DoFleeToGetAssistance();
+            if (e.action.flee.withEmote)
+            {
+                Acore::BroadcastTextBuilder builder(me, CHAT_MSG_MONSTER_EMOTE, BROADCAST_TEXT_FLEE_FOR_ASSIST, me->getGender());
+                sCreatureTextMgr->SendChatPacket(me, builder, CHAT_MSG_MONSTER_EMOTE);
+            }
+            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_FLEE_FOR_ASSIST: Creature {} DoFleeToGetAssistance", me->GetGUID().ToString());
+            break;
+        }
+        case SMART_ACTION_COMBAT_STOP:
+        {
+            if (!me)
+                break;
+
+            me->CombatStop(true);
+            break;
+        }
+        case SMART_ACTION_CALL_GROUPEVENTHAPPENS:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (!IsUnit(target))
+                    continue;
+
+                Unit* unitTarget = target->ToUnit();
+                // If invoker was pet or charm
+                Player* player = unitTarget->GetCharmerOrOwnerPlayerOrPlayerItself();
+                if (player && GetBaseObject())
+                {
+                    player->GroupEventHappens(e.action.quest.quest, GetBaseObject());
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_CALL_GROUPEVENTHAPPENS: Player {}, group credit for quest {}",
+                        player->GetGUID().ToString(), e.action.quest.quest);
+                }
+
+                // Special handling for vehicles
+                if (Vehicle* vehicle = unitTarget->GetVehicleKit())
+                {
+                    for (auto& Seat : vehicle->Seats)
+                    {
+                        if (Player* player = ObjectAccessor::GetPlayer(*unitTarget, Seat.second.Passenger.Guid))
+                        {
+                            player->GroupEventHappens(e.action.quest.quest, GetBaseObject());
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_REMOVEAURASFROMSPELL:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (!IsUnit(target))
+                    continue;
+
+                if (e.action.removeAura.spell)
+                {
+                    if (e.action.removeAura.charges)
+                    {
+                        if (Aura* aur = target->ToUnit()->GetAura(e.action.removeAura.spell))
+                            aur->ModCharges(-static_cast<int32>(e.action.removeAura.charges), AURA_REMOVE_BY_EXPIRE);
+                    }
+                    else
+                        target->ToUnit()->RemoveAurasDueToSpell(e.action.removeAura.spell);
+                }
+                else
+                    target->ToUnit()->RemoveAllAuras();
+
+                LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_REMOVEAURASFROMSPELL: Unit {}, spell {}",
+                          target->GetGUID().ToString(), e.action.removeAura.spell);
+            }
+            break;
+        }
+        case SMART_ACTION_FOLLOW:
+        {
+            if (!IsSmart())
+                break;
+
+            if (e.target.type == SMART_TARGET_NONE || e.target.type == SMART_TARGET_SELF)
+            {
+                CAST_AI(SmartAI, me->AI())->StopFollow(false);
                 break;
             }
-        case SMART_ACTION_COMBAT_STOP:
+
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    float angle = e.action.follow.angle > 6 ? (e.action.follow.angle * M_PI / 180.0f) : e.action.follow.angle;
+                    CAST_AI(SmartAI, me->AI())->SetFollow(target->ToUnit(), float(e.action.follow.dist) + 0.1f, angle, e.action.follow.credit, e.action.follow.entry, e.action.follow.creditType, e.action.follow.aliveState);
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_FOLLOW: Creature {} following target {}",
+                              me->GetGUID().ToString(), target->GetGUID().ToString());
+                    break;
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_RANDOM_PHASE:
+        {
+            if (!GetBaseObject())
+                break;
+
+            std::vector<uint32> phases;
+            std::copy_if(e.action.randomPhase.phases.begin(), e.action.randomPhase.phases.end(),
+                         std::back_inserter(phases), [](uint32 phase) { return phase != 0; });
+
+            uint32 phase = Acore::Containers::SelectRandomContainerElement(phases);
+            SetPhase(phase);
+            LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_RANDOM_PHASE: Creature {} sets event phase to {}",
+                      GetBaseObject()->GetGUID().ToString(), phase);
+            break;
+        }
+        case SMART_ACTION_RANDOM_PHASE_RANGE:
+        {
+            if (!GetBaseObject())
+                break;
+
+            uint32 phase = urand(e.action.randomPhaseRange.phaseMin, e.action.randomPhaseRange.phaseMax);
+            SetPhase(phase);
+            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_RANDOM_PHASE_RANGE: Creature {} sets event phase to {}",
+                           GetBaseObject()->GetGUID().ToString(), phase);
+            break;
+        }
+        case SMART_ACTION_CALL_KILLEDMONSTER:
+        {
+            if (trigger && IsPlayer(unit))
+            {
+                unit->ToPlayer()->RewardPlayerAndGroupAtEvent(e.action.killedMonster.creature, unit);
+                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_CALL_KILLEDMONSTER: (trigger == true) Player {}, Killcredit: {}",
+                          unit->GetGUID().ToString(), e.action.killedMonster.creature);
+            }
+            else if (e.target.type == SMART_TARGET_NONE || e.target.type == SMART_TARGET_SELF) // Loot recipient and his group members
             {
                 if (!me)
                     break;
 
-                me->CombatStop(true);
-                break;
-            }
-        case SMART_ACTION_CALL_GROUPEVENTHAPPENS:
-            {
-                if (!GetBaseObject())
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (Player* player = me->GetLootRecipient())
                 {
-                    if (IsUnit((*itr)))
-                    {
-                        if (Player* player = (*itr)->ToUnit()->GetCharmerOrOwnerPlayerOrPlayerItself())
-                            player->GroupEventHappens(e.action.quest.quest, GetBaseObject());
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_CALL_GROUPEVENTHAPPENS: Player {}, group credit for quest {}",
-                                       (*itr)->GetGUID().ToString(), e.action.quest.quest);
-                    }
+                    player->RewardPlayerAndGroupAtEvent(e.action.killedMonster.creature, player);
+                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_CALL_KILLEDMONSTER: Player {}, Killcredit: {}",
+                              player->GetGUID().ToString(), e.action.killedMonster.creature);
                 }
-
-                delete targets;
-                break;
             }
-        case SMART_ACTION_REMOVEAURASFROMSPELL:
+            else // Specific target type
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                for (WorldObject* target : targets)
                 {
-                    if (!IsUnit((*itr)))
+                    if (!IsUnit(target))
                         continue;
 
-                    if (e.action.removeAura.spell)
-                    {
-                        if (e.action.removeAura.charges)
-                        {
-                            if (Aura* aur = (*itr)->ToUnit()->GetAura(e.action.removeAura.spell))
-                                aur->ModCharges(-static_cast<int32>(e.action.removeAura.charges), AURA_REMOVE_BY_EXPIRE);
-                        }
-                        else
-                            (*itr)->ToUnit()->RemoveAurasDueToSpell(e.action.removeAura.spell);
-                    }
-                    else
-                        (*itr)->ToUnit()->RemoveAllAuras();
+                    Player* player = target->ToUnit()->GetCharmerOrOwnerPlayerOrPlayerItself();
+                    if (!player)
+                        continue;
 
-                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_REMOVEAURASFROMSPELL: Unit {}, spell {}",
-                                   (*itr)->GetGUID().ToString(), e.action.removeAura.spell);
+                    player->RewardPlayerAndGroupAtEvent(e.action.killedMonster.creature, player);
+                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_CALL_KILLEDMONSTER: Player {}, Killcredit: {}",
+                              target->GetGUID().ToString(), e.action.killedMonster.creature);
                 }
-
-                delete targets;
-                break;
             }
-        case SMART_ACTION_FOLLOW:
-            {
-                if (!IsSmart())
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                {
-                    CAST_AI(SmartAI, me->AI())->StopFollow(false);
-                    break;
-                }
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit((*itr)))
-                    {
-                        float angle = e.action.follow.angle > 6 ? (e.action.follow.angle * M_PI / 180.0f) : e.action.follow.angle;
-                        CAST_AI(SmartAI, me->AI())->SetFollow((*itr)->ToUnit(), float(int32(e.action.follow.dist)) + 0.1f, angle, e.action.follow.credit, e.action.follow.entry, e.action.follow.creditType, e.action.follow.aliveState);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_FOLLOW: Creature {} following target {}",
-                                       me->GetGUID().ToString(), (*itr)->GetGUID().ToString());
-                        break;
-                    }
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_RANDOM_PHASE:
-            {
-                if (!GetBaseObject())
-                    break;
-
-                uint32 phases[SMART_ACTION_PARAM_COUNT];
-                phases[0] = e.action.randomPhase.phase1;
-                phases[1] = e.action.randomPhase.phase2;
-                phases[2] = e.action.randomPhase.phase3;
-                phases[3] = e.action.randomPhase.phase4;
-                phases[4] = e.action.randomPhase.phase5;
-                phases[5] = e.action.randomPhase.phase6;
-                uint32 temp[SMART_ACTION_PARAM_COUNT];
-                uint32 count = 0;
-                for (uint8 i = 0; i < SMART_ACTION_PARAM_COUNT; i++)
-                {
-                    if (phases[i] > 0)
-                    {
-                        temp[count] = phases[i];
-                        ++count;
-                    }
-                }
-
-                if (count == 0)
-                    break;
-
-                uint32 phase = temp[urand(0, count - 1)];
-                SetPhase(phase);
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_RANDOM_PHASE: Creature {} sets event phase to {}",
-                               GetBaseObject()->GetGUID().ToString(), phase);
-                break;
-            }
-        case SMART_ACTION_RANDOM_PHASE_RANGE:
-            {
-                if (!GetBaseObject())
-                    break;
-
-                uint32 phase = urand(e.action.randomPhaseRange.phaseMin, e.action.randomPhaseRange.phaseMax);
-                SetPhase(phase);
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_RANDOM_PHASE_RANGE: Creature {} sets event phase to {}",
-                               GetBaseObject()->GetGUID().ToString(), phase);
-                break;
-            }
-        case SMART_ACTION_CALL_KILLEDMONSTER:
-            {
-                if (trigger && IsPlayer(unit))
-                {
-                    unit->ToPlayer()->RewardPlayerAndGroupAtEvent(e.action.killedMonster.creature, unit);
-                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_CALL_KILLEDMONSTER: (trigger == true) Player {}, Killcredit: {}",
-                                   unit->GetGUID().ToString(), e.action.killedMonster.creature);
-                }
-                else if (e.target.type == SMART_TARGET_NONE || e.target.type == SMART_TARGET_SELF) // Loot recipient and his group members
-                {
-                    if (!me)
-                        break;
-
-                    if (Player* player = me->GetLootRecipient())
-                    {
-                        player->RewardPlayerAndGroupAtEvent(e.action.killedMonster.creature, player);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_CALL_KILLEDMONSTER: Player {}, Killcredit: {}",
-                            player->GetGUID().ToString(), e.action.killedMonster.creature);
-                    }
-                }
-                else // Specific target type
-                {
-                    ObjectList* targets = GetTargets(e, unit);
-                    if (!targets)
-                        break;
-
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        if (!IsUnit(*itr))
-                            continue;
-
-                        Player* player = (*itr)->ToUnit()->GetCharmerOrOwnerPlayerOrPlayerItself();
-                        if (!player)
-                            continue;
-
-                        player->RewardPlayerAndGroupAtEvent(e.action.killedMonster.creature, player);
-                        LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_CALL_KILLEDMONSTER: Player {}, Killcredit: {}",
-                                       (*itr)->GetGUID().ToString(), e.action.killedMonster.creature);
-                    }
-
-                    delete targets;
-                }
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_SET_INST_DATA:
+        {
+            WorldObject* obj = GetBaseObject();
+            if (!obj)
+                obj = unit;
+
+            if (!obj)
+                break;
+
+            InstanceScript* instance = obj->GetInstanceScript();
+            if (!instance)
             {
-                WorldObject* obj = GetBaseObject();
-                if (!obj)
-                    obj = unit;
-
-                if (!obj)
-                    break;
-
-                InstanceScript* instance = obj->GetInstanceScript();
-                if (!instance)
-                {
-                    LOG_ERROR("scripts.ai.sai", "SmartScript: Event {} attempt to set instance data without instance script. EntryOrGuid {}", e.GetEventType(), e.entryOrGuid);
-                    break;
-                }
-
-                switch (e.action.setInstanceData.type)
-                {
-                    case 0:
-                    {
-                        instance->SetData(e.action.setInstanceData.field, e.action.setInstanceData.data);
-                        LOG_DEBUG("scripts.ai.sai", "SmartScript::ProcessAction: SMART_ACTION_SET_INST_DATA: Field: {}, data: {}", e.action.setInstanceData.field, e.action.setInstanceData.data);
-                    } break;
-                    case 1:
-                    {
-                        instance->SetBossState(e.action.setInstanceData.field, static_cast<EncounterState>(e.action.setInstanceData.data));
-                        LOG_DEBUG("scripts.ai.sai", "SmartScript::ProcessAction: SMART_ACTION_SET_INST_DATA: SetBossState BossId: {}, State: {} ({})", e.action.setInstanceData.field, e.action.setInstanceData.data, InstanceScript::GetBossStateName(e.action.setInstanceData.data));
-                    } break;
-                    default:
-                    {
-                        break;
-                    }
-                }
+                LOG_ERROR("scripts.ai.sai", "SmartScript: Event {} attempt to set instance data without instance script. EntryOrGuid {}", e.GetEventType(), e.entryOrGuid);
                 break;
             }
+
+            switch (e.action.setInstanceData.type)
+            {
+                case 0:
+                {
+                    instance->SetData(e.action.setInstanceData.field, e.action.setInstanceData.data);
+                    LOG_DEBUG("scripts.ai.sai", "SmartScript::ProcessAction: SMART_ACTION_SET_INST_DATA: Field: {}, data: {}", e.action.setInstanceData.field, e.action.setInstanceData.data);
+                } break;
+                case 1:
+                {
+                    instance->SetBossState(e.action.setInstanceData.field, static_cast<EncounterState>(e.action.setInstanceData.data));
+                    LOG_DEBUG("scripts.ai.sai", "SmartScript::ProcessAction: SMART_ACTION_SET_INST_DATA: SetBossState BossId: {}, State: {} ({})", e.action.setInstanceData.field, e.action.setInstanceData.data, InstanceScript::GetBossStateName(e.action.setInstanceData.data));
+                } break;
+                default:
+                {
+                    break;
+                }
+            }
+            break;
+        }
         case SMART_ACTION_SET_INST_DATA64:
+        {
+            WorldObject* obj = GetBaseObject();
+            if (!obj)
+                obj = unit;
+
+            if (!obj)
+                break;
+
+            InstanceScript* instance = obj->GetInstanceScript();
+            if (!instance)
             {
-                WorldObject* obj = GetBaseObject();
-                if (!obj)
-                    obj = unit;
-
-                if (!obj)
-                    break;
-
-                InstanceScript* instance = obj->GetInstanceScript();
-                if (!instance)
-                {
-                    LOG_ERROR("sql.sql", "SmartScript: Event {} attempt to set instance data without instance script. EntryOrGuid {}", e.GetEventType(), e.entryOrGuid);
-                    break;
-                }
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                instance->SetGuidData(e.action.setInstanceData64.field, targets->front()->GetGUID());
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_SET_INST_DATA64: Field: {}, data: {}", e.action.setInstanceData64.field, targets->front()->GetGUID().GetRawValue());
-                delete targets;
+                LOG_ERROR("sql.sql", "SmartScript: Event {} attempt to set instance data without instance script. EntryOrGuid {}", e.GetEventType(), e.entryOrGuid);
                 break;
             }
+
+            if (targets.empty())
+                break;
+
+            instance->SetGuidData(e.action.setInstanceData64.field, targets.front()->GetGUID());
+            LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_SET_INST_DATA64: Field: {}, data: {}",
+                      e.action.setInstanceData64.field, targets.front()->GetGUID().ToString());
+            break;
+        }
         case SMART_ACTION_UPDATE_TEMPLATE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->UpdateEntry(e.action.updateTemplate.creature, nullptr, e.action.updateTemplate.updateLevel != 0);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    target->ToCreature()->UpdateEntry(e.action.updateTemplate.creature, target->ToCreature()->GetCreatureData(), e.action.updateTemplate.updateLevel != 0);
+            break;
+        }
         case SMART_ACTION_DIE:
+        {
+            if (e.action.die.milliseconds)
             {
                 if (me && !me->isDead())
                 {
-                    Unit::Kill(me, me);
-                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_DIE: Creature {}", me->GetGUID().ToString());
-                }
-                break;
-            }
-        case SMART_ACTION_SET_IN_COMBAT_WITH_ZONE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                if (!me->GetMap()->IsDungeon())
-                {
-                    ObjectList* units = GetWorldObjectsInDist((float)e.action.combatZone.range);
-                    if (!units->empty() && GetBaseObject())
-                        for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                            if (IsPlayer(*itr) && !(*itr)->ToPlayer()->isDead())
-                            {
-                                me->SetInCombatWith((*itr)->ToPlayer());
-                                (*itr)->ToPlayer()->SetInCombatWith(me);
-                                me->AddThreat((*itr)->ToPlayer(), 0.0f);
-                            }
-                }
-                else
-                {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                        if (IsCreature(*itr))
-                            (*itr)->ToCreature()->SetInCombatWithZone();
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_CALL_FOR_HELP:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsCreature(*itr))
-                    {
-                        (*itr)->ToCreature()->CallForHelp((float)e.action.callHelp.range, e.GetEventType() == SMART_EVENT_AGGRO ? unit : nullptr);
-                        if (e.action.callHelp.withEmote)
+                    me->m_Events.AddEventAtOffset([&]
                         {
-                            Acore::BroadcastTextBuilder builder(*itr, CHAT_MSG_MONSTER_EMOTE, BROADCAST_TEXT_CALL_FOR_HELP, LANG_UNIVERSAL, nullptr);
-                            sCreatureTextMgr->SendChatPacket(*itr, builder, CHAT_MSG_MONSTER_EMOTE);
+                            // We need to check again to see if we didn't die in the process.
+                            if (me && !me->isDead())
+                            {
+                                me->KillSelf();
+                                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_DIE: Creature {}", me->GetGUID().ToString());
+                            }
+                        }, Milliseconds(e.action.die.milliseconds));
+                }
+            }
+            else if (me && !me->isDead())
+            {
+                me->KillSelf();
+                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_DIE: Creature {}", me->GetGUID().ToString());
+            }
+            break;
+        }
+        case SMART_ACTION_SET_IN_COMBAT_WITH_ZONE:
+        {
+            if (targets.empty())
+                break;
+
+            if (!me->GetMap()->IsDungeon())
+            {
+                ObjectVector units;
+                GetWorldObjectsInDist(units, static_cast<float>(e.target.unitRange.maxDist));
+
+                if (!units.empty() && GetBaseObject())
+                    for (WorldObject* unit : units)
+                        if (IsPlayer(unit) && !unit->ToPlayer()->isDead())
+                        {
+                            me->SetInCombatWith(unit->ToPlayer());
+                            unit->ToPlayer()->SetInCombatWith(me);
+                            me->AddThreat(unit->ToPlayer(), 0.0f);
                         }
+            }
+            else
+            {
+                for (WorldObject* target : targets)
+                {
+                    if (IsCreature(target))
+                    {
+                        target->ToCreature()->SetInCombatWithZone();
+                        LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_SET_IN_COMBAT_WITH_ZONE: Creature {}, target: {}",
+                                  me->GetGUID().ToString(), target->GetGUID().ToString());
                     }
                 }
-
-                delete targets;
-                break;
             }
-        case SMART_ACTION_SET_SHEATH:
+
+            break;
+        }
+        case SMART_ACTION_CALL_FOR_HELP:
+        {
+            for (WorldObject* target : targets)
             {
-                if (me)
+                if (IsCreature(target))
                 {
-                    me->SetSheath(SheathState(e.action.setSheath.sheath));
-                    LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_SET_SHEATH: Creature {}, State: {}",
-                                   me->GetGUID().ToString(), e.action.setSheath.sheath);
+                    target->ToCreature()->CallForHelp(float(e.action.callHelp.range));
+                    if (e.action.callHelp.withEmote)
+                    {
+                        Acore::BroadcastTextBuilder builder(target, CHAT_MSG_MONSTER_EMOTE, BROADCAST_TEXT_CALL_FOR_HELP, LANG_UNIVERSAL, nullptr);
+                        sCreatureTextMgr->SendChatPacket(target, builder, CHAT_MSG_MONSTER_EMOTE);
+                    }
+                    LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction: SMART_ACTION_CALL_FOR_HELP: Creature {}, target: {}",
+                              me->GetGUID().ToString(), target->GetGUID().ToString());
                 }
-                break;
             }
-        case SMART_ACTION_FORCE_DESPAWN:
+            break;
+        }
+        case SMART_ACTION_SET_SHEATH:
+        {
+            if (me)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                me->SetSheath(SheathState(e.action.setSheath.sheath));
+                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction: SMART_ACTION_SET_SHEATH: Creature {}, State: {}",
+                               me->GetGUID().ToString(), e.action.setSheath.sheath);
+            }
+            break;
+        }
+        case SMART_ACTION_FORCE_DESPAWN:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (e.action.forceDespawn.removeObjectFromWorld)
+                {
+                    if (e.action.forceDespawn.delay || e.action.forceDespawn.forceRespawnTimer)
+                        LOG_ERROR("sql.sql", "SmartScript: SMART_ACTION_FORCE_DESPAWN has removeObjectFromWorld set. delay and forceRespawnTimer ignored.");
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                    if (Creature* creature = target->ToCreature())
+                        creature->AddObjectToRemoveList();
+                    else if (GameObject* go = target->ToGameObject())
+                        go->AddObjectToRemoveList();
+                }
+                else
                 {
                     Milliseconds despawnDelay(e.action.forceDespawn.delay);
 
                     // Wait at least one world update tick before despawn, so it doesn't break linked actions.
                     if (despawnDelay <= 0ms)
-                    {
                         despawnDelay = 1ms;
-                    }
 
                     Seconds forceRespawnTimer(e.action.forceDespawn.forceRespawnTimer);
-                    if (Creature* creature = (*itr)->ToCreature())
-                    {
+                    if (Creature* creature = target->ToCreature())
                         creature->DespawnOrUnsummon(despawnDelay, forceRespawnTimer);
-                    }
-                    else if (GameObject* go = (*itr)->ToGameObject())
-                    {
+                    else if (GameObject* go = target->ToGameObject())
                         go->DespawnOrUnsummon(despawnDelay, forceRespawnTimer);
-                    }
                 }
-
-                delete targets;
-                break;
             }
+
+            break;
+        }
         case SMART_ACTION_SET_INGAME_PHASE_MASK:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->SetPhaseMask(e.action.ingamePhaseMask.mask, true);
-                    else if (IsGameObject(*itr))
-                        (*itr)->ToGameObject()->SetPhaseMask(e.action.ingamePhaseMask.mask, true);
-                }
-
-                delete targets;
-                break;
+                if (IsUnit(target))
+                    target->ToUnit()->SetPhaseMask(e.action.ingamePhaseMask.mask, true);
+                else if (IsGameObject(target))
+                    target->ToGameObject()->SetPhaseMask(e.action.ingamePhaseMask.mask, true);
             }
+            break;
+        }
         case SMART_ACTION_MOUNT_TO_ENTRY_OR_MODEL:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                if (!IsUnit(target))
+                    continue;
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (e.action.morphOrMount.creature || e.action.morphOrMount.model)
                 {
-                    if (!IsUnit(*itr))
-                        continue;
-
-                    if (e.action.morphOrMount.creature || e.action.morphOrMount.model)
+                    if (e.action.morphOrMount.creature > 0)
                     {
-                        if (e.action.morphOrMount.creature > 0)
-                        {
-                            if (CreatureTemplate const* cInfo = sObjectMgr->GetCreatureTemplate(e.action.morphOrMount.creature))
-                                (*itr)->ToUnit()->Mount(ObjectMgr::ChooseDisplayId(cInfo));
-                        }
-                        else
-                            (*itr)->ToUnit()->Mount(e.action.morphOrMount.model);
+                        if (CreatureTemplate const* cInfo = sObjectMgr->GetCreatureTemplate(e.action.morphOrMount.creature))
+                            target->ToUnit()->Mount(ObjectMgr::ChooseDisplayId(cInfo)->CreatureDisplayID);
                     }
                     else
-                        (*itr)->ToUnit()->Dismount();
+                        target->ToUnit()->Mount(e.action.morphOrMount.model);
                 }
-
-                delete targets;
-                break;
+                else
+                    target->ToUnit()->Dismount();
             }
+            break;
+        }
         case SMART_ACTION_SET_INVINCIBILITY_HP_LEVEL:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (IsCreature(target))
                 {
-                    if (IsCreature(*itr))
-                    {
-                        SmartAI* ai = CAST_AI(SmartAI, (*itr)->ToCreature()->AI());
-                        if (!ai)
-                            continue;
+                    SmartAI* ai = CAST_AI(SmartAI, target->ToCreature()->AI());
+                    if (!ai)
+                        continue;
 
-                        if (e.action.invincHP.percent)
-                            ai->SetInvincibilityHpLevel((*itr)->ToCreature()->CountPctFromMaxHealth(e.action.invincHP.percent));
-                        else
-                            ai->SetInvincibilityHpLevel(e.action.invincHP.minHP);
-                    }
+                    if (e.action.invincHP.percent)
+                        ai->SetInvincibilityHpLevel(target->ToCreature()->CountPctFromMaxHealth(e.action.invincHP.percent));
+                    else
+                        ai->SetInvincibilityHpLevel(e.action.invincHP.minHP);
                 }
-
-                delete targets;
-                break;
             }
+            break;
+        }
         case SMART_ACTION_SET_DATA:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (Creature* cTarget = target->ToCreature())
                 {
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->AI()->SetData(e.action.setData.field, e.action.setData.data);
-                    else if (IsGameObject(*itr))
-                        (*itr)->ToGameObject()->AI()->SetData(e.action.setData.field, e.action.setData.data);
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_MOVE_FORWARD:
-            {
-                if (!me)
-                    break;
-
-                float x, y, z;
-                me->GetClosePoint(x, y, z, me->GetObjectSize() / 3, (float)e.action.moveRandom.distance);
-                me->GetMotionMaster()->MovePoint(SMART_RANDOM_POINT, x, y, z);
-                break;
-            }
-        case SMART_ACTION_RISE_UP:
-            {
-                if (!me)
-                    break;
-
-                me->GetMotionMaster()->MovePoint(SMART_RANDOM_POINT, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + (float)e.action.moveRandom.distance);
-                break;
-            }
-        case SMART_ACTION_SET_VISIBILITY:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->SetVisible(!!e.action.visibility.state);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_SET_ACTIVE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    (*itr)->setActive(!!e.action.setActive.state);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_ATTACK_START:
-            {
-                if (!me)
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                // xinef: attack random target
-                if (Unit* target = Acore::Containers::SelectRandomContainerElement(*targets)->ToUnit())
-                    me->AI()->AttackStart(target);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_ATTACK_STOP:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                {
-                    break;
-                }
-
-                for (auto const& target : *targets)
-                {
-                    if (Unit* unitTarget = target->ToUnit())
+                    CreatureAI* ai = cTarget->AI();
+                    //                            Make sure we check that the sender is either a creature or gameobject
+                    if (IsSmart(cTarget, true) && (me || go))
                     {
-                        unitTarget->AttackStop();
-                    }
-                }
-                break;
-            }
-        case SMART_ACTION_SUMMON_CREATURE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                WorldObject* summoner = GetBaseObject() ? GetBaseObject() : unit;
-                if (!summoner)
-                    break;
-
-                if (e.GetTargetType() == SMART_TARGET_RANDOM_POINT)
-                {
-                    float range = (float)e.target.randomPoint.range;
-                    Position randomPoint;
-                    Position srcPos = { e.target.x, e.target.y, e.target.z, e.target.o };
-                    for (uint32 i = 0; i < e.target.randomPoint.amount; i++)
-                    {
-                        if (e.target.randomPoint.self > 0)
-                            randomPoint = me->GetRandomPoint(me->GetPosition(), range);
+                        if (me)
+                            ENSURE_AI(SmartAI, ai)->SetData(e.action.setData.field, e.action.setData.data, me);
                         else
-                            randomPoint = me->GetRandomPoint(srcPos, range);
-                        if (Creature* summon = summoner->SummonCreature(e.action.summonCreature.creature, randomPoint, (TempSummonType)e.action.summonCreature.type, e.action.summonCreature.duration))
-                        {
-                            if (unit && e.action.summonCreature.attackInvoker)
-                                summon->AI()->AttackStart(unit);
-                            else if (me && e.action.summonCreature.attackScriptOwner)
-                                summon->AI()->AttackStart(me);
-                        }
+                            ENSURE_AI(SmartAI, ai)->SetData(e.action.setData.field, e.action.setData.data, go);
                     }
-                    break;
+                    else
+                        ai->SetData(e.action.setData.field, e.action.setData.data);
                 }
-
-                if (targets)
+                else if (GameObject* oTarget = target->ToGameObject())
                 {
-                    float x, y, z, o;
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                    GameObjectAI* ai = oTarget->AI();
+                    //                            Make sure we check that the sender is either a creature or gameobject
+                    if (IsSmart(oTarget, true) && (me || go))
                     {
-                        (*itr)->GetPosition(x, y, z, o);
-                        x += e.target.x;
-                        y += e.target.y;
-                        z += e.target.z;
-                        o += e.target.o;
-                        if (Creature* summon = summoner->SummonCreature(e.action.summonCreature.creature, x, y, z, o, (TempSummonType)e.action.summonCreature.type, e.action.summonCreature.duration))
-                        {
-                            if (e.action.summonCreature.attackInvoker == 2) // pussywizard: proper attackInvoker implementation
-                                summon->AI()->AttackStart(unit);
-                            else if (e.action.summonCreature.attackInvoker)
-                                summon->AI()->AttackStart((*itr)->ToUnit());
-                            else if (me && e.action.summonCreature.attackScriptOwner)
-                                summon->AI()->AttackStart(me);
-                        }
+                        if (me)
+                            ENSURE_AI(SmartGameObjectAI, ai)->SetData(e.action.setData.field, e.action.setData.data, me);
+                        else
+                            ENSURE_AI(SmartGameObjectAI, ai)->SetData(e.action.setData.field, e.action.setData.data, go);
                     }
-
-                    delete targets;
+                    else
+                        ai->SetData(e.action.setData.field, e.action.setData.data);
                 }
+            }
+            break;
+        }
+        case SMART_ACTION_MOVE_FORWARD:
+        {
+            if (!me)
+                break;
 
-                if (e.GetTargetType() != SMART_TARGET_POSITION)
-                    break;
+            float x, y, z;
+            me->GetClosePoint(x, y, z, me->GetObjectSize() / 3, (float)e.action.moveRandom.distance);
+            me->GetMotionMaster()->MovePoint(SMART_RANDOM_POINT, x, y, z);
+            break;
+        }
+        case SMART_ACTION_RISE_UP:
+        {
+            if (!me)
+                break;
 
-                if (Creature* summon = summoner->SummonCreature(e.action.summonCreature.creature, e.target.x, e.target.y, e.target.z, e.target.o, (TempSummonType)e.action.summonCreature.type, e.action.summonCreature.duration))
+            me->GetMotionMaster()->MovePoint(SMART_RANDOM_POINT, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + (float)e.action.moveRandom.distance);
+            break;
+        }
+        case SMART_ACTION_SET_VISIBILITY:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->SetVisible(!!e.action.visibility.state);
+
+            break;
+        }
+        case SMART_ACTION_SET_ACTIVE:
+        {
+            for (WorldObject* target : targets)
+                target->setActive(!!e.action.setActive.state);
+            break;
+        }
+        case SMART_ACTION_ATTACK_START:
+        {
+            if (!me)
+                break;
+
+            if (targets.empty())
+                break;
+
+            // attack random target
+            if (Unit* target = Acore::Containers::SelectRandomContainerElement(targets)->ToUnit())
+                me->AI()->AttackStart(target);
+            break;
+        }
+        case SMART_ACTION_ATTACK_STOP:
+        {
+            for (WorldObject* target : targets)
+                if (Unit* unitTarget = target->ToUnit())
+                    unitTarget->AttackStop();
+            break;
+        }
+        case SMART_ACTION_SUMMON_CREATURE:
+        {
+            EnumFlag<SmartActionSummonCreatureFlags> flags(static_cast<SmartActionSummonCreatureFlags>(e.action.summonCreature.flags));
+            bool preferUnit = flags.HasFlag(SmartActionSummonCreatureFlags::PreferUnit);
+            WorldObject* summoner = preferUnit ? unit : Coalesce<WorldObject>(GetBaseObject(), unit);
+            if (!summoner)
+                break;
+
+            bool personalSpawn = flags.HasFlag(SmartActionSummonCreatureFlags::PersonalSpawn);
+
+            if (e.GetTargetType() == SMART_TARGET_RANDOM_POINT)
+            {
+                float range = (float)e.target.randomPoint.range;
+                Position randomPoint;
+                Position srcPos = { e.target.x, e.target.y, e.target.z, e.target.o };
+                for (uint32 i = 0; i < e.target.randomPoint.amount; i++)
                 {
-                    if (unit && e.action.summonCreature.attackInvoker)
+                    if (e.target.randomPoint.self > 0)
+                        randomPoint = me->GetRandomPoint(me->GetPosition(), range);
+                    else
+                        randomPoint = me->GetRandomPoint(srcPos, range);
+                    if (Creature* summon = summoner->SummonCreature(e.action.summonCreature.creature, randomPoint, (TempSummonType)e.action.summonCreature.type, e.action.summonCreature.duration, 0, nullptr, personalSpawn))
+                    {
+                        if (unit && e.action.summonCreature.attackInvoker)
+                            summon->AI()->AttackStart(unit);
+                        else if (me && e.action.summonCreature.attackScriptOwner)
+                            summon->AI()->AttackStart(me);
+                    }
+                }
+                break;
+            }
+
+            float x, y, z, o;
+            for (WorldObject* target : targets)
+            {
+                target->GetPosition(x, y, z, o);
+                x += e.target.x;
+                y += e.target.y;
+                z += e.target.z;
+                o += e.target.o;
+                if (Creature* summon = summoner->SummonCreature(e.action.summonCreature.creature, x, y, z, o, (TempSummonType)e.action.summonCreature.type, e.action.summonCreature.duration, nullptr, personalSpawn))
+                {
+                    if (e.action.summonCreature.attackInvoker == 2) // pussywizard: proper attackInvoker implementation
                         summon->AI()->AttackStart(unit);
+                    else if (e.action.summonCreature.attackInvoker)
+                        summon->AI()->AttackStart(target->ToUnit());
                     else if (me && e.action.summonCreature.attackScriptOwner)
                         summon->AI()->AttackStart(me);
                 }
-                break;
             }
+
+            if (e.GetTargetType() != SMART_TARGET_POSITION)
+                break;
+
+            if (Creature* summon = summoner->SummonCreature(e.action.summonCreature.creature, e.target.x, e.target.y, e.target.z, e.target.o, (TempSummonType)e.action.summonCreature.type, e.action.summonCreature.duration))
+            {
+                if (unit && e.action.summonCreature.attackInvoker)
+                    summon->AI()->AttackStart(unit);
+                else if (me && e.action.summonCreature.attackScriptOwner)
+                    summon->AI()->AttackStart(me);
+            }
+            break;
+        }
         case SMART_ACTION_SUMMON_GO:
-            {
-                if (!GetBaseObject())
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
-                {
-                    float x, y, z, o;
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        // xinef: allow gameobjects to summon gameobjects!
-                        //if(!IsUnit((*itr)))
-                        //  continue;
-
-                        (*itr)->GetPosition(x, y, z, o);
-                        x += e.target.x;
-                        y += e.target.y;
-                        z += e.target.z;
-                        o += e.target.o;
-                        if (!e.action.summonGO.targetsummon)
-                            GetBaseObject()->SummonGameObject(e.action.summonGO.entry, x, y, z, o, 0, 0, 0, 0, e.action.summonGO.despawnTime);
-                        else
-                            (*itr)->SummonGameObject(e.action.summonGO.entry, GetBaseObject()->GetPositionX(), GetBaseObject()->GetPositionY(), GetBaseObject()->GetPositionZ(), GetBaseObject()->GetOrientation(), 0, 0, 0, 0, e.action.summonGO.despawnTime);
-                    }
-
-                    delete targets;
-                }
-
-                if (e.GetTargetType() != SMART_TARGET_POSITION)
-                    break;
-
-                GetBaseObject()->SummonGameObject(e.action.summonGO.entry, e.target.x, e.target.y, e.target.z, e.target.o, 0, 0, 0, 0, e.action.summonGO.despawnTime);
+        {
+            if (!GetBaseObject())
                 break;
+
+            if (!targets.empty())
+            {
+                float x, y, z, o;
+                for (WorldObject* target : targets)
+                {
+                    // xinef: allow gameobjects to summon gameobjects!
+                    //if (!IsUnit((*itr)))
+                    //  continue;
+
+                    target->GetPosition(x, y, z, o);
+                    x += e.target.x;
+                    y += e.target.y;
+                    z += e.target.z;
+                    o += e.target.o;
+                    if (!e.action.summonGO.targetsummon)
+                        GetBaseObject()->SummonGameObject(e.action.summonGO.entry, x, y, z, o, 0, 0, 0, 0, e.action.summonGO.despawnTime);
+                    else
+                        target->SummonGameObject(e.action.summonGO.entry, GetBaseObject()->GetPositionX(), GetBaseObject()->GetPositionY(), GetBaseObject()->GetPositionZ(), GetBaseObject()->GetOrientation(), 0, 0, 0, 0, e.action.summonGO.despawnTime);
+                }
             }
+
+            if (e.GetTargetType() != SMART_TARGET_POSITION)
+                break;
+
+            GetBaseObject()->SummonGameObject(e.action.summonGO.entry, e.target.x, e.target.y, e.target.z, e.target.o, 0, 0, 0, 0, e.action.summonGO.despawnTime);
+            break;
+        }
         case SMART_ACTION_KILL_UNIT:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                if (!IsUnit(target))
+                    continue;
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (!IsUnit(*itr))
-                        continue;
-
-                    Unit::Kill((*itr)->ToUnit(), (*itr)->ToUnit());
-                }
-
-                delete targets;
-                break;
+                Unit::Kill(target->ToUnit(), target->ToUnit());
             }
+
+            break;
+        }
         case SMART_ACTION_INSTALL_AI_TEMPLATE:
-            {
-                InstallTemplate(e);
-                break;
-            }
+        {
+            InstallTemplate(e);
+            break;
+        }
         case SMART_ACTION_ADD_ITEM:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                if (!IsPlayer(target))
+                    continue;
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (!IsPlayer(*itr))
-                        continue;
-
-                    (*itr)->ToPlayer()->AddItem(e.action.item.entry, e.action.item.count);
-                }
-
-                delete targets;
-                break;
+                target->ToPlayer()->AddItem(e.action.item.entry, e.action.item.count);
             }
+            break;
+        }
         case SMART_ACTION_REMOVE_ITEM:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                if (!IsPlayer(target))
+                    continue;
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (!IsPlayer(*itr))
-                        continue;
-
-                    (*itr)->ToPlayer()->DestroyItemCount(e.action.item.entry, e.action.item.count, true);
-                }
-
-                delete targets;
-                break;
+                target->ToPlayer()->DestroyItemCount(e.action.item.entry, e.action.item.count, true);
             }
+            break;
+        }
         case SMART_ACTION_STORE_TARGET_LIST:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                StoreTargetList(targets, e.action.storeTargets.id);
-                break;
-            }
+        {
+            StoreTargetList(targets, e.action.storeTargets.id);
+            break;
+        }
         case SMART_ACTION_TELEPORT:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsPlayer(*itr))
-                        (*itr)->ToPlayer()->TeleportTo(e.action.teleport.mapID, e.target.x, e.target.y, e.target.z, e.target.o);
-                    else if (IsUnit(*itr))
-                        (*itr)->ToUnit()->NearTeleportTo(e.target.x, e.target.y, e.target.z, e.target.o);
-                }
-
-                delete targets;
-                break;
+                if (IsPlayer(target))
+                    target->ToPlayer()->TeleportTo(e.action.teleport.mapID, e.target.x, e.target.y, e.target.z, e.target.o);
+                else if (IsCreature(target))
+                    target->ToCreature()->NearTeleportTo(e.target.x, e.target.y, e.target.z, e.target.o);
             }
+            break;
+        }
         case SMART_ACTION_SET_FLY:
-            {
-                if (!IsSmart())
-                    break;
-
-                CAST_AI(SmartAI, me->AI())->SetFly(e.action.setFly.fly);
-                // Xinef: Set speed if any
-                if (e.action.setFly.speed)
-                    me->SetSpeed(MOVE_RUN, float(e.action.setFly.speed / 100.0f), true);
-
-                // Xinef: this wil be executed only if state is different
-                me->SetDisableGravity(e.action.setFly.disableGravity);
+        {
+            if (!IsSmart())
                 break;
-            }
+
+            CAST_AI(SmartAI, me->AI())->SetFly(e.action.setFly.fly);
+            // Xinef: Set speed if any
+            if (e.action.setFly.speed)
+                me->SetSpeed(MOVE_RUN, float(e.action.setFly.speed / 100.0f), true);
+
+            // Xinef: this wil be executed only if state is different
+            me->SetDisableGravity(e.action.setFly.disableGravity);
+            break;
+        }
         case SMART_ACTION_SET_RUN:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (IsCreature(target))
                 {
-                    if (IsCreature(*itr))
-                    {
-                        if (IsSmart((*itr)->ToCreature()))
-                            CAST_AI(SmartAI, (*itr)->ToCreature()->AI())->SetRun(e.action.setRun.run);
-                        else
-                            (*itr)->ToCreature()->SetWalk(e.action.setRun.run ? false : true); // Xinef: reversed
-                    }
+                    if (IsSmart(target->ToCreature()))
+                        CAST_AI(SmartAI, target->ToCreature()->AI())->SetRun(e.action.setRun.run);
+                    else
+                        target->ToCreature()->SetWalk(e.action.setRun.run ? false : true); // Xinef: reversed
                 }
-
-                delete targets;
-                break;
             }
+
+            break;
+        }
         case SMART_ACTION_SET_SWIM:
-            {
-                if (!IsSmart())
-                    break;
-
-                CAST_AI(SmartAI, me->AI())->SetSwim(e.action.setSwim.swim);
+        {
+            if (!IsSmart())
                 break;
-            }
+
+            CAST_AI(SmartAI, me->AI())->SetSwim(e.action.setSwim.swim);
+            break;
+        }
         case SMART_ACTION_SET_COUNTER:
+        {
+            if (!targets.empty())
             {
-                if (ObjectList* targets = GetTargets(e, unit))
+                for (WorldObject* target : targets)
                 {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                    if (IsCreature(target))
                     {
-                        if (IsCreature(*itr))
-                        {
-                            if (SmartAI* ai = CAST_AI(SmartAI, (*itr)->ToCreature()->AI()))
-                                ai->GetScript()->StoreCounter(e.action.setCounter.counterId, e.action.setCounter.value, e.action.setCounter.reset, e.action.setCounter.subtract);
-                            else
-                                LOG_ERROR("scripts.ai.sai", "SmartScript: Action target for SMART_ACTION_SET_COUNTER is not using SmartAI, skipping");
-                        }
-                        else if (IsGameObject(*itr))
-                        {
-                            if (SmartGameObjectAI* ai = CAST_AI(SmartGameObjectAI, (*itr)->ToGameObject()->AI()))
-                                ai->GetScript()->StoreCounter(e.action.setCounter.counterId, e.action.setCounter.value, e.action.setCounter.reset, e.action.setCounter.subtract);
-                            else
-                                LOG_ERROR("scripts.ai.sai", "SmartScript: Action target for SMART_ACTION_SET_COUNTER is not using SmartGameObjectAI, skipping");
-                        }
+                        if (SmartAI* ai = CAST_AI(SmartAI, target->ToCreature()->AI()))
+                            ai->GetScript()->StoreCounter(e.action.setCounter.counterId, e.action.setCounter.value, e.action.setCounter.reset, e.action.setCounter.subtract);
+                        else
+                            LOG_ERROR("sql.sql", "SmartScript: Action target for SMART_ACTION_SET_COUNTER is not using SmartAI, skipping");
                     }
-                    delete targets;
+                    else if (IsGameObject(target))
+                    {
+                        if (SmartGameObjectAI* ai = CAST_AI(SmartGameObjectAI, target->ToGameObject()->AI()))
+                            ai->GetScript()->StoreCounter(e.action.setCounter.counterId, e.action.setCounter.value, e.action.setCounter.reset, e.action.setCounter.subtract);
+                        else
+                            LOG_ERROR("sql.sql", "SmartScript: Action target for SMART_ACTION_SET_COUNTER is not using SmartGameObjectAI, skipping");
+                    }
                 }
-                else
-                {
-                    StoreCounter(e.action.setCounter.counterId, e.action.setCounter.value, e.action.setCounter.reset, e.action.setCounter.subtract);
-                }
-                break;
             }
+            else
+                StoreCounter(e.action.setCounter.counterId, e.action.setCounter.value, e.action.setCounter.reset, e.action.setCounter.subtract);
+            break;
+        }
         case SMART_ACTION_WP_START:
-            {
-                if (!IsSmart())
-                    break;
-
-                bool run = e.action.wpStart.run;
-                uint32 entry = e.action.wpStart.pathID;
-                bool repeat = e.action.wpStart.repeat;
-
-                // Xinef: ensure that SMART_ESCORT_TARGETS contains at least one player reference
-                bool stored = false;
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
-                {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        if (IsPlayer(*itr))
-                        {
-                            stored = true;
-                            StoreTargetList(targets, SMART_ESCORT_TARGETS);
-                            break;
-                        }
-                    }
-                    if (!stored)
-                        delete targets;
-                }
-                if (e.action.wpStart.reactState <= REACT_AGGRESSIVE)
-                {
-                    me->SetReactState((ReactStates) e.action.wpStart.reactState);
-                }
-                CAST_AI(SmartAI, me->AI())->StartPath(run, entry, repeat, unit);
-
-                uint32 quest = e.action.wpStart.quest;
-                uint32 DespawnTime = e.action.wpStart.despawnTime;
-                CAST_AI(SmartAI, me->AI())->mEscortQuestID = quest;
-                CAST_AI(SmartAI, me->AI())->SetDespawnTime(DespawnTime);
+        {
+            if (!IsSmart())
                 break;
+
+            bool run = e.action.wpStart.run != 0;
+            uint32 entry = e.action.wpStart.pathID;
+            bool repeat = e.action.wpStart.repeat != 0;
+
+            for (WorldObject* target : targets)
+            {
+                if (IsPlayer(target))
+                {
+                    StoreTargetList(targets, SMART_ESCORT_TARGETS);
+                    break;
+                }
             }
+
+            me->SetReactState((ReactStates)e.action.wpStart.reactState);
+            CAST_AI(SmartAI, me->AI())->StartPath(run, entry, repeat, unit);
+
+            uint32 quest = e.action.wpStart.quest;
+            uint32 DespawnTime = e.action.wpStart.despawnTime;
+            CAST_AI(SmartAI, me->AI())->mEscortQuestID = quest;
+            CAST_AI(SmartAI, me->AI())->SetDespawnTime(DespawnTime);
+            break;
+        }
         case SMART_ACTION_WP_PAUSE:
-            {
-                if (!IsSmart())
-                    break;
-
-                uint32 delay = e.action.wpPause.delay;
-                CAST_AI(SmartAI, me->AI())->PausePath(delay, e.GetEventType() == SMART_EVENT_WAYPOINT_REACHED ? false : true);
+        {
+            if (!IsSmart())
                 break;
-            }
+
+            uint32 delay = e.action.wpPause.delay;
+            CAST_AI(SmartAI, me->AI())->PausePath(delay, e.GetEventType() == SMART_EVENT_WAYPOINT_REACHED ? false : true);
+            break;
+        }
         case SMART_ACTION_WP_STOP:
-            {
-                if (!IsSmart())
-                    break;
-
-                uint32 DespawnTime = e.action.wpStop.despawnTime;
-                uint32 quest = e.action.wpStop.quest;
-                bool fail = e.action.wpStop.fail;
-                CAST_AI(SmartAI, me->AI())->StopPath(DespawnTime, quest, fail);
+        {
+            if (!IsSmart())
                 break;
-            }
+
+            uint32 DespawnTime = e.action.wpStop.despawnTime;
+            uint32 quest = e.action.wpStop.quest;
+            bool fail = e.action.wpStop.fail;
+            CAST_AI(SmartAI, me->AI())->StopPath(DespawnTime, quest, fail);
+            break;
+        }
         case SMART_ACTION_WP_RESUME:
-            {
-                if (!IsSmart())
-                    break;
-
-                CAST_AI(SmartAI, me->AI())->SetWPPauseTimer(0);
+        {
+            if (!IsSmart())
                 break;
-            }
+
+            CAST_AI(SmartAI, me->AI())->SetWPPauseTimer(0);
+            break;
+        }
         case SMART_ACTION_SET_ORIENTATION:
+        {
+            if (!me)
+                break;
+
+            if (e.action.orientation.random > 0)
             {
-                if (!me)
-                    break;
-
-                if (e.action.orientation.random > 0)
-                {
-                    float randomOri = frand(0.0f, 2 * M_PI);
-                    me->SetFacingTo(randomOri);
-                    if (e.action.orientation.quickChange)
-                        me->SetOrientation(randomOri);
-                    break;
-                }
-
-                if (e.GetTargetType() == SMART_TARGET_SELF)
-                {
-                    me->SetFacingTo((me->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && me->GetTransGUID() ? me->GetTransportHomePosition() : me->GetHomePosition()).GetOrientation());
-                    if (e.action.orientation.quickChange)
-                        me->SetOrientation((me->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && me->GetTransGUID() ? me->GetTransportHomePosition() : me->GetHomePosition()).GetOrientation());
-                }
-                else if (e.GetTargetType() == SMART_TARGET_POSITION)
-                {
-                    me->SetFacingTo(e.target.o);
-                    if (e.action.orientation.quickChange)
-                        me->SetOrientation(e.target.o);
-                }
-                else if (ObjectList* targets = GetTargets(e, unit))
-                {
-                    if (!targets->empty())
-                    {
-                        me->SetFacingToObject(*targets->begin());
-                        if (e.action.orientation.quickChange)
-                            me->SetInFront(*targets->begin());
-                    }
-
-                    delete targets;
-                }
-
+                float randomOri = frand(0.0f, 2 * M_PI);
+                me->SetFacingTo(randomOri);
+                if (e.action.orientation.quickChange)
+                    me->SetOrientation(randomOri);
                 break;
             }
+
+            if (e.action.orientation.turnAngle)
+            {
+                float turnOri = me->GetOrientation() + (static_cast<float>(e.action.orientation.turnAngle) * M_PI / 180.0f);
+                me->SetFacingTo(turnOri);
+                if (e.action.orientation.quickChange)
+                    me->SetOrientation(turnOri);
+                break;
+            }
+
+            if (e.GetTargetType() == SMART_TARGET_SELF)
+            {
+                me->SetFacingTo((me->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && me->GetTransGUID() ? me->GetTransportHomePosition() : me->GetHomePosition()).GetOrientation());
+                if (e.action.orientation.quickChange)
+                    me->SetOrientation((me->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && me->GetTransGUID() ? me->GetTransportHomePosition() : me->GetHomePosition()).GetOrientation());
+            }
+            else if (e.GetTargetType() == SMART_TARGET_POSITION)
+            {
+                me->SetFacingTo(e.target.o);
+                if (e.action.orientation.quickChange)
+                    me->SetOrientation(e.target.o);
+            }
+            else if (!targets.empty())
+            {
+                me->SetFacingToObject(*targets.begin());
+                if (e.action.orientation.quickChange)
+                    me->SetInFront(*targets.begin());
+            }
+
+            break;
+        }
         case SMART_ACTION_PLAYMOVIE:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+                if (!IsPlayer(target))
+                    continue;
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (!IsPlayer(*itr))
-                        continue;
-
-                    (*itr)->ToPlayer()->SendMovieStart(e.action.movie.entry);
-                }
-
-                delete targets;
-                break;
+                target->ToPlayer()->SendMovieStart(e.action.movie.entry);
             }
+            break;
+        }
         case SMART_ACTION_MOVE_TO_POS:
+        {
+            if (!IsSmart())
+                break;
+
+            WorldObject* target = nullptr;
+
+            switch (e.GetTargetType())
             {
-                if (!IsSmart())
+                case SMART_TARGET_POSITION:
+                {
+                    G3D::Vector3 dest(e.target.x, e.target.y, e.target.z);
+                    if (e.action.moveToPos.transport)
+                        if (TransportBase* trans = me->GetDirectTransport())
+                            trans->CalculatePassengerPosition(dest.x, dest.y, dest.z);
+
+                    me->GetMotionMaster()->MovePoint(e.action.moveToPos.pointId, dest.x, dest.y, dest.z, true, true,
+                        isControlled ? MOTION_SLOT_CONTROLLED : MOTION_SLOT_ACTIVE, e.target.o);
+
                     break;
-
-                WorldObject* target = nullptr;
-
-                if (e.GetTargetType() == SMART_TARGET_RANDOM_POINT)
+                }
+                case SMART_TARGET_RANDOM_POINT:
                 {
                     if (me)
                     {
@@ -1894,173 +1870,132 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
                             true,
                             isControlled ? MOTION_SLOT_CONTROLLED : MOTION_SLOT_ACTIVE
                         );
+
                     }
 
                     break;
                 }
-
-                /*if (e.GetTargetType() == SMART_TARGET_CREATURE_RANGE || e.GetTargetType() == SMART_TARGET_CREATURE_GUID ||
-                e.GetTargetType() == SMART_TARGET_CREATURE_DISTANCE || e.GetTargetType() == SMART_TARGET_GAMEOBJECT_RANGE ||
-                e.GetTargetType() == SMART_TARGET_GAMEOBJECT_GUID || e.GetTargetType() == SMART_TARGET_GAMEOBJECT_DISTANCE ||
-                e.GetTargetType() == SMART_TARGET_CLOSEST_CREATURE || e.GetTargetType() == SMART_TARGET_CLOSEST_GAMEOBJECT ||
-                e.GetTargetType() == SMART_TARGET_OWNER_OR_SUMMONER || e.GetTargetType() == SMART_TARGET_ACTION_INVOKER ||
-                e.GetTargetType() == SMART_TARGET_CLOSEST_ENEMY || e.GetTargetType() == SMART_TARGET_CLOSEST_FRIENDLY ||
-                e.GetTargetType() == SMART_TARGET_SELF || e.GetTargetType() == SMART_TARGET_STORED) // Xinef: bieda i rozpierdol TC)*/
+                // Can use target floats as offset
+                default:
                 {
-                    if (ObjectList* targets = GetTargets(e, unit))
-                    {
-                        // xinef: we want to move to random element
-                        target = Acore::Containers::SelectRandomContainerElement(*targets);
-                        delete targets;
-                    }
-                }
+                    // we want to move to random element
+                    if (targets.empty())
+                        return;
+                    else
+                        target = Acore::Containers::SelectRandomContainerElement(targets);
 
-                if (!target)
-                {
-                    G3D::Vector3 dest(e.target.x, e.target.y, e.target.z);
-                    if (e.action.moveToPos.transport)
-                        if (TransportBase* trans = me->GetDirectTransport())
-                            trans->CalculatePassengerPosition(dest.x, dest.y, dest.z);
-
-                    me->GetMotionMaster()->MovePoint(e.action.moveToPos.pointId, dest.x, dest.y, dest.z, true, true,
-                        isControlled ? MOTION_SLOT_CONTROLLED : MOTION_SLOT_ACTIVE, e.target.o);
-                }
-                else // Xinef: we can use dest.x, dest.y, dest.z to make offset
-                {
                     float x, y, z;
                     target->GetPosition(x, y, z);
-                    if (e.action.moveToPos.ContactDistance > 0)
-                        target->GetContactPoint(me, x, y, z, e.action.moveToPos.ContactDistance);
+
+                    if (e.action.moveToPos.combatReach)
+                        target->GetNearPoint(me, x, y, z, target->GetCombatReach() + e.action.moveToPos.ContactDistance, 0, target->GetAngle(me));
+                    else if (e.action.moveToPos.ContactDistance)
+                        target->GetNearPoint(me, x, y, z, e.action.moveToPos.ContactDistance, 0, target->GetAngle(me));
+
                     me->GetMotionMaster()->MovePoint(e.action.moveToPos.pointId, x + e.target.x, y + e.target.y, z + e.target.z, true, true, isControlled ? MOTION_SLOT_CONTROLLED : MOTION_SLOT_ACTIVE);
+
+                    break;
                 }
-                break;
             }
+
+            break;
+        }
         case SMART_ACTION_MOVE_TO_POS_TARGET:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    return;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (IsCreature(target))
                 {
-                    if (IsCreature(*itr))
-                    {
-                        Creature* target = (*itr)->ToCreature();
-                        target->GetMotionMaster()->MovePoint(e.action.moveToPos.pointId, e.target.x, e.target.y, e.target.z, true, true, isControlled ? MOTION_SLOT_CONTROLLED : MOTION_SLOT_ACTIVE);
-                    }
+                    Creature* ctarget = target->ToCreature();
+                    ctarget->GetMotionMaster()->MovePoint(e.action.moveToPos.pointId, e.target.x, e.target.y, e.target.z, true, true, isControlled ? MOTION_SLOT_CONTROLLED : MOTION_SLOT_ACTIVE);
                 }
-
-                delete targets;
-                break;
             }
+
+            break;
+        }
         case SMART_ACTION_RESPAWN_TARGET:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (IsCreature(target))
+                    target->ToCreature()->Respawn();
+                else if (IsGameObject(target))
                 {
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->Respawn(e.action.RespawnTarget.goRespawnTime);
-                    else if (IsGameObject(*itr))
-                    {
-                        // Xinef: do not modify respawndelay of already spawned gameobjects QQ
-                        if ((*itr)->ToGameObject()->isSpawnedByDefault())
-                            (*itr)->ToGameObject()->Respawn();
-                        else
-                            (*itr)->ToGameObject()->SetRespawnTime(e.action.RespawnTarget.goRespawnTime);
-                    }
+                    // do not modify respawndelay of already spawned gameobjects
+                    if (target->ToGameObject()->isSpawnedByDefault())
+                        target->ToGameObject()->Respawn();
+                    else
+                        target->ToGameObject()->SetRespawnTime(e.action.RespawnTarget.goRespawnTime);
                 }
-
-                delete targets;
-                break;
             }
+            break;
+        }
         case SMART_ACTION_CLOSE_GOSSIP:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsPlayer(*itr))
-                        (*itr)->ToPlayer()->PlayerTalkClass->SendCloseGossip();
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsPlayer(target))
+                    target->ToPlayer()->PlayerTalkClass->SendCloseGossip();
+            break;
+        }
         case SMART_ACTION_EQUIP:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (Creature* npc = target->ToCreature())
                 {
-                    if (Creature* npc = (*itr)->ToCreature())
+                    std::array<uint32, MAX_EQUIPMENT_ITEMS> slot;
+                    if (int8 equipId = static_cast<int8>(e.action.equip.entry))
                     {
-                        uint32 slot[3];
-                        int8 equipId = (int8)e.action.equip.entry;
-                        if (equipId)
+                        EquipmentInfo const* eInfo = sObjectMgr->GetEquipmentInfo(npc->GetEntry(), equipId);
+                        if (!eInfo)
                         {
-                            EquipmentInfo const* einfo = sObjectMgr->GetEquipmentInfo(npc->GetEntry(), equipId);
-                            if (!einfo)
-                            {
-                                LOG_ERROR("scripts.ai.sai", "SmartScript: SMART_ACTION_EQUIP uses non-existent equipment info id {} for creature {}", equipId, npc->GetEntry());
-                                break;
-                            }
-                            npc->SetCurrentEquipmentId(equipId);
-                            slot[0] = einfo->ItemEntry[0];
-                            slot[1] = einfo->ItemEntry[1];
-                            slot[2] = einfo->ItemEntry[2];
+                            LOG_ERROR("sql.sql", "SmartScript: SMART_ACTION_EQUIP uses non-existent equipment info id {} for creature {}", equipId, npc->GetEntry());
+                            break;
                         }
-                        else
-                        {
-                            slot[0] = e.action.equip.slot1;
-                            slot[1] = e.action.equip.slot2;
-                            slot[2] = e.action.equip.slot3;
-                        }
-                        if (!e.action.equip.mask || (e.action.equip.mask & 1))
-                            npc->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID + 0, slot[0]);
-                        if (!e.action.equip.mask || (e.action.equip.mask & 2))
-                            npc->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID + 1, slot[1]);
-                        if (!e.action.equip.mask || (e.action.equip.mask & 4))
-                            npc->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID + 2, slot[2]);
+
+                        npc->SetCurrentEquipmentId(equipId);
+
+                        std::copy(std::begin(eInfo->ItemEntry), std::end(eInfo->ItemEntry), std::begin(slot));
                     }
+                    else
+                        std::copy(std::begin(e.action.equip.slots), std::end(e.action.equip.slots), std::begin(slot));
+
+                    for (uint32 i = 0; i < MAX_EQUIPMENT_ITEMS; ++i)
+                        if (!e.action.equip.mask || (e.action.equip.mask & (1 << i)))
+                            npc->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID + i, slot[i]);
                 }
-
-                delete targets;
-                break;
             }
+            break;
+        }
         case SMART_ACTION_CREATE_TIMED_EVENT:
-            {
-                SmartEvent ne = SmartEvent();
-                ne.type = (SMART_EVENT)SMART_EVENT_UPDATE;
-                ne.event_chance = e.action.timeEvent.chance;
-                if (!ne.event_chance) ne.event_chance = 100;
+        {
+            SmartEvent ne = SmartEvent();
+            ne.type = (SMART_EVENT)SMART_EVENT_UPDATE;
+            ne.event_chance = e.action.timeEvent.chance;
+            if (!ne.event_chance) ne.event_chance = 100;
 
-                ne.minMaxRepeat.min = e.action.timeEvent.min;
-                ne.minMaxRepeat.max = e.action.timeEvent.max;
-                ne.minMaxRepeat.repeatMin = e.action.timeEvent.repeatMin;
-                ne.minMaxRepeat.repeatMax = e.action.timeEvent.repeatMax;
+            ne.minMaxRepeat.min = e.action.timeEvent.min;
+            ne.minMaxRepeat.max = e.action.timeEvent.max;
+            ne.minMaxRepeat.repeatMin = e.action.timeEvent.repeatMin;
+            ne.minMaxRepeat.repeatMax = e.action.timeEvent.repeatMax;
 
-                ne.event_flags = 0;
-                if (!ne.minMaxRepeat.repeatMin && !ne.minMaxRepeat.repeatMax)
-                    ne.event_flags |= SMART_EVENT_FLAG_NOT_REPEATABLE;
+            ne.event_flags = 0;
+            if (!ne.minMaxRepeat.repeatMin && !ne.minMaxRepeat.repeatMax)
+                ne.event_flags |= SMART_EVENT_FLAG_NOT_REPEATABLE;
 
-                SmartAction ac = SmartAction();
-                ac.type = (SMART_ACTION)SMART_ACTION_TRIGGER_TIMED_EVENT;
-                ac.timeEvent.id = e.action.timeEvent.id;
+            SmartAction ac = SmartAction();
+            ac.type = (SMART_ACTION)SMART_ACTION_TRIGGER_TIMED_EVENT;
+            ac.timeEvent.id = e.action.timeEvent.id;
 
-                SmartScriptHolder ev = SmartScriptHolder();
-                ev.event = ne;
-                ev.event_id = e.action.timeEvent.id;
-                ev.target = e.target;
-                ev.action = ac;
-                InitTimer(ev);
-                mStoredEvents.push_back(ev);
-                break;
-            }
+            SmartScriptHolder ev = SmartScriptHolder();
+            ev.event = ne;
+            ev.event_id = e.action.timeEvent.id;
+            ev.target = e.target;
+            ev.action = ac;
+            InitTimer(ev);
+            mStoredEvents.push_back(ev);
+            break;
+        }
         case SMART_ACTION_TRIGGER_TIMED_EVENT:
             ProcessEventsFor((SMART_EVENT)SMART_EVENT_TIMED_EVENT_TRIGGERED, nullptr, e.action.timeEvent.id);
 
@@ -2072,38 +2007,33 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
             mRemIDs.push_back(e.action.timeEvent.id);
             break;
         case SMART_ACTION_OVERRIDE_SCRIPT_BASE_OBJECT:
+        {
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                if (IsCreature(target))
                 {
-                    if (IsCreature(*itr))
-                    {
-                        if (!meOrigGUID)
-                            meOrigGUID = me ? me->GetGUID() : ObjectGuid::Empty;
-                        if (!goOrigGUID)
-                            goOrigGUID = go ? go->GetGUID() : ObjectGuid::Empty;
-                        go = nullptr;
-                        me = (*itr)->ToCreature();
-                        break;
-                    }
-                    else if (IsGameObject(*itr))
-                    {
-                        if (!meOrigGUID)
-                            meOrigGUID = me ? me->GetGUID() : ObjectGuid::Empty;
-                        if (!goOrigGUID)
-                            goOrigGUID = go ? go->GetGUID() : ObjectGuid::Empty;
-                        go = (*itr)->ToGameObject();
-                        me = nullptr;
-                        break;
-                    }
+                    if (!meOrigGUID)
+                        meOrigGUID = me ? me->GetGUID() : ObjectGuid::Empty;
+                    if (!goOrigGUID)
+                        goOrigGUID = go ? go->GetGUID() : ObjectGuid::Empty;
+                    go = nullptr;
+                    me = target->ToCreature();
+                    break;
                 }
-
-                delete targets;
-                break;
+                else if (IsGameObject(target))
+                {
+                    if (!meOrigGUID)
+                        meOrigGUID = me ? me->GetGUID() : ObjectGuid::Empty;
+                    if (!goOrigGUID)
+                        goOrigGUID = go ? go->GetGUID() : ObjectGuid::Empty;
+                    go = target->ToGameObject();
+                    me = nullptr;
+                    break;
+                }
             }
+
+            break;
+        }
         case SMART_ACTION_RESET_SCRIPT_BASE_OBJECT:
             ResetBaseObject();
             break;
@@ -2111,1291 +2041,1257 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
             OnReset();
             break;
         case SMART_ACTION_SET_RANGED_MOVEMENT:
-            {
-                if (!IsSmart())
-                    break;
-
-                float attackDistance = float(e.action.setRangedMovement.distance);
-                float attackAngle = float(e.action.setRangedMovement.angle) / 180.0f * M_PI;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
-                {
-                    for (ObjectList::iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                        if (Creature* target = (*itr)->ToCreature())
-                            if (IsSmart(target) && target->GetVictim())
-                                if (CAST_AI(SmartAI, target->AI())->CanCombatMove())
-                                    target->GetMotionMaster()->MoveChase(target->GetVictim(), attackDistance, attackAngle);
-
-                    delete targets;
-                }
+        {
+            if (!IsSmart())
                 break;
-            }
+
+            float attackDistance = float(e.action.setRangedMovement.distance);
+            float attackAngle = float(e.action.setRangedMovement.angle) / 180.0f * float(M_PI);
+
+            for (WorldObject* target : targets)
+                if (Creature* creature = target->ToCreature())
+                    if (IsSmart(creature) && creature->GetVictim())
+                        if (CAST_AI(SmartAI, creature->AI())->CanCombatMove())
+                            creature->GetMotionMaster()->MoveChase(creature->GetVictim(), attackDistance, attackAngle);
+
+            break;
+        }
         case SMART_ACTION_CALL_TIMED_ACTIONLIST:
+        {
+            if (e.GetTargetType() == SMART_TARGET_NONE)
             {
-                if (e.GetTargetType() == SMART_TARGET_NONE)
-                {
-                    LOG_ERROR("sql.sql", "SmartScript: Entry {} SourceType {} Event {} Action {} is using TARGET_NONE(0) for Script9 target. Please correct target_type in database.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetActionType());
-                    break;
-                }
-
-                if (ObjectList* targets = GetTargets(e, unit))
-                {
-                    for (ObjectList::iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        if (Creature* target = (*itr)->ToCreature())
-                        {
-                            if (IsSmart(target))
-                                CAST_AI(SmartAI, target->AI())->SetScript9(e, e.action.timedActionList.id, GetLastInvoker());
-                        }
-                        else if (GameObject* goTarget = (*itr)->ToGameObject())
-                        {
-                            if (IsSmartGO(goTarget))
-                                CAST_AI(SmartGameObjectAI, goTarget->AI())->SetScript9(e, e.action.timedActionList.id, GetLastInvoker());
-                        }
-                    }
-
-                    delete targets;
-                }
+                LOG_ERROR("sql.sql", "SmartScript: Entry {} SourceType {} Event {} Action {} is using TARGET_NONE(0) for Script9 target. Please correct target_type in database.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetActionType());
                 break;
             }
+
+            for (WorldObject* target : targets)
+            {
+                if (Creature* creature = target->ToCreature())
+                {
+                    if (IsSmart(creature))
+                        CAST_AI(SmartAI, creature->AI())->SetScript9(e, e.action.timedActionList.id, GetLastInvoker());
+                }
+                else if (GameObject* go = target->ToGameObject())
+                {
+                    if (IsSmart(go))
+                        CAST_AI(SmartGameObjectAI, go->AI())->SetScript9(e, e.action.timedActionList.id, GetLastInvoker());
+                }
+            }
+            break;
+        }
         case SMART_ACTION_SET_NPC_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToUnit()->SetUInt32Value(UNIT_NPC_FLAGS, e.action.flag.flag);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    target->ToUnit()->ReplaceAllNpcFlags(NPCFlags(e.action.unitFlag.flag));
+            break;
+        }
         case SMART_ACTION_ADD_NPC_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToUnit()->SetFlag(UNIT_NPC_FLAGS, e.action.flag.flag);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    target->ToUnit()->SetNpcFlag(NPCFlags(e.action.unitFlag.flag));
+            break;
+        }
         case SMART_ACTION_REMOVE_NPC_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToUnit()->RemoveFlag(UNIT_NPC_FLAGS, e.action.flag.flag);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    target->ToUnit()->RemoveNpcFlag(NPCFlags(e.action.unitFlag.flag));
+            break;
+        }
         case SMART_ACTION_CROSS_CAST:
+        {
+            if (targets.empty())
+                break;
+
+            ObjectVector casters;
+            GetTargets(casters, CreateSmartEvent(SMART_EVENT_UPDATE_IC, 0, 0, 0, 0, 0, 0, 0, SMART_ACTION_NONE, 0, 0, 0, 0, 0, 0, (SMARTAI_TARGETS)e.action.crossCast.targetType, e.action.crossCast.targetParam1, e.action.crossCast.targetParam2, e.action.crossCast.targetParam3, 0, 0), unit);
+
+            for (WorldObject* caster : casters)
             {
-                ObjectList* casters = GetTargets(CreateSmartEvent(SMART_EVENT_UPDATE_IC, 0, 0, 0, 0, 0, 0, SMART_ACTION_NONE, 0, 0, 0, 0, 0, 0, (SMARTAI_TARGETS)e.action.crossCast.targetType, e.action.crossCast.targetParam1, e.action.crossCast.targetParam2, e.action.crossCast.targetParam3, 0, 0), unit);
-                if (!casters)
-                    break;
+                if (!IsUnit(caster))
+                    continue;
 
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                {
-                    delete casters; // casters already validated, delete now
-                    break;
-                }
+                Unit* casterUnit = caster->ToUnit();
 
-                for (ObjectList::const_iterator itr = casters->begin(); itr != casters->end(); ++itr)
+                bool interruptedSpell = false;
+
+                for (WorldObject* target : targets)
                 {
-                    if (!IsUnit(*itr))
+                    if (!IsUnit(target))
                         continue;
 
-                    bool interruptedSpell = false;
-
-                    for (ObjectList::const_iterator it = targets->begin(); it != targets->end(); ++it)
+                    if (!(e.action.crossCast.flags & SMARTCAST_AURA_NOT_PRESENT) || !target->ToUnit()->HasAura(e.action.crossCast.spell))
                     {
-                        if (!IsUnit(*it))
-                            continue;
-
-                        if (!(e.action.cast.flags & SMARTCAST_AURA_NOT_PRESENT) || !(*it)->ToUnit()->HasAura(e.action.cast.spell))
+                        if (!interruptedSpell && e.action.crossCast.flags & SMARTCAST_INTERRUPT_PREVIOUS)
                         {
-                            if (!interruptedSpell && e.action.cast.flags & SMARTCAST_INTERRUPT_PREVIOUS)
-                            {
-                                (*itr)->ToUnit()->InterruptNonMeleeSpells(false);
-                                interruptedSpell = true;
-                            }
-
-                            (*itr)->ToUnit()->CastSpell((*it)->ToUnit(), e.action.cast.spell, (e.action.cast.flags & SMARTCAST_TRIGGERED));
+                            casterUnit->InterruptNonMeleeSpells(false);
+                            interruptedSpell = true;
                         }
-                        else
-                            LOG_DEBUG("sql.sql", "Spell {} not casted because it has flag SMARTCAST_AURA_NOT_PRESENT and the target {} already has the aura",
-                                e.action.cast.spell, (*it)->GetGUID().ToString());
+
+                        casterUnit->CastSpell(target->ToUnit(), e.action.crossCast.spell, (e.action.crossCast.flags & SMARTCAST_TRIGGERED) != 0);
                     }
-                }
-
-                delete targets;
-                delete casters;
-                break;
-            }
-        case SMART_ACTION_CALL_RANDOM_TIMED_ACTIONLIST:
-            {
-                uint32 actions[SMART_ACTION_PARAM_COUNT];
-                actions[0] = e.action.randTimedActionList.entry1;
-                actions[1] = e.action.randTimedActionList.entry2;
-                actions[2] = e.action.randTimedActionList.entry3;
-                actions[3] = e.action.randTimedActionList.entry4;
-                actions[4] = e.action.randTimedActionList.entry5;
-                actions[5] = e.action.randTimedActionList.entry6;
-                uint32 temp[SMART_ACTION_PARAM_COUNT];
-                uint32 count = 0;
-                for (uint8 i = 0; i < SMART_ACTION_PARAM_COUNT; i++)
-                {
-                    if (actions[i] > 0)
-                    {
-                        temp[count] = actions[i];
-                        ++count;
-                    }
-                }
-
-                if (count == 0)
-                    break;
-
-                uint32 id = temp[urand(0, count - 1)];
-                if (e.GetTargetType() == SMART_TARGET_NONE)
-                {
-                    LOG_ERROR("sql.sql", "SmartScript: Entry {} SourceType {} Event {} Action {} is using TARGET_NONE(0) for Script9 target. Please correct target_type in database.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetActionType());
-                    break;
-                }
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
-                {
-                    for (ObjectList::iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        if (Creature* target = (*itr)->ToCreature())
-                        {
-                            if (IsSmart(target))
-                                CAST_AI(SmartAI, target->AI())->SetScript9(e, id, GetLastInvoker());
-                        }
-                        else if (GameObject* goTarget = (*itr)->ToGameObject())
-                        {
-                            if (IsSmartGO(goTarget))
-                                CAST_AI(SmartGameObjectAI, goTarget->AI())->SetScript9(e, id, GetLastInvoker());
-                        }
-                    }
-
-                    delete targets;
-                }
-                break;
-            }
-        case SMART_ACTION_CALL_RANDOM_RANGE_TIMED_ACTIONLIST:
-            {
-                uint32 id = urand(e.action.randRangeTimedActionList.idMin, e.action.randRangeTimedActionList.idMax);
-                if (e.GetTargetType() == SMART_TARGET_NONE)
-                {
-                    LOG_ERROR("sql.sql", "SmartScript: Entry {} SourceType {} Event {} Action {} is using TARGET_NONE(0) for Script9 target. Please correct target_type in database.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetActionType());
-                    break;
-                }
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
-                {
-                    for (ObjectList::iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    {
-                        if (Creature* target = (*itr)->ToCreature())
-                        {
-                            if (IsSmart(target))
-                                CAST_AI(SmartAI, target->AI())->SetScript9(e, id, GetLastInvoker());
-                        }
-                        else if (GameObject* goTarget = (*itr)->ToGameObject())
-                        {
-                            if (IsSmartGO(goTarget))
-                                CAST_AI(SmartGameObjectAI, goTarget->AI())->SetScript9(e, id, GetLastInvoker());
-                        }
-                    }
-
-                    delete targets;
-                }
-                break;
-            }
-        case SMART_ACTION_ACTIVATE_TAXI:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsPlayer(*itr))
-                        (*itr)->ToPlayer()->ActivateTaxiPathTo(e.action.taxi.id);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_RANDOM_MOVE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                bool foundTarget = false;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsCreature((*itr)))
-                    {
-                        foundTarget = true;
-
-                        if (e.action.moveRandom.distance)
-                            (*itr)->ToCreature()->GetMotionMaster()->MoveRandom((float)e.action.moveRandom.distance);
-                        else
-                            (*itr)->ToCreature()->GetMotionMaster()->MoveIdle();
-                    }
-                }
-
-                if (!foundTarget && me && IsCreature(me))
-                {
-                    if (e.action.moveRandom.distance)
-                        me->GetMotionMaster()->MoveRandom((float)e.action.moveRandom.distance);
                     else
-                        me->GetMotionMaster()->MoveIdle();
+                        LOG_DEBUG("scripts.ai", "Spell {} not cast because it has flag SMARTCAST_AURA_NOT_PRESENT and the target ({}) already has the aura", e.action.crossCast.spell, target->GetGUID().ToString());
                 }
+            }
+            break;
+        }
+        case SMART_ACTION_CALL_RANDOM_TIMED_ACTIONLIST:
+        {
+            std::vector<uint32> actionLists;
+            std::copy_if(e.action.randTimedActionList.actionLists.begin(), e.action.randTimedActionList.actionLists.end(),
+                         std::back_inserter(actionLists), [](uint32 actionList) { return actionList != 0; });
 
-                delete targets;
+            uint32 id = Acore::Containers::SelectRandomContainerElement(actionLists);
+            if (e.GetTargetType() == SMART_TARGET_NONE)
+            {
+                LOG_ERROR("sql.sql", "SmartScript: Entry {} SourceType {} Event {} Action {} is using TARGET_NONE(0) for Script9 target. Please correct target_type in database.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetActionType());
                 break;
             }
-        case SMART_ACTION_SET_UNIT_FIELD_BYTES_1:
+
+            for (WorldObject* target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->SetByteFlag(UNIT_FIELD_BYTES_1, e.action.setunitByte.type, e.action.setunitByte.byte1);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_REMOVE_UNIT_FIELD_BYTES_1:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->RemoveByteFlag(UNIT_FIELD_BYTES_1, e.action.delunitByte.type, e.action.delunitByte.byte1);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_INTERRUPT_SPELL:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->InterruptNonMeleeSpells(e.action.interruptSpellCasting.withDelayed, e.action.interruptSpellCasting.spell_id, e.action.interruptSpellCasting.withInstant);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_SEND_GO_CUSTOM_ANIM:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsGameObject(*itr))
-                        (*itr)->ToGameObject()->SendCustomAnim(e.action.sendGoCustomAnim.anim);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_SET_DYNAMIC_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->SetUInt32Value(UNIT_DYNAMIC_FLAGS, e.action.flag.flag);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_ADD_DYNAMIC_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->SetFlag(UNIT_DYNAMIC_FLAGS, e.action.flag.flag);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_REMOVE_DYNAMIC_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->RemoveFlag(UNIT_DYNAMIC_FLAGS, e.action.flag.flag);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_JUMP_TO_POS:
-            {
-                if (e.GetTargetType() == SMART_TARGET_RANDOM_POINT)
+                if (Creature* creature = target->ToCreature())
                 {
-                    if (me)
-                    {
-                        float range = (float)e.target.randomPoint.range;
-                        Position srcPos = { e.target.x, e.target.y, e.target.z, e.target.o };
-                        Position randomPoint = me->GetRandomPoint(srcPos, range);
-                        me->GetMotionMaster()->MoveJump(randomPoint, (float)e.action.jump.speedxy, (float)e.action.jump.speedz);
-                    }
-
-                    break;
+                    if (IsSmart(creature))
+                        CAST_AI(SmartAI, creature->AI())->SetScript9(e, id, GetLastInvoker());
                 }
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                // xinef: my implementation
-                if (e.action.jump.selfJump)
+                else if (GameObject* go = target->ToGameObject())
                 {
-                    if (WorldObject* target = Acore::Containers::SelectRandomContainerElement(*targets))
-                        if (me)
-                            me->GetMotionMaster()->MoveJump(target->GetPositionX() + e.target.x, target->GetPositionY() + e.target.y, target->GetPositionZ() + e.target.z, (float)e.action.jump.speedxy, (float)e.action.jump.speedz);
+                    if (IsSmart(go))
+                        CAST_AI(SmartGameObjectAI, go->AI())->SetScript9(e, id, GetLastInvoker());
                 }
+            }
+            break;
+        }
+        case SMART_ACTION_CALL_RANDOM_RANGE_TIMED_ACTIONLIST:
+        {
+            uint32 id = urand(e.action.randTimedActionList.actionLists[0], e.action.randTimedActionList.actionLists[1]);
+            if (e.GetTargetType() == SMART_TARGET_NONE)
+            {
+                LOG_ERROR("sql.sql", "SmartScript: Entry {} SourceType {} Event {} Action {} is using TARGET_NONE(0) for Script9 target. Please correct target_type in database.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetActionType());
+                break;
+            }
+
+            for (WorldObject* target : targets)
+            {
+                if (Creature* creature = target->ToCreature())
+                {
+                    if (IsSmart(creature))
+                        CAST_AI(SmartAI, creature->AI())->SetScript9(e, id, GetLastInvoker());
+                }
+                else if (GameObject* go = target->ToGameObject())
+                {
+                    if (IsSmart(go))
+                        CAST_AI(SmartGameObjectAI, go->AI())->SetScript9(e, id, GetLastInvoker());
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_ACTIVATE_TAXI:
+        {
+            for (WorldObject* target : targets)
+                if (IsPlayer(target))
+                    target->ToPlayer()->ActivateTaxiPathTo(e.action.taxi.id);
+            break;
+        }
+        case SMART_ACTION_RANDOM_MOVE:
+        {
+            bool foundTarget = false;
+
+            for (WorldObject* target : targets)
+            {
+                if (IsCreature((target)))
+                {
+                    foundTarget = true;
+
+                    if (e.action.moveRandom.distance)
+                        target->ToCreature()->GetMotionMaster()->MoveRandom(float(e.action.moveRandom.distance));
+                    else
+                        target->ToCreature()->GetMotionMaster()->MoveIdle();
+                }
+            }
+
+            if (!foundTarget && me && IsCreature(me) && me->IsAlive())
+            {
+                if (e.action.moveRandom.distance)
+                    me->GetMotionMaster()->MoveRandom(float(e.action.moveRandom.distance));
                 else
+                    me->GetMotionMaster()->MoveIdle();
+            }
+            break;
+        }
+        case SMART_ACTION_SET_UNIT_FIELD_BYTES_1:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->SetByteFlag(UNIT_FIELD_BYTES_1, e.action.setunitByte.type, e.action.setunitByte.byte1);
+            break;
+        }
+        case SMART_ACTION_REMOVE_UNIT_FIELD_BYTES_1:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->RemoveByteFlag(UNIT_FIELD_BYTES_1, e.action.delunitByte.type, e.action.delunitByte.byte1);
+            break;
+        }
+        case SMART_ACTION_INTERRUPT_SPELL:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->InterruptNonMeleeSpells(e.action.interruptSpellCasting.withDelayed != 0, e.action.interruptSpellCasting.spell_id, e.action.interruptSpellCasting.withInstant != 0);
+            break;
+        }
+        case SMART_ACTION_SEND_GO_CUSTOM_ANIM:
+        {
+            for (WorldObject* target : targets)
+                if (IsGameObject(target))
+                    target->ToGameObject()->SendCustomAnim(e.action.sendGoCustomAnim.anim);
+            break;
+        }
+        case SMART_ACTION_SET_DYNAMIC_FLAG:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->SetUInt32Value(UNIT_DYNAMIC_FLAGS, e.action.unitFlag.flag);
+            break;
+        }
+        case SMART_ACTION_ADD_DYNAMIC_FLAG:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->SetFlag(UNIT_DYNAMIC_FLAGS, e.action.unitFlag.flag);
+            break;
+        }
+        case SMART_ACTION_REMOVE_DYNAMIC_FLAG:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->RemoveFlag(UNIT_DYNAMIC_FLAGS, e.action.unitFlag.flag);
+            break;
+        }
+        case SMART_ACTION_JUMP_TO_POS:
+        {
+            if (e.GetTargetType() == SMART_TARGET_RANDOM_POINT)
+            {
+                if (me)
                 {
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                        if (WorldObject* obj = (*itr))
-                        {
-                            if (Creature* creature = obj->ToCreature())
-                                creature->GetMotionMaster()->MoveJump(e.target.x, e.target.y, e.target.z, (float)e.action.jump.speedxy, (float)e.action.jump.speedz);
-                        }
+                    float range = (float)e.target.randomPoint.range;
+                    Position srcPos = { e.target.x, e.target.y, e.target.z, e.target.o };
+                    Position randomPoint = me->GetRandomPoint(srcPos, range);
+                    me->GetMotionMaster()->MoveJump(randomPoint, (float)e.action.jump.speedxy, (float)e.action.jump.speedz);
                 }
 
-                delete targets;
                 break;
             }
+
+            if (targets.empty())
+                break;
+
+            // xinef: my implementation
+            if (e.action.jump.selfJump)
+            {
+                if (WorldObject* target = Acore::Containers::SelectRandomContainerElement(targets))
+                    if (me)
+                        me->GetMotionMaster()->MoveJump(target->GetPositionX() + e.target.x, target->GetPositionY() + e.target.y, target->GetPositionZ() + e.target.z, (float)e.action.jump.speedxy, (float)e.action.jump.speedz);
+            }
+            else
+            {
+                for (WorldObject* target : targets)
+                    if (WorldObject* obj = (target))
+                    {
+                        if (Creature* creature = obj->ToCreature())
+                            creature->GetMotionMaster()->MoveJump(e.target.x, e.target.y, e.target.z, (float)e.action.jump.speedxy, (float)e.action.jump.speedz);
+                    }
+            }
+
+            break;
+        }
         case SMART_ACTION_GO_SET_LOOT_STATE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsGameObject(*itr))
-                        (*itr)->ToGameObject()->SetLootState((LootState)e.action.setGoLootState.state);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsGameObject(target))
+                    target->ToGameObject()->SetLootState((LootState)e.action.setGoLootState.state);
+            break;
+        }
         case SMART_ACTION_GO_SET_GO_STATE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-
-                if (!targets)
-                {
-                    break;
-                }
-
-                for (auto const& target : *targets)
-                {
-                    if (IsGameObject(target))
-                    {
-                        target->ToGameObject()->SetGoState((GOState)e.action.goState.state);
-                    }
-                }
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsGameObject(target))
+                    target->ToGameObject()->SetGoState((GOState)e.action.goState.state);
+            break;
+        }
         case SMART_ACTION_SEND_TARGET_TO_TARGET:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+        {
+            WorldObject* ref = GetBaseObject();
 
-                ObjectList* storedTargets = GetTargetList(e.action.sendTargetToTarget.id);
-                if (!storedTargets)
-                {
-                    delete targets;
-                    break;
-                }
+            if (!ref)
+                ref = unit;
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsCreature(*itr))
-                    {
-                        if (SmartAI* ai = CAST_AI(SmartAI, (*itr)->ToCreature()->AI()))
-                            ai->GetScript()->StoreTargetList(new ObjectList(*storedTargets), e.action.sendTargetToTarget.id);   // store a copy of target list
-                        else
-                            LOG_ERROR("sql.sql", "SmartScript: Action target for SMART_ACTION_SEND_TARGET_TO_TARGET is not using SmartAI, skipping");
-                    }
-                    else if (IsGameObject(*itr))
-                    {
-                        if (SmartGameObjectAI* ai = CAST_AI(SmartGameObjectAI, (*itr)->ToGameObject()->AI()))
-                            ai->GetScript()->StoreTargetList(new ObjectList(*storedTargets), e.action.sendTargetToTarget.id);   // store a copy of target list
-                        else
-                            LOG_ERROR("sql.sql", "SmartScript: Action target for SMART_ACTION_SEND_TARGET_TO_TARGET is not using SmartGameObjectAI, skipping");
-                    }
-                }
-
-                delete targets;
+            if (!ref)
                 break;
+
+            ObjectVector const* storedTargets = GetStoredTargetVector(e.action.sendTargetToTarget.id, *ref);
+            if (!storedTargets)
+                break;
+
+            for (WorldObject* target : targets)
+            {
+                if (IsCreature(target))
+                {
+                    if (SmartAI* ai = CAST_AI(SmartAI, target->ToCreature()->AI()))
+                        ai->GetScript()->StoreTargetList(ObjectVector(*storedTargets), e.action.sendTargetToTarget.id);   // store a copy of target list
+                    else
+                        LOG_ERROR("sql.sql", "SmartScript: Action target for SMART_ACTION_SEND_TARGET_TO_TARGET is not using SmartAI, skipping");
+                }
+                else if (IsGameObject(target))
+                {
+                    if (SmartGameObjectAI* ai = CAST_AI(SmartGameObjectAI, target->ToGameObject()->AI()))
+                        ai->GetScript()->StoreTargetList(ObjectVector(*storedTargets), e.action.sendTargetToTarget.id);   // store a copy of target list
+                    else
+                        LOG_ERROR("sql.sql", "SmartScript: Action target for SMART_ACTION_SEND_TARGET_TO_TARGET is not using SmartGameObjectAI, skipping");
+                }
             }
+            break;
+        }
         case SMART_ACTION_SEND_GOSSIP_MENU:
-            {
-                if (!GetBaseObject())
-                    break;
-
-                LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SEND_GOSSIP_MENU: gossipMenuId {}, gossipNpcTextId {}",
-                               e.action.sendGossipMenu.gossipMenuId, e.action.sendGossipMenu.gossipNpcTextId);
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (Player* player = (*itr)->ToPlayer())
-                    {
-                        if (e.action.sendGossipMenu.gossipMenuId)
-                            player->PrepareGossipMenu(GetBaseObject(), e.action.sendGossipMenu.gossipMenuId, true);
-                        else
-                            ClearGossipMenuFor(player);
-
-                        SendGossipMenuFor(player, e.action.sendGossipMenu.gossipNpcTextId, GetBaseObject()->GetGUID());
-                    }
-
-                delete targets;
+        {
+            if (!GetBaseObject())
                 break;
-            }
+
+            LOG_DEBUG("sql.sql", "SmartScript::ProcessAction:: SMART_ACTION_SEND_GOSSIP_MENU: gossipMenuId {}, gossipNpcTextId {}",
+                      e.action.sendGossipMenu.gossipMenuId, e.action.sendGossipMenu.gossipNpcTextId);
+
+            for (WorldObject* target : targets)
+                if (Player* player = target->ToPlayer())
+                {
+                    if (e.action.sendGossipMenu.gossipMenuId)
+                        player->PrepareGossipMenu(GetBaseObject(), e.action.sendGossipMenu.gossipMenuId, true);
+                    else
+                        ClearGossipMenuFor(player);
+
+                    SendGossipMenuFor(player, e.action.sendGossipMenu.gossipNpcTextId, GetBaseObject()->GetGUID());
+                }
+
+            break;
+        }
         case SMART_ACTION_SET_HOME_POS:
+        {
+            if (!targets.empty())
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
+                float x, y, z, o;
+                for (WorldObject* target : targets)
+                    if (IsCreature(target))
+                    {
+                        if (e.action.setHomePos.spawnPos)
+                        {
+                            target->ToCreature()->GetRespawnPosition(x, y, z, &o);
+                            target->ToCreature()->SetHomePosition(x, y, z, o);
+                        }
+                        else
+                            target->ToCreature()->SetHomePosition(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), target->GetOrientation());
+                    }
+            }
+            else if (me && e.GetTargetType() == SMART_TARGET_POSITION)
+            {
+                if (e.action.setHomePos.spawnPos)
                 {
                     float x, y, z, o;
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                        if (IsCreature(*itr))
-                        {
-                            if (e.action.setHomePos.spawnPos)
-                            {
-                                (*itr)->ToCreature()->GetRespawnPosition(x, y, z, &o);
-                                (*itr)->ToCreature()->SetHomePosition(x, y, z, o);
-                            }
-                            else
-                                (*itr)->ToCreature()->SetHomePosition((*itr)->GetPositionX(), (*itr)->GetPositionY(), (*itr)->GetPositionZ(), (*itr)->GetOrientation());
-                        }
-                    delete targets;
+                    me->GetRespawnPosition(x, y, z, &o);
+                    me->SetHomePosition(x, y, z, o);
                 }
-                else if (me && e.GetTargetType() == SMART_TARGET_POSITION)
-                {
-                    if (e.action.setHomePos.spawnPos)
-                    {
-                        float x, y, z, o;
-                        me->GetRespawnPosition(x, y, z, &o);
-                        me->SetHomePosition(x, y, z, o);
-                    }
-                    else
-                        me->SetHomePosition(e.target.x, e.target.y, e.target.z, e.target.o);
-                }
-                break;
+                else
+                    me->SetHomePosition(e.target.x, e.target.y, e.target.z, e.target.o);
             }
-        /*{
-        ObjectList* movers = GetTargets(CreateSmartEvent(SMART_EVENT_UPDATE_IC, 0, 0, 0, 0, 0, SMART_ACTION_NONE, 0, 0, 0, 0, 0, 0, (SMARTAI_TARGETS)e.action.sethome.targetType, e.action.sethome.targetParam1, e.action.sethome.targetParam2, e.action.sethome.targetParam3, 0), unit);
-        if (!movers)
-        break;
-
-        if (e.GetTargetType() == SMART_TARGET_POSITION)
-        {
-        for (ObjectList::const_iterator itr = movers->begin(); itr != movers->end(); ++itr)
-        if (IsCreature(*itr))
-        (*itr)->ToCreature()->SetHomePosition(e.target.x, e.target.y, e.target.z, e.target.o);
+            break;
         }
-        else if (ObjectList* targets = GetTargets(e, unit))
-        {
-        if (WorldObject* target = targets->front())
-        for (ObjectList::const_iterator itr = movers->begin(); itr != movers->end(); ++itr)
-        if (IsCreature(*itr))
-        (*itr)->ToCreature()->SetHomePosition(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), target->GetOrientation());
-
-        delete targets;
-        }
-
-        delete movers;
-        break;
-        }*/
         case SMART_ACTION_SET_HEALTH_REGEN:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+        {
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    target->ToCreature()->SetRegeneratingHealth(e.action.setHealthRegen.regenHealth);
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->SetRegeneratingHealth(e.action.setHealthRegen.regenHealth);
-
-                delete targets;
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_SET_ROOT:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->SetControlled(e.action.setRoot.root, UNIT_STATE_ROOT);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    target->ToCreature()->SetControlled(e.action.setRoot.root != 0, UNIT_STATE_ROOT);
+            break;
+        }
         case SMART_ACTION_SET_GO_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsGameObject(*itr))
-                        (*itr)->ToGameObject()->SetUInt32Value(GAMEOBJECT_FLAGS, e.action.goFlag.flag);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsGameObject(target))
+                    target->ToGameObject()->SetUInt32Value(GAMEOBJECT_FLAGS, e.action.goFlag.flag);
+            break;
+        }
         case SMART_ACTION_ADD_GO_FLAG:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsGameObject(*itr))
-                        (*itr)->ToGameObject()->SetFlag(GAMEOBJECT_FLAGS, e.action.goFlag.flag);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsGameObject(target))
+                    target->ToGameObject()->SetFlag(GAMEOBJECT_FLAGS, e.action.goFlag.flag);
+            break;
+        }
         case SMART_ACTION_REMOVE_GO_FLAG:
+        {
+            for (WorldObject* target : targets)
+                if (IsGameObject(target))
+                    target->ToGameObject()->RemoveFlag(GAMEOBJECT_FLAGS, e.action.goFlag.flag);
+            break;
+        }
+    case SMART_ACTION_SUMMON_CREATURE_GROUP:
+        {
+            std::list<TempSummon*> summonList;
+            GetBaseObject()->SummonCreatureGroup(e.action.creatureGroup.group, &summonList);
+
+            for (std::list<TempSummon*>::const_iterator itr = summonList.begin(); itr != summonList.end(); ++itr)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsGameObject(*itr))
-                        (*itr)->ToGameObject()->RemoveFlag(GAMEOBJECT_FLAGS, e.action.goFlag.flag);
-
-                delete targets;
-                break;
+                if (unit && e.action.creatureGroup.attackInvoker)
+                    (*itr)->AI()->AttackStart(unit);
+                else if (me && e.action.creatureGroup.attackScriptOwner)
+                    (*itr)->AI()->AttackStart(me);
             }
-        case SMART_ACTION_SUMMON_CREATURE_GROUP:
-            {
-                std::list<TempSummon*> summonList;
-                GetBaseObject()->SummonCreatureGroup(e.action.creatureGroup.group, &summonList);
 
-                for (std::list<TempSummon*>::const_iterator itr = summonList.begin(); itr != summonList.end(); ++itr)
-                {
-                    if (unit && e.action.creatureGroup.attackInvoker)
-                        (*itr)->AI()->AttackStart(unit);
-                    else if (me && e.action.creatureGroup.attackScriptOwner)
-                        (*itr)->AI()->AttackStart(me);
-                }
-
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_SET_POWER:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-
-                if (targets)
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                        if (IsUnit(*itr))
-                            (*itr)->ToUnit()->SetPower(Powers(e.action.power.powerType), e.action.power.newPower);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->SetPower(Powers(e.action.power.powerType), e.action.power.newPower);
+            break;
+        }
         case SMART_ACTION_ADD_POWER:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-
-                if (targets)
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                        if (IsUnit(*itr))
-                            (*itr)->ToUnit()->SetPower(Powers(e.action.power.powerType), (*itr)->ToUnit()->GetPower(Powers(e.action.power.powerType)) + e.action.power.newPower);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->SetPower(Powers(e.action.power.powerType), target->ToUnit()->GetPower(Powers(e.action.power.powerType)) + e.action.power.newPower);
+            break;
+        }
         case SMART_ACTION_REMOVE_POWER:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-
-                if (targets)
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                        if (IsUnit(*itr))
-                            (*itr)->ToUnit()->SetPower(Powers(e.action.power.powerType), (*itr)->ToUnit()->GetPower(Powers(e.action.power.powerType)) - e.action.power.newPower);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->SetPower(Powers(e.action.power.powerType), target->ToUnit()->GetPower(Powers(e.action.power.powerType)) - e.action.power.newPower);
+            break;
+        }
         case SMART_ACTION_GAME_EVENT_STOP:
+        {
+            uint32 eventId = e.action.gameEventStop.id;
+            if (!sGameEventMgr->IsActiveEvent(eventId))
             {
-                uint32 eventId = e.action.gameEventStop.id;
-                if (!sGameEventMgr->IsActiveEvent(eventId))
-                {
-                    LOG_ERROR("scripts.ai.sai", "SmartScript::ProcessAction: At case SMART_ACTION_GAME_EVENT_STOP, inactive event (id: {})", eventId);
-                    break;
-                }
-                sGameEventMgr->StopEvent(eventId, true);
+                LOG_ERROR("scripts.ai.sai", "SmartScript::ProcessAction: At case SMART_ACTION_GAME_EVENT_STOP, inactive event (id: {})", eventId);
                 break;
             }
+            sGameEventMgr->StopEvent(eventId, true);
+            break;
+        }
         case SMART_ACTION_GAME_EVENT_START:
+        {
+            uint32 eventId = e.action.gameEventStart.id;
+            if (sGameEventMgr->IsActiveEvent(eventId))
             {
-                uint32 eventId = e.action.gameEventStart.id;
-                if (sGameEventMgr->IsActiveEvent(eventId))
-                {
-                    LOG_ERROR("scripts.ai.sai", "SmartScript::ProcessAction: At case SMART_ACTION_GAME_EVENT_START, already activated event (id: {})", eventId);
-                    break;
-                }
-                sGameEventMgr->StartEvent(eventId, true);
+                LOG_ERROR("scripts.ai.sai", "SmartScript::ProcessAction: At case SMART_ACTION_GAME_EVENT_START, already activated event (id: {})", eventId);
                 break;
             }
+            sGameEventMgr->StartEvent(eventId, true);
+            break;
+        }
         case SMART_ACTION_START_CLOSEST_WAYPOINT:
+        {
+            std::vector<uint32> waypoints;
+            std::copy_if(e.action.closestWaypointFromList.wps.begin(), e.action.closestWaypointFromList.wps.end(),
+                         std::back_inserter(waypoints), [](uint32 wp) { return wp != 0; });
+
+            float distanceToClosest = std::numeric_limits<float>::max();
+            WayPoint* closestWp = nullptr;
+
+            for (WorldObject* target : targets)
             {
-                uint32 waypoints[SMART_ACTION_PARAM_COUNT];
-                waypoints[0] = e.action.closestWaypointFromList.wp1;
-                waypoints[1] = e.action.closestWaypointFromList.wp2;
-                waypoints[2] = e.action.closestWaypointFromList.wp3;
-                waypoints[3] = e.action.closestWaypointFromList.wp4;
-                waypoints[4] = e.action.closestWaypointFromList.wp5;
-                waypoints[5] = e.action.closestWaypointFromList.wp6;
-                float distanceToClosest = std::numeric_limits<float>::max();
-                WayPoint* closestWp = nullptr;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (targets)
+                if (Creature* creature = target->ToCreature())
                 {
-                    for (ObjectList::iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                    if (IsSmart(creature))
                     {
-                        if (Creature* target = (*itr)->ToCreature())
+                        for (uint32 wp : waypoints)
                         {
-                            if (IsSmart(target))
+                            WPPath* path = sSmartWaypointMgr->GetPath(wp);
+                            if (!path || path->empty())
+                                continue;
+
+                            auto itrWp = path->find(0);
+                            if (itrWp != path->end())
                             {
-                                for (uint8 i = 0; i < SMART_ACTION_PARAM_COUNT; i++)
+                                if (WayPoint* wp = itrWp->second)
                                 {
-                                    if (!waypoints[i])
-                                        continue;
-
-                                    WPPath* path = sSmartWaypointMgr->GetPath(waypoints[i]);
-
-                                    if (!path || path->empty())
-                                        continue;
-
-                                    WPPath::const_iterator itrWp = path->find(0);
-
-                                    if (itrWp != path->end())
+                                    float distToThisPath = creature->GetDistance(wp->x, wp->y, wp->z);
+                                    if (distToThisPath < distanceToClosest)
                                     {
-                                        if (WayPoint* wp = itrWp->second)
-                                        {
-                                            float distToThisPath = target->GetDistance(wp->x, wp->y, wp->z);
-
-                                            if (distToThisPath < distanceToClosest)
-                                            {
-                                                distanceToClosest = distToThisPath;
-                                                closestWp = wp;
-                                            }
-                                        }
+                                        distanceToClosest = distToThisPath;
+                                        closestWp = wp;
                                     }
                                 }
-
-                                if (closestWp)
-                                    CAST_AI(SmartAI, target->AI())->StartPath(false, closestWp->id, true);
                             }
                         }
+
+                        if (closestWp)
+                            CAST_AI(SmartAI, creature->AI())->StartPath(false, closestWp->id, true);
                     }
-
-                    delete targets;
                 }
-                break;
             }
-        case SMART_ACTION_SET_GO_STATE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsGameObject(*itr))
-                        (*itr)->ToGameObject()->SetGoState((GOState)e.action.goState.state);
-
-                delete targets;
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_EXIT_VEHICLE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->ExitVehicle();
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->ExitVehicle();
-
-                delete targets;
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_SET_UNIT_MOVEMENT_FLAGS:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                {
+                    target->ToUnit()->SetUnitMovementFlags(e.action.movementFlag.flag);
+                    target->ToUnit()->SendMovementFlagUpdate();
+                }
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                    {
-                        (*itr)->ToUnit()->SetUnitMovementFlags(e.action.movementFlag.flag);
-                        (*itr)->ToUnit()->SendMovementFlagUpdate();
-                    }
-
-                delete targets;
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_SET_COMBAT_DISTANCE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+        {
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    target->ToCreature()->m_CombatDistance = e.action.combatDistance.dist;
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->m_CombatDistance = e.action.combatDistance.dist;
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_SET_CASTER_COMBAT_DIST:
-            {
-                if (e.action.casterDistance.reset)
-                    RestoreCasterMaxDist();
-                else
-                    SetCasterActualDist(e.action.casterDistance.dist);
-
-                if (me->GetVictim() && me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-                    me->GetMotionMaster()->MoveChase(me->GetVictim(), GetCasterActualDist());
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_SET_SIGHT_DIST:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->m_SightDistance = e.action.sightDistance.dist;
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* const target : targets)
+                if (IsCreature(target))
+                    target->ToCreature()->m_SightDistance = e.action.sightDistance.dist;
+            break;
+        }
         case SMART_ACTION_FLEE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->GetMotionMaster()->MoveFleeing(me, e.action.flee.withEmote);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* const target : targets)
+                if (IsCreature(target))
+                    target->ToCreature()->GetMotionMaster()->MoveFleeing(me, e.action.flee.withEmote);
+            break;
+        }
         case SMART_ACTION_ADD_THREAT:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        me->AddThreat((*itr)->ToUnit(), (float)e.action.threat.threatINC - (float)e.action.threat.threatDEC);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* const target : targets)
+                if (IsUnit(target))
+                    me->AddThreat(target->ToUnit(), float(e.action.threatPCT.threatINC) - float(e.action.threatPCT.threatDEC));
+            break;
+        }
         case SMART_ACTION_LOAD_EQUIPMENT:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsCreature(*itr))
-                        (*itr)->ToCreature()->LoadEquipment(e.action.loadEquipment.id, e.action.loadEquipment.force);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* const target : targets)
+                if (IsCreature(target))
+                    target->ToCreature()->LoadEquipment(e.action.loadEquipment.id, e.action.loadEquipment.force != 0);
+            break;
+        }
         case SMART_ACTION_TRIGGER_RANDOM_TIMED_EVENT:
-            {
-                uint32 eventId = urand(e.action.randomTimedEvent.minId, e.action.randomTimedEvent.maxId);
-                ProcessEventsFor((SMART_EVENT)SMART_EVENT_TIMED_EVENT_TRIGGERED, nullptr, eventId);
-                break;
-            }
+        {
+            uint32 eventId = urand(e.action.randomTimedEvent.minId, e.action.randomTimedEvent.maxId);
+            ProcessEventsFor((SMART_EVENT)SMART_EVENT_TIMED_EVENT_TRIGGERED, nullptr, eventId);
+            break;
+        }
+        case SMART_ACTION_DISMOUNT:
+        {
+            for (WorldObject* const target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->Dismount();
+            break;
+        }
         case SMART_ACTION_SET_HOVER:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->SetHover(e.action.setHover.state);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->SetHover(e.action.setHover.state);
+            break;
+        }
         case SMART_ACTION_ADD_IMMUNITY:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->ApplySpellImmune(e.action.immunity.id, e.action.immunity.type, e.action.immunity.value, true);
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->ApplySpellImmune(e.action.immunity.id, e.action.immunity.type, e.action.immunity.value, true);
-
-                delete targets;
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_REMOVE_IMMUNITY:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->ApplySpellImmune(e.action.immunity.id, e.action.immunity.type, e.action.immunity.value, false);
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->ApplySpellImmune(e.action.immunity.id, e.action.immunity.type, e.action.immunity.value, false);
+            break;
+        }
         case SMART_ACTION_FALL:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->GetMotionMaster()->MoveFall();
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->GetMotionMaster()->MoveFall();
-
-                delete targets;
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_SET_EVENT_FLAG_RESET:
-            {
-                SetPhaseReset(e.action.setActive.state);
-                break;
-            }
+        {
+            SetPhaseReset(e.action.setActive.state);
+            break;
+        }
         case SMART_ACTION_REMOVE_ALL_GAMEOBJECTS:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->RemoveAllGameObjects();
-
-                delete targets;
-                break;
-            }
+        {
+            for (WorldObject* const target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->RemoveAllGameObjects();
+            break;
+        }
         case SMART_ACTION_STOP_MOTION:
+        {
+            for (WorldObject* const target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                    {
-                        if (e.action.stopMotion.stopMovement)
-                            (*itr)->ToUnit()->StopMoving();
-                        if (e.action.stopMotion.movementExpired)
-                            (*itr)->ToUnit()->GetMotionMaster()->MovementExpired();
-                    }
-
-                delete targets;
-                break;
+                if (IsUnit(target))
+                {
+                    if (e.action.stopMotion.stopMovement)
+                        target->ToUnit()->StopMoving();
+                    if (e.action.stopMotion.movementExpired)
+                        target->ToUnit()->GetMotionMaster()->MovementExpired();
+                }
             }
+            break;
+        }
         case SMART_ACTION_NO_ENVIRONMENT_UPDATE:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->AddUnitState(UNIT_STATE_NO_ENVIRONMENT_UPD);
 
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        (*itr)->ToUnit()->AddUnitState(UNIT_STATE_NO_ENVIRONMENT_UPD);
-
-                delete targets;
-                break;
-            }
+            break;
+        }
         case SMART_ACTION_ZONE_UNDER_ATTACK:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                    if (IsUnit(*itr))
-                        if (Player* player = (*itr)->ToUnit()->GetCharmerOrOwnerPlayerOrPlayerItself())
-                        {
-                            me->SendZoneUnderAttackMessage(player);
-                            break;
-                        }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_LOAD_GRID:
-            {
-                if (me && me->FindMap())
-                    me->FindMap()->LoadGrid(e.target.x, e.target.y);
-                break;
-            }
-        case SMART_ACTION_PLAYER_TALK:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                char const* text = sObjectMgr->GetAcoreString(e.action.playerTalk.textId, DEFAULT_LOCALE);
-
-                if (targets)
-                    for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                        if (IsPlayer(*itr))
-                            !e.action.playerTalk.flag ? (*itr)->ToPlayer()->Say(text, LANG_UNIVERSAL) : (*itr)->ToPlayer()->Yell(text, LANG_UNIVERSAL);
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_CUSTOM_CAST:
-            {
-                if (!me)
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr))
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    if (Player* player = target->ToUnit()->GetCharmerOrOwnerPlayerOrPlayerItself())
                     {
-                        if (e.action.castCustom.flags & SMARTCAST_INTERRUPT_PREVIOUS)
-                            me->InterruptNonMeleeSpells(false);
-
-                        if (e.action.castCustom.flags & SMARTCAST_COMBAT_MOVE)
-                        {
-                            // If cast flag SMARTCAST_COMBAT_MOVE is set combat movement will not be allowed
-                            // unless target is outside spell range, out of mana, or LOS.
-
-                            bool _allowMove = false;
-                            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(e.action.castCustom.spell); // AssertSpellInfo?
-                            int32 mana = me->GetPower(POWER_MANA);
-
-                            if (me->GetDistance((*itr)->ToUnit()) > spellInfo->GetMaxRange(true) ||
-                                    me->GetDistance((*itr)->ToUnit()) < spellInfo->GetMinRange(true) ||
-                                    !me->IsWithinLOSInMap((*itr)->ToUnit()) ||
-                                    mana < spellInfo->CalcPowerCost(me, spellInfo->GetSchoolMask()))
-                                _allowMove = true;
-
-                            CAST_AI(SmartAI, me->AI())->SetCombatMove(_allowMove);
-                        }
-
-                        if (!(e.action.castCustom.flags & SMARTCAST_AURA_NOT_PRESENT) || !(*itr)->ToUnit()->HasAura(e.action.castCustom.spell))
-                        {
-                            CustomSpellValues values;
-                            if (e.action.castCustom.bp1)
-                                values.AddSpellMod(SPELLVALUE_BASE_POINT0, e.action.castCustom.bp1);
-                            if (e.action.castCustom.bp2)
-                                values.AddSpellMod(SPELLVALUE_BASE_POINT1, e.action.castCustom.bp2);
-                            if (e.action.castCustom.bp3)
-                                values.AddSpellMod(SPELLVALUE_BASE_POINT2, e.action.castCustom.bp3);
-                            me->CastCustomSpell(e.action.castCustom.spell, values, (*itr)->ToUnit(), (e.action.castCustom.flags & SMARTCAST_TRIGGERED) ? TRIGGERED_FULL_MASK : TRIGGERED_NONE);
-                        }
-                    }
-                }
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_VORTEX_SUMMON:
-            {
-                if (!me)
-                    break;
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                TempSummonType summon_type = (e.action.summonVortex.summonDuration > 0) ? TEMPSUMMON_TIMED_DESPAWN : TEMPSUMMON_CORPSE_DESPAWN;
-
-                float a = static_cast<float>(e.action.summonVortex.a);
-                float k = static_cast<float>(e.action.summonVortex.k) / 1000.0f;
-                float r_max = static_cast<float>(e.action.summonVortex.r_max);
-                float delta_phi = M_PI * static_cast<float>(e.action.summonVortex.phi_delta) / 180.0f;
-
-                // r(phi) = a * e ^ (k * phi)
-                // r(phi + delta_phi) = a * e ^ (k * (phi + delta_phi))
-                // r(phi + delta_phi) = a * e ^ (k * phi) * e ^ (k * delta_phi)
-                // r(phi + delta_phi) = r(phi) * e ^ (k * delta_phi)
-                float factor = std::exp(k * delta_phi);
-
-                // r(0) = a * e ^ (k * 0) = a * e ^ 0 = a * 1 = a
-                float summonRadius = a;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    // Offset by orientation, should not count into radius calculation,
-                    // but is needed for vortex direction (polar coordinates)
-                    float phi = (*itr)->GetOrientation();
-
-                    do
-                    {
-                        Position summonPosition(**itr);
-                        summonPosition.RelocatePolarOffset(phi, summonRadius);
-
-                        me->SummonCreature(e.action.summonVortex.summonEntry, summonPosition, summon_type, e.action.summonVortex.summonDuration);
-
-                        phi += delta_phi;
-                        summonRadius *= factor;
-                    } while (summonRadius <= r_max);
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_CONE_SUMMON:
-            {
-                if (!me)
-                    break;
-
-                TempSummonType spawnType = (e.action.coneSummon.summonDuration > 0) ? TEMPSUMMON_TIMED_DESPAWN : TEMPSUMMON_CORPSE_DESPAWN;
-
-                float distInARow = static_cast<float>(e.action.coneSummon.distanceBetweenSummons);
-                float coneAngle = static_cast<float>(e.action.coneSummon.coneAngle) * M_PI / 180.0f;
-
-                for (uint32 radius = 0; radius <= e.action.coneSummon.coneLength; radius += e.action.coneSummon.distanceBetweenRings)
-                {
-                    float deltaAngle = 0.0f;
-                    if (radius > 0)
-                        deltaAngle = distInARow / radius;
-
-                    uint32 count = 1;
-                    if (deltaAngle > 0)
-                        count += coneAngle / deltaAngle;
-
-                    float currentAngle = -static_cast<float>(count) * deltaAngle / 2.0f;
-
-                    if (e.GetTargetType() == SMART_TARGET_SELF || e.GetTargetType() == SMART_TARGET_NONE)
-                        currentAngle += G3D::fuzzyGt(e.target.o, 0.0f) ? (e.target.o - me->GetOrientation()) : 0.0f;
-                    else if (ObjectList* targets = GetTargets(e, unit))
-                    {
-                        currentAngle += (me->GetAngle(targets->front()) - me->GetOrientation());
-                        delete targets;
-                    }
-
-                    for (uint32 index = 0; index < count; ++index)
-                    {
-                        Position spawnPosition(*me);
-                        spawnPosition.RelocatePolarOffset(currentAngle, radius);
-                        currentAngle += deltaAngle;
-
-                        me->SummonCreature(e.action.coneSummon.summonEntry, spawnPosition, spawnType, e.action.coneSummon.summonDuration);
-                    }
-                }
-
-                break;
-            }
-        case SMART_ACTION_CU_ENCOUNTER_START:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                    break;
-
-                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
-                {
-                    if (Player* playerTarget = (*itr)->ToPlayer())
-                    {
-                        playerTarget->RemoveArenaSpellCooldowns();
-                        playerTarget->RemoveAurasDueToSpell(57724); // Spell Shaman Debuff - Sated (Heroism)
-                        playerTarget->RemoveAurasDueToSpell(57723); // Spell Shaman Debuff - Exhaustion (Bloodlust)
-                        playerTarget->RemoveAurasDueToSpell(2825);  // Bloodlust
-                        playerTarget->RemoveAurasDueToSpell(32182); // Heroism
-                    }
-                }
-
-                delete targets;
-                break;
-            }
-        case SMART_ACTION_DO_ACTION:
-            {
-                int32 const actionId = e.action.doAction.isNegative ? -e.action.doAction.actionId : e.action.doAction.actionId;
-                if (!e.action.doAction.instanceTarget)
-                {
-                    ObjectList* targets = GetTargets(e, unit);
-                    if (!targets)
-                    {
+                        me->SendZoneUnderAttackMessage(player);
                         break;
                     }
 
-                    for (WorldObject* objTarget : *targets)
+            break;
+        }
+        case SMART_ACTION_LOAD_GRID:
+        {
+            if (me && me->FindMap())
+                me->FindMap()->LoadGrid(e.target.x, e.target.y);
+            break;
+        }
+        case SMART_ACTION_PLAYER_TALK:
+        {
+            std::string text = sObjectMgr->GetAcoreString(e.action.playerTalk.textId, DEFAULT_LOCALE);
+
+            if (!targets.empty())
+                for (WorldObject* target : targets)
+                    if (IsPlayer(target))
+                        !e.action.playerTalk.flag ? target->ToPlayer()->Say(text, LANG_UNIVERSAL) : target->ToPlayer()->Yell(text, LANG_UNIVERSAL);
+
+            break;
+        }
+        case SMART_ACTION_CUSTOM_CAST:
+        {
+            if (!me)
+                break;
+
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    if (e.action.castCustom.flags & SMARTCAST_INTERRUPT_PREVIOUS)
                     {
-                        if (Creature const* unitTarget = objTarget->ToCreature())
-                        {
-                            if (unitTarget->IsAIEnabled)
-                            {
-                                unitTarget->AI()->DoAction(actionId);
-                            }
-                        }
-                        else if (GameObject const* gobjTarget = objTarget->ToGameObject())
-                        {
-                            gobjTarget->AI()->DoAction(actionId);
-                        }
+                        me->InterruptNonMeleeSpells(false);
                     }
 
-                    delete targets;
-                }
-                else
-                {
-                    InstanceScript* instanceScript = nullptr;
-                    if (WorldObject* baseObj = GetBaseObject())
+                    if (e.action.castCustom.flags & SMARTCAST_COMBAT_MOVE)
                     {
-                        instanceScript = baseObj->GetInstanceScript();
+                        // If cast flag SMARTCAST_COMBAT_MOVE is set combat movement will not be allowed
+                        // unless target is outside spell range, out of mana, or LOS.
+
+                        bool _allowMove = false;
+                        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(e.action.castCustom.spell); // AssertSpellInfo?
+                        int32 mana = me->GetPower(POWER_MANA);
+
+                        if (me->GetDistance(target->ToUnit()) > spellInfo->GetMaxRange(true) ||
+                            me->GetDistance(target->ToUnit()) < spellInfo->GetMinRange(true) ||
+                            !me->IsWithinLOSInMap(target->ToUnit()) ||
+                            mana < spellInfo->CalcPowerCost(me, spellInfo->GetSchoolMask()))
+                            _allowMove = true;
+
+                        CAST_AI(SmartAI, me->AI())->SetCombatMove(_allowMove);
                     }
+
+                    if (!(e.action.castCustom.flags & SMARTCAST_AURA_NOT_PRESENT) || !target->ToUnit()->HasAura(e.action.castCustom.spell))
+                    {
+                        CustomSpellValues values;
+                        if (e.action.castCustom.bp1)
+                            values.AddSpellMod(SPELLVALUE_BASE_POINT0, e.action.castCustom.bp1);
+                        if (e.action.castCustom.bp2)
+                            values.AddSpellMod(SPELLVALUE_BASE_POINT1, e.action.castCustom.bp2);
+                        if (e.action.castCustom.bp3)
+                            values.AddSpellMod(SPELLVALUE_BASE_POINT2, e.action.castCustom.bp3);
+                        me->CastCustomSpell(e.action.castCustom.spell, values, target->ToUnit(), (e.action.castCustom.flags & SMARTCAST_TRIGGERED) ? TRIGGERED_FULL_MASK : TRIGGERED_NONE);
+                    }
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_VORTEX_SUMMON:
+        {
+            if (!me)
+                break;
+
+            if (targets.empty())
+                break;
+
+            TempSummonType summon_type = (e.action.summonVortex.summonDuration > 0) ? TEMPSUMMON_TIMED_DESPAWN : TEMPSUMMON_CORPSE_DESPAWN;
+
+            float a = static_cast<float>(e.action.summonVortex.a);
+            float k = static_cast<float>(e.action.summonVortex.k) / 1000.0f;
+            float r_max = static_cast<float>(e.action.summonVortex.r_max);
+            float delta_phi = M_PI * static_cast<float>(e.action.summonVortex.phi_delta) / 180.0f;
+
+            // r(phi) = a * e ^ (k * phi)
+            // r(phi + delta_phi) = a * e ^ (k * (phi + delta_phi))
+            // r(phi + delta_phi) = a * e ^ (k * phi) * e ^ (k * delta_phi)
+            // r(phi + delta_phi) = r(phi) * e ^ (k * delta_phi)
+            float factor = std::exp(k * delta_phi);
+
+            // r(0) = a * e ^ (k * 0) = a * e ^ 0 = a * 1 = a
+            float summonRadius = a;
+
+            for (WorldObject* target : targets)
+            {
+                // Offset by orientation, should not count into radius calculation,
+                // but is needed for vortex direction (polar coordinates)
+                float phi = target->GetOrientation();
+
+                do
+                {
+                    Position summonPosition(*target);
+                    summonPosition.RelocatePolarOffset(phi, summonRadius);
+
+                    me->SummonCreature(e.action.summonVortex.summonEntry, summonPosition, summon_type, e.action.summonVortex.summonDuration);
+
+                    phi += delta_phi;
+                    summonRadius *= factor;
+                } while (summonRadius <= r_max);
+            }
+
+            break;
+        }
+        case SMART_ACTION_CONE_SUMMON:
+        {
+            if (!me)
+                break;
+
+            TempSummonType spawnType = (e.action.coneSummon.summonDuration > 0) ? TEMPSUMMON_TIMED_DESPAWN : TEMPSUMMON_CORPSE_DESPAWN;
+
+            float distInARow = static_cast<float>(e.action.coneSummon.distanceBetweenSummons);
+            float coneAngle = static_cast<float>(e.action.coneSummon.coneAngle) * M_PI / 180.0f;
+
+            for (uint32 radius = 0; radius <= e.action.coneSummon.coneLength; radius += e.action.coneSummon.distanceBetweenRings)
+            {
+                float deltaAngle = 0.0f;
+                if (radius > 0)
+                    deltaAngle = distInARow / radius;
+
+                uint32 count = 1;
+                if (deltaAngle > 0)
+                    count += coneAngle / deltaAngle;
+
+                float currentAngle = -static_cast<float>(count) * deltaAngle / 2.0f;
+
+                if (e.GetTargetType() == SMART_TARGET_SELF || e.GetTargetType() == SMART_TARGET_NONE)
+                    currentAngle += G3D::fuzzyGt(e.target.o, 0.0f) ? (e.target.o - me->GetOrientation()) : 0.0f;
+                else if (!targets.empty())
+                {
+                    currentAngle += (me->GetAngle(targets.front()) - me->GetOrientation());
+                }
+
+                for (uint32 index = 0; index < count; ++index)
+                {
+                    Position spawnPosition(*me);
+                    spawnPosition.RelocatePolarOffset(currentAngle, radius);
+                    currentAngle += deltaAngle;
+
+                    me->SummonCreature(e.action.coneSummon.summonEntry, spawnPosition, spawnType, e.action.coneSummon.summonDuration);
+                }
+            }
+
+            break;
+        }
+        case SMART_ACTION_CU_ENCOUNTER_START:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (Player* playerTarget = target->ToPlayer())
+                {
+                    playerTarget->RemoveArenaSpellCooldowns();
+                    playerTarget->RemoveAurasDueToSpell(57724); // Spell Shaman Debuff - Sated (Heroism)
+                    playerTarget->RemoveAurasDueToSpell(57723); // Spell Shaman Debuff - Exhaustion (Bloodlust)
+                    playerTarget->RemoveAurasDueToSpell(2825);  // Bloodlust
+                    playerTarget->RemoveAurasDueToSpell(32182); // Heroism
+                }
+            }
+
+            break;
+        }
+        case SMART_ACTION_DO_ACTION:
+        {
+            int32 const actionId = e.action.doAction.isNegative ? -e.action.doAction.actionId : e.action.doAction.actionId;
+            if (!e.action.doAction.instanceTarget)
+            {
+                if (targets.empty())
+                    break;
+
+                for (WorldObject* objTarget : targets)
+                {
+                    if (Creature const* unitTarget = objTarget->ToCreature())
+                    {
+                        if (unitTarget->IsAIEnabled)
+                        {
+                            unitTarget->AI()->DoAction(actionId);
+                        }
+                    }
+                    else if (GameObject const* gobjTarget = objTarget->ToGameObject())
+                    {
+                        gobjTarget->AI()->DoAction(actionId);
+                    }
+                }
+
+            }
+            else
+            {
+                InstanceScript* instanceScript = nullptr;
+                if (WorldObject* baseObj = GetBaseObject())
+                {
+                    instanceScript = baseObj->GetInstanceScript();
+                }
                     // Action is triggered by AreaTrigger
-                    else if (trigger && IsPlayer(unit))
-                    {
-                        instanceScript = unit->GetInstanceScript();
-                    }
-
-                    if (instanceScript)
-                    {
-                        instanceScript->DoAction(actionId);
-                    }
+                else if (trigger && IsPlayer(unit))
+                {
+                    instanceScript = unit->GetInstanceScript();
                 }
-                break;
+
+                if (instanceScript)
+                {
+                    instanceScript->DoAction(actionId);
+                }
             }
+            break;
+        }
         case SMART_ACTION_DISABLE_EVADE:
-            {
-                if (!IsSmart())
-                    break;
-
-                CAST_AI(SmartAI, me->AI())->SetEvadeDisabled(e.action.disableEvade.disable != 0);
+        {
+            if (!IsSmart())
                 break;
-            }
+
+            CAST_AI(SmartAI, me->AI())->SetEvadeDisabled(e.action.disableEvade.disable != 0);
+            break;
+        }
         case SMART_ACTION_SET_CORPSE_DELAY:
+        {
+            for (WorldObject* const target : targets)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                {
-                    break;
-                }
-
-                for (auto const& target : *targets)
-                {
-                    if (IsCreature(target))
-                    {
-                        target->ToCreature()->SetCorpseDelay(e.action.corpseDelay.timer);
-                    }
-                }
-
-                delete targets;
-                break;
+                if (IsCreature(target))
+                    target->ToCreature()->SetCorpseDelay(e.action.corpseDelay.timer);
             }
+            break;
+        }
         case SMART_ACTION_SET_HEALTH_PCT:
-            {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
-                {
-                    break;
-                }
+        {
+            for (WorldObject* target : targets)
+                if (Unit* targetUnit = target->ToUnit())
+                    targetUnit->SetHealth(targetUnit->CountPctFromMaxHealth(e.action.setHealthPct.percent));
+            break;
+        }
+        case SMART_ACTION_SET_MOVEMENT_SPEED:
+        {
+            uint32 speedInteger = e.action.movementSpeed.speedInteger;
+            uint32 speedFraction = e.action.movementSpeed.speedFraction;
+            float speed = float(speedInteger) + float(speedFraction) / std::pow(10, std::floor(std::log10(float(speedFraction ? speedFraction : 1)) + 1));
 
-                for (auto const& target : *targets)
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                    target->ToCreature()->SetSpeed(UnitMoveType(e.action.movementSpeed.movementType), speed);
+
+            break;
+        }
+        case SMART_ACTION_PLAY_CINEMATIC:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (!IsPlayer(target))
+                    continue;
+
+                target->ToPlayer()->SendCinematicStart(e.action.cinematic.entry);
+            }
+            break;
+        }
+        case SMART_ACTION_SET_GUID:
+        {
+            for (WorldObject* target : targets)
+            {
+                ObjectGuid guidToSend = me ? me->GetGUID() : go->GetGUID();
+
+                if (e.action.setGuid.invokerGUID)
                 {
-                    if (Unit* targetUnit = target->ToUnit())
+                    if (WorldObject* invoker = GetLastInvoker())
                     {
-                        targetUnit->SetHealth(targetUnit->CountPctFromMaxHealth(e.action.setHealthPct.percent));
+                        guidToSend = invoker->GetGUID();
                     }
                 }
 
-                delete targets;
+                if (Creature* creature = target->ToCreature())
+                {
+                    creature->AI()->SetGUID(guidToSend, e.action.setGuid.index);
+                }
+                else if (GameObject* object = target->ToGameObject())
+                {
+                    object->AI()->SetGUID(guidToSend, e.action.setGuid.index);
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_SCRIPTED_SPAWN:
+        {
+            // Enable Scripted Spawns
+            switch (e.action.scriptSpawn.state)
+            {
+            case 0: // Disable Respawn
+            {
+                for (WorldObject* target : targets)
+                {
+                    if (Creature* c = target->ToCreature())
+                    {
+                        CAST_AI(SmartAI, c->AI())->SetCanRespawn(false);
+                        if (!e.action.scriptSpawn.dontDespawn)
+                            c->DespawnOrUnsummon();
+                    }
+                }
                 break;
             }
-        case SMART_ACTION_SET_MOVEMENT_SPEED:
+            case 1: // Respawn Once
             {
-                uint32 speedInteger = e.action.movementSpeed.speedInteger;
-                uint32 speedFraction = e.action.movementSpeed.speedFraction;
-                float speed = float(speedInteger) + float(speedFraction) / std::pow(10, std::floor(std::log10(float(speedFraction ? speedFraction : 1)) + 1));
-
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
+                for (WorldObject* target : targets)
                 {
+                    if (Creature* c = target->ToCreature())
+                    {
+                        CAST_AI(SmartAI, c->AI())->SetCanRespawn(true);
+                        c->Respawn(true);
+                        CAST_AI(SmartAI, c->AI())->SetCanRespawn(false);
+                    }
+                }
+                break;
+            }
+            case 2: // Enable Respawning
+            {
+                for (WorldObject* target : targets)
+                {
+                    if (Creature* c = target->ToCreature())
+                    {
+                        CAST_AI(SmartAI, c->AI())->SetCanRespawn(true);
+
+                        // If 0, respawn immediately
+                        if (e.action.scriptSpawn.spawnTimerMax)
+                            c->SetRespawnTime(urand(e.action.scriptSpawn.spawnTimerMin, e.action.scriptSpawn.spawnTimerMax));
+                        else
+                            c->Respawn(true);
+
+                        // If 0, use DB values
+                        if (e.action.scriptSpawn.respawnDelay)
+                            c->SetRespawnDelay(e.action.scriptSpawn.respawnDelay);
+
+                        // If 0, use default
+                        if (e.action.scriptSpawn.corpseDelay)
+                            c->SetCorpseDelay(e.action.scriptSpawn.corpseDelay);
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+            }
+            break;
+        }
+        case SMART_ACTION_SET_SCALE:
+        {
+            float scale = static_cast<float>(e.action.setScale.scale) / 100.0f;
+
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    target->ToUnit()->SetObjectScale(scale);
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_SUMMON_RADIAL:
+        {
+            if (!me)
+                break;
+
+            TempSummonType spawnType = (e.action.radialSummon.summonDuration > 0) ? TEMPSUMMON_TIMED_DESPAWN : TEMPSUMMON_CORPSE_DESPAWN;
+
+            float startAngle = me->GetOrientation() + (static_cast<float>(e.action.radialSummon.startAngle) * M_PI / 180.0f);
+            float stepAngle = static_cast<float>(e.action.radialSummon.stepAngle) * M_PI / 180.0f;
+
+            if (e.action.radialSummon.dist)
+            {
+                for (uint32 itr = 0; itr < e.action.radialSummon.repetitions; itr++)
+                {
+                    Position summonPos = me->GetPosition();
+                    summonPos.RelocatePolarOffset(itr * stepAngle, static_cast<float>(e.action.radialSummon.dist));
+                    me->SummonCreature(e.action.radialSummon.summonEntry, summonPos, spawnType, e.action.radialSummon.summonDuration);
+                }
+                break;
+            }
+
+            for (uint32 itr = 0; itr < e.action.radialSummon.repetitions; itr++)
+            {
+                float currentAngle = startAngle + (itr * stepAngle);
+                me->SummonCreature(e.action.radialSummon.summonEntry, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), currentAngle, spawnType, e.action.radialSummon.summonDuration);
+            }
+
+            break;
+        }
+        case SMART_ACTION_PLAY_SPELL_VISUAL:
+        {
+            for (WorldObject* target : targets)
+            {
+                if (IsUnit(target))
+                {
+                    if (e.action.spellVisual.visualId)
+                        target->ToUnit()->SendPlaySpellVisual(e.action.spellVisual.visualId);
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_FOLLOW_GROUP:
+        {
+            if (!e.action.followGroup.followState)
+            {
+                for (WorldObject* target : targets)
+                    if (IsUnit(target))
+                        target->ToCreature()->GetMotionMaster()->MoveIdle();
+
+                break;
+            }
+
+            uint8 membCount = targets.size();
+            uint8 itr = 1;
+            float dist = float(e.action.followGroup.dist / 100);
+            switch (e.action.followGroup.followType)
+            {
+                case FOLLOW_TYPE_CIRCLE:
+                {
+                    float angle = (membCount > 4 ? (M_PI * 2)/membCount : (M_PI / 2)); // 90 degrees is the maximum angle
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsCreature(target))
+                        {
+                            target->ToCreature()->GetMotionMaster()->MoveFollow(me, dist, angle * itr);
+                            itr++;
+                        }
+                    }
                     break;
                 }
+                case FOLLOW_TYPE_SEMI_CIRCLE_BEHIND:
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsCreature(target))
+                        {
+                            target->ToCreature()->GetMotionMaster()->MoveFollow(me, dist, (M_PI / 2.0f) + (M_PI / membCount) * (itr - 1));
+                            itr++;
+                        }
+                    }
+                    break;
+                }
+                case FOLLOW_TYPE_SEMI_CIRCLE_FRONT:
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsCreature(target))
+                        {
+                            target->ToCreature()->GetMotionMaster()->MoveFollow(me, dist, (M_PI + (M_PI / 2.0f) + (M_PI / membCount) * (itr - 1)));
+                            itr++;
+                        }
+                    }
+                    break;
+                }
+                case FOLLOW_TYPE_LINE:
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsCreature(target))
+                        {
+                            target->ToCreature()->GetMotionMaster()->MoveFollow(me, dist * (((itr - 1) / 2) + 1), itr % 2 ? 0.f : M_PI);
+                            itr++;
+                        }
+                    }
+                    break;
+                }
+                case FOLLOW_TYPE_COLUMN:
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsCreature(target))
+                        {
+                            target->ToCreature()->GetMotionMaster()->MoveFollow(me, dist * (((itr - 1) / 2) + 1), itr % 2 ? (M_PI / 2) : (M_PI * 1.5f));
+                            itr++;
+                        }
+                    }
+                    break;
+                }
+                case FOLLOW_TYPE_ANGULAR:
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsCreature(target))
+                        {
+                            target->ToCreature()->GetMotionMaster()->MoveFollow(me, dist * (((itr - 1) / 2) + 1), itr % 2 ? M_PI - (M_PI / 4) : M_PI + (M_PI / 4));
+                            itr++;
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
 
-                for (auto const& target : *targets)
+            break;
+        }
+        case SMART_ACTION_SET_ORIENTATION_TARGET:
+        {
+            switch (e.action.orientationTarget.type)
+            {
+                case 0: // Reset
+                {
+                    for (WorldObject* target : targets)
+                        target->ToCreature()->SetFacingTo((target->ToCreature()->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && target->ToCreature()->GetTransGUID() ? target->ToCreature()->GetTransportHomePosition() : target->ToCreature()->GetHomePosition()).GetOrientation());
+
+                    break;
+                }
+                case 1: // Target target.o
+                {
+                    for (WorldObject* target : targets)
+                        target->ToCreature()->SetFacingTo(e.target.o);
+
+                    break;
+                }
+                case 2: // Target source
+                {
+                    for (WorldObject* target : targets)
+                        target->ToCreature()->SetFacingToObject(me);
+
+                    break;
+                }
+                case 3: // Target parameters
+                {
+                    ObjectVector facingTargets;
+                    GetTargets(facingTargets, CreateSmartEvent(SMART_EVENT_UPDATE_IC, 0, 0, 0, 0, 0, 0, 0, SMART_ACTION_NONE, 0, 0, 0, 0, 0, 0, (SMARTAI_TARGETS)e.action.orientationTarget.targetType, e.action.orientationTarget.targetParam1, e.action.orientationTarget.targetParam2, e.action.orientationTarget.targetParam3, e.action.orientationTarget.targetParam4, 0), unit);
+
+                    for (WorldObject* facingTarget : facingTargets)
+                        for (WorldObject* target : targets)
+                            target->ToCreature()->SetFacingToObject(facingTarget);
+
+                    break;
+                }
+                default:
+                    break;
+            }
+            break;
+        }
+        case SMART_ACTION_WAYPOINT_DATA_START:
+        {
+            if (e.action.wpData.pathId)
+            {
+                for (WorldObject* target : targets)
                 {
                     if (IsCreature(target))
                     {
-                        me->SetSpeed(UnitMoveType(e.action.movementSpeed.movementType), speed);
+                        target->ToCreature()->LoadPath(e.action.wpData.pathId);
+                        target->ToCreature()->GetMotionMaster()->MovePath(e.action.wpData.pathId, e.action.wpData.repeat);
                     }
                 }
-
-                delete targets;
-                break;
             }
-        case SMART_ACTION_PLAY_CINEMATIC:
+
+            break;
+        }
+        case SMART_ACTION_WAYPOINT_DATA_RANDOM:
+        {
+            if (e.action.wpDataRandom.pathId1 && e.action.wpDataRandom.pathId2)
             {
-                ObjectList* targets = GetTargets(e, unit);
-                if (!targets)
+                for (WorldObject* target : targets)
                 {
-                    break;
+                    if (IsCreature(target))
+                    {
+                        uint32 path = urand(e.action.wpDataRandom.pathId1, e.action.wpDataRandom.pathId2);
+                        target->ToCreature()->LoadPath(path);
+                        target->ToCreature()->GetMotionMaster()->MovePath(path, e.action.wpDataRandom.repeat);
+                    }
                 }
-
-                for (auto const& target : *targets)
-                {
-                    if (!IsPlayer(target))
-                        continue;
-
-                    target->ToPlayer()->SendCinematicStart(e.action.cinematic.entry);
-                }
-                break;
             }
+
+            break;
+        }
+        case SMART_ACTION_MOVEMENT_STOP:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->StopMoving();
+
+            break;
+        }
+        case SMART_ACTION_MOVEMENT_PAUSE:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->PauseMovement(e.action.move.timer);
+
+            break;
+        }
+        case SMART_ACTION_MOVEMENT_RESUME:
+        {
+            for (WorldObject* target : targets)
+                if (IsUnit(target))
+                    target->ToUnit()->ResumeMovement(e.action.move.timer);
+
+            break;
+        }
+        case SMART_ACTION_WORLD_SCRIPT:
+        {
+            sWorldState->HandleExternalEvent(static_cast<WorldStateEvent>(e.action.worldStateScript.eventId), e.action.worldStateScript.param);
+            break;
+        }
+        case SMART_ACTION_DISABLE_REWARD:
+        {
+            for (WorldObject* target : targets)
+                if (IsCreature(target))
+                {
+                    target->ToCreature()->SetReputationRewardDisabled(static_cast<bool>(e.action.reward.reputation));
+                    target->ToCreature()->SetLootRewardDisabled(static_cast<bool>(e.action.reward.loot));
+                }
+            break;
+        }
         default:
             LOG_ERROR("sql.sql", "SmartScript::ProcessAction: Entry {} SourceType {}, Event {}, Unhandled Action type {}", e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType());
             break;
@@ -3403,9 +3299,9 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
 
     if (e.link && e.link != e.event_id)
     {
-        SmartScriptHolder linked = FindLinkedEvent(e.link);
-        if (linked.GetActionType() && linked.GetEventType() == SMART_EVENT_LINK)
-            ProcessEvent(linked, unit, var0, var1, bvar, spell, gob);
+        auto linked = FindLinkedEvent(e.link);
+        if (linked.has_value() && linked.value().get().GetEventType() == SMART_EVENT_LINK)
+            executionStack.emplace_back(SmartScriptFrame{ linked.value(), unit, var0, var1, bvar, spell, gob });
         else
             LOG_ERROR("sql.sql", "SmartScript::ProcessAction: Entry {} SourceType {}, Event {}, Link Event {} not found or invalid, skipped.", e.entryOrGuid, e.GetScriptType(), e.event_id, e.link);
     }
@@ -3430,7 +3326,7 @@ void SmartScript::InstallTemplate(SmartScriptHolder const& e)
 {
     if (!GetBaseObject())
         return;
-    if (mTemplate)
+    if (mTemplate != SMARTAI_TEMPLATE_BASIC)
     {
         LOG_ERROR("sql.sql", "SmartScript::InstallTemplate: Entry {} SourceType {} AI Template can not be set more then once, skipped.", e.entryOrGuid, e.GetScriptType());
         return;
@@ -3440,18 +3336,18 @@ void SmartScript::InstallTemplate(SmartScriptHolder const& e)
     {
         case SMARTAI_TEMPLATE_CASTER:
             {
-                AddEvent(SMART_EVENT_UPDATE_IC, 0, 0, 0, e.action.installTtemplate.param2, e.action.installTtemplate.param3, 0, SMART_ACTION_CAST, e.action.installTtemplate.param1, e.target.raw.param1, 0, 0, 0, 0, SMART_TARGET_VICTIM, 0, 0, 0, 0, 1);
-                AddEvent(SMART_EVENT_RANGE, 0, e.action.installTtemplate.param4, 300, 0, 0, 0, SMART_ACTION_ALLOW_COMBAT_MOVEMENT, 1, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
-                AddEvent(SMART_EVENT_RANGE, 0, 0, e.action.installTtemplate.param4 > 10 ? e.action.installTtemplate.param4 - 10 : 0, 0, 0, 0, SMART_ACTION_ALLOW_COMBAT_MOVEMENT, 0, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
-                AddEvent(SMART_EVENT_MANA_PCT, 0, e.action.installTtemplate.param5 - 15 > 100 ? 100 : e.action.installTtemplate.param5 + 15, 100, 1000, 1000, 0, SMART_ACTION_SET_EVENT_PHASE, 1, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
-                AddEvent(SMART_EVENT_MANA_PCT, 0, 0, e.action.installTtemplate.param5, 1000, 1000, 0, SMART_ACTION_SET_EVENT_PHASE, 0, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
-                AddEvent(SMART_EVENT_MANA_PCT, 0, 0, e.action.installTtemplate.param5, 1000, 1000, 0, SMART_ACTION_ALLOW_COMBAT_MOVEMENT, 1, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_UPDATE_IC, 0, 0, 0, e.action.installTtemplate.param2, e.action.installTtemplate.param3, 0, 0, SMART_ACTION_CAST, e.action.installTtemplate.param1, e.target.raw.param1, 0, 0, 0, 0, SMART_TARGET_VICTIM, 0, 0, 0, 0, 1);
+                AddEvent(SMART_EVENT_RANGE, 0, e.action.installTtemplate.param4, 300, 0, 0, 0, 0, SMART_ACTION_ALLOW_COMBAT_MOVEMENT, 1, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
+                AddEvent(SMART_EVENT_RANGE, 0, 0, e.action.installTtemplate.param4 > 10 ? e.action.installTtemplate.param4 - 10 : 0, 0, 0, 0, 0, SMART_ACTION_ALLOW_COMBAT_MOVEMENT, 0, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
+                AddEvent(SMART_EVENT_MANA_PCT, 0, e.action.installTtemplate.param5 - 15 > 100 ? 100 : e.action.installTtemplate.param5 + 15, 100, 1000, 1000, 0, 0, SMART_ACTION_SET_EVENT_PHASE, 1, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_MANA_PCT, 0, 0, e.action.installTtemplate.param5, 1000, 1000, 0, 0, SMART_ACTION_SET_EVENT_PHASE, 0, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_MANA_PCT, 0, 0, e.action.installTtemplate.param5, 1000, 1000, 0, 0, SMART_ACTION_ALLOW_COMBAT_MOVEMENT, 1, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
                 break;
             }
         case SMARTAI_TEMPLATE_TURRET:
             {
-                AddEvent(SMART_EVENT_UPDATE_IC, 0, 0, 0, e.action.installTtemplate.param2, e.action.installTtemplate.param3, 0, SMART_ACTION_CAST, e.action.installTtemplate.param1, e.target.raw.param1, 0, 0, 0, 0, SMART_TARGET_VICTIM, 0, 0, 0, 0, 0);
-                AddEvent(SMART_EVENT_JUST_CREATED, 0, 0, 0, 0, 0, 0, SMART_ACTION_ALLOW_COMBAT_MOVEMENT, 0, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_UPDATE_IC, 0, 0, 0, e.action.installTtemplate.param2, e.action.installTtemplate.param3, 0, 0, SMART_ACTION_CAST, e.action.installTtemplate.param1, e.target.raw.param1, 0, 0, 0, 0, SMART_TARGET_VICTIM, 0, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_JUST_CREATED, 0, 0, 0, 0, 0, 0, 0, SMART_ACTION_ALLOW_COMBAT_MOVEMENT, 0, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
                 break;
             }
         case SMARTAI_TEMPLATE_CAGED_NPC_PART:
@@ -3459,22 +3355,22 @@ void SmartScript::InstallTemplate(SmartScriptHolder const& e)
                 if (!me)
                     return;
                 //store cage as id1
-                AddEvent(SMART_EVENT_DATA_SET, 0, 0, 0, 0, 0, 0, SMART_ACTION_STORE_TARGET_LIST, 1, 0, 0, 0, 0, 0, SMART_TARGET_CLOSEST_GAMEOBJECT, e.action.installTtemplate.param1, 10, 0, 0, 0);
+                AddEvent(SMART_EVENT_DATA_SET, 0, 0, 0, 0, 0, 0, 0, SMART_ACTION_STORE_TARGET_LIST, 1, 0, 0, 0, 0, 0, SMART_TARGET_CLOSEST_GAMEOBJECT, e.action.installTtemplate.param1, 10, 0, 0, 0);
 
                 //reset(close) cage on hostage(me) respawn
-                AddEvent(SMART_EVENT_UPDATE, SMART_EVENT_FLAG_NOT_REPEATABLE, 0, 0, 0, 0, 0, SMART_ACTION_RESET_GOBJECT, 0, 0, 0, 0, 0, 0, SMART_TARGET_GAMEOBJECT_DISTANCE, e.action.installTtemplate.param1, 5, 0, 0, 0);
+                AddEvent(SMART_EVENT_UPDATE, SMART_EVENT_FLAG_NOT_REPEATABLE, 0, 0, 0, 0, 0, 0, SMART_ACTION_RESET_GOBJECT, 0, 0, 0, 0, 0, 0, SMART_TARGET_GAMEOBJECT_DISTANCE, e.action.installTtemplate.param1, 5, 0, 0, 0);
 
-                AddEvent(SMART_EVENT_DATA_SET, 0, 0, 0, 0, 0, 0, SMART_ACTION_SET_RUN, e.action.installTtemplate.param3, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
-                AddEvent(SMART_EVENT_DATA_SET, 0, 0, 0, 0, 0, 0, SMART_ACTION_SET_EVENT_PHASE, 1, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_DATA_SET, 0, 0, 0, 0, 0, 0, 0, SMART_ACTION_SET_RUN, e.action.installTtemplate.param3, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_DATA_SET, 0, 0, 0, 0, 0, 0, 0, SMART_ACTION_SET_EVENT_PHASE, 1, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
 
-                AddEvent(SMART_EVENT_UPDATE, SMART_EVENT_FLAG_NOT_REPEATABLE, 1000, 1000, 0, 0, 0, SMART_ACTION_MOVE_FORWARD, e.action.installTtemplate.param4, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
+                AddEvent(SMART_EVENT_UPDATE, SMART_EVENT_FLAG_NOT_REPEATABLE, 1000, 1000, 0, 0, 0, 0, SMART_ACTION_MOVE_FORWARD, e.action.installTtemplate.param4, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
                 //phase 1: give quest credit on movepoint reached
-                AddEvent(SMART_EVENT_MOVEMENTINFORM, 0, POINT_MOTION_TYPE, SMART_RANDOM_POINT, 0, 0, 0, SMART_ACTION_SET_DATA, 0, 0, 0, 0, 0, 0, SMART_TARGET_STORED, 1, 0, 0, 0, 1);
+                AddEvent(SMART_EVENT_MOVEMENTINFORM, 0, POINT_MOTION_TYPE, SMART_RANDOM_POINT, 0, 0, 0, 0, SMART_ACTION_SET_DATA, 0, 0, 0, 0, 0, 0, SMART_TARGET_STORED, 1, 0, 0, 0, 1);
                 //phase 1: despawn after time on movepoint reached
-                AddEvent(SMART_EVENT_MOVEMENTINFORM, 0, POINT_MOTION_TYPE, SMART_RANDOM_POINT, 0, 0, 0, SMART_ACTION_FORCE_DESPAWN, e.action.installTtemplate.param2, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
+                AddEvent(SMART_EVENT_MOVEMENTINFORM, 0, POINT_MOTION_TYPE, SMART_RANDOM_POINT, 0, 0, 0, 0, SMART_ACTION_FORCE_DESPAWN, e.action.installTtemplate.param2, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
 
                 if (sCreatureTextMgr->TextExist(me->GetEntry(), (uint8)e.action.installTtemplate.param5))
-                    AddEvent(SMART_EVENT_MOVEMENTINFORM, 0, POINT_MOTION_TYPE, SMART_RANDOM_POINT, 0, 0, 0, SMART_ACTION_TALK, e.action.installTtemplate.param5, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
+                    AddEvent(SMART_EVENT_MOVEMENTINFORM, 0, POINT_MOTION_TYPE, SMART_RANDOM_POINT, 0, 0, 0, 0, SMART_ACTION_TALK, e.action.installTtemplate.param5, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 1);
                 break;
             }
         case SMARTAI_TEMPLATE_CAGED_GO_PART:
@@ -3482,16 +3378,16 @@ void SmartScript::InstallTemplate(SmartScriptHolder const& e)
                 if (!go)
                     return;
                 //store hostage as id1
-                AddEvent(SMART_EVENT_GO_STATE_CHANGED, 0, 2, 0, 0, 0, 0, SMART_ACTION_STORE_TARGET_LIST, 1, 0, 0, 0, 0, 0, SMART_TARGET_CLOSEST_CREATURE, e.action.installTtemplate.param1, 10, 0, 0, 0);
+                AddEvent(SMART_EVENT_GO_STATE_CHANGED, 0, 2, 0, 0, 0, 0, 0, SMART_ACTION_STORE_TARGET_LIST, 1, 0, 0, 0, 0, 0, SMART_TARGET_CLOSEST_CREATURE, e.action.installTtemplate.param1, 10, 0, 0, 0);
                 //store invoker as id2
-                AddEvent(SMART_EVENT_GO_STATE_CHANGED, 0, 2, 0, 0, 0, 0, SMART_ACTION_STORE_TARGET_LIST, 2, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_GO_STATE_CHANGED, 0, 2, 0, 0, 0, 0, 0, SMART_ACTION_STORE_TARGET_LIST, 2, 0, 0, 0, 0, 0, SMART_TARGET_NONE, 0, 0, 0, 0, 0);
                 //signal hostage
-                AddEvent(SMART_EVENT_GO_STATE_CHANGED, 0, 2, 0, 0, 0, 0, SMART_ACTION_SET_DATA, 0, 0, 0, 0, 0, 0, SMART_TARGET_STORED, 1, 0, 0, 0, 0);
+                AddEvent(SMART_EVENT_GO_STATE_CHANGED, 0, 2, 0, 0, 0, 0, 0, SMART_ACTION_SET_DATA, 0, 0, 0, 0, 0, 0, SMART_TARGET_STORED, 1, 0, 0, 0, 0);
                 //when hostage raeched end point, give credit to invoker
                 if (e.action.installTtemplate.param2)
-                    AddEvent(SMART_EVENT_DATA_SET, 0, 0, 0, 0, 0, 0, SMART_ACTION_CALL_KILLEDMONSTER, e.action.installTtemplate.param1, 0, 0, 0, 0, 0, SMART_TARGET_STORED, 2, 0, 0, 0, 0);
+                    AddEvent(SMART_EVENT_DATA_SET, 0, 0, 0, 0, 0, 0, 0, SMART_ACTION_CALL_KILLEDMONSTER, e.action.installTtemplate.param1, 0, 0, 0, 0, 0, SMART_TARGET_STORED, 2, 0, 0, 0, 0);
                 else
-                    AddEvent(SMART_EVENT_GO_STATE_CHANGED, 0, 2, 0, 0, 0, 0, SMART_ACTION_CALL_KILLEDMONSTER, e.action.installTtemplate.param1, 0, 0, 0, 0, 0, SMART_TARGET_STORED, 2, 0, 0, 0, 0);
+                    AddEvent(SMART_EVENT_GO_STATE_CHANGED, 0, 2, 0, 0, 0, 0, 0, SMART_ACTION_CALL_KILLEDMONSTER, e.action.installTtemplate.param1, 0, 0, 0, 0, 0, SMART_TARGET_STORED, 2, 0, 0, 0, 0);
                 break;
             }
         case SMARTAI_TEMPLATE_BASIC:
@@ -3500,12 +3396,12 @@ void SmartScript::InstallTemplate(SmartScriptHolder const& e)
     }
 }
 
-void SmartScript::AddEvent(SMART_EVENT e, uint32 event_flags, uint32 event_param1, uint32 event_param2, uint32 event_param3, uint32 event_param4, uint32 event_param5, SMART_ACTION action, uint32 action_param1, uint32 action_param2, uint32 action_param3, uint32 action_param4, uint32 action_param5, uint32 action_param6, SMARTAI_TARGETS t, uint32 target_param1, uint32 target_param2, uint32 target_param3, uint32 target_param4, uint32 phaseMask)
+void SmartScript::AddEvent(SMART_EVENT e, uint32 event_flags, uint32 event_param1, uint32 event_param2, uint32 event_param3, uint32 event_param4, uint32 event_param5, uint32 event_param6, SMART_ACTION action, uint32 action_param1, uint32 action_param2, uint32 action_param3, uint32 action_param4, uint32 action_param5, uint32 action_param6, SMARTAI_TARGETS t, uint32 target_param1, uint32 target_param2, uint32 target_param3, uint32 target_param4, uint32 phaseMask)
 {
-    mInstallEvents.push_back(CreateSmartEvent(e, event_flags, event_param1, event_param2, event_param3, event_param4, event_param5, action, action_param1, action_param2, action_param3, action_param4, action_param5, action_param6, t, target_param1, target_param2, target_param3, target_param4, phaseMask));
+    mInstallEvents.push_back(CreateSmartEvent(e, event_flags, event_param1, event_param2, event_param3, event_param4, event_param5, event_param6, action, action_param1, action_param2, action_param3, action_param4, action_param5, action_param6, t, target_param1, target_param2, target_param3, target_param4, phaseMask));
 }
 
-SmartScriptHolder SmartScript::CreateSmartEvent(SMART_EVENT e, uint32 event_flags, uint32 event_param1, uint32 event_param2, uint32 event_param3, uint32 event_param4, uint32 event_param5, SMART_ACTION action, uint32 action_param1, uint32 action_param2, uint32 action_param3, uint32 action_param4, uint32 action_param5, uint32 action_param6, SMARTAI_TARGETS t, uint32 target_param1, uint32 target_param2, uint32 target_param3, uint32 target_param4, uint32 phaseMask)
+SmartScriptHolder SmartScript::CreateSmartEvent(SMART_EVENT e, uint32 event_flags, uint32 event_param1, uint32 event_param2, uint32 event_param3, uint32 event_param4, uint32 event_param5, uint32 event_param6, SMART_ACTION action, uint32 action_param1, uint32 action_param2, uint32 action_param3, uint32 action_param4, uint32 action_param5, uint32 action_param6, SMARTAI_TARGETS t, uint32 target_param1, uint32 target_param2, uint32 target_param3, uint32 target_param4, uint32 phaseMask)
 {
     SmartScriptHolder script;
     script.event.type = e;
@@ -3514,6 +3410,7 @@ SmartScriptHolder SmartScript::CreateSmartEvent(SMART_EVENT e, uint32 event_flag
     script.event.raw.param3 = event_param3;
     script.event.raw.param4 = event_param4;
     script.event.raw.param5 = event_param5;
+    script.event.raw.param6 = event_param6;
     script.event.event_phase_mask = phaseMask;
     script.event.event_flags = event_flags;
     script.event.event_chance = 100;
@@ -3537,89 +3434,90 @@ SmartScriptHolder SmartScript::CreateSmartEvent(SMART_EVENT e, uint32 event_flag
     return script;
 }
 
-ObjectList* SmartScript::GetTargets(SmartScriptHolder const& e, Unit* invoker /*= nullptr*/)
+void SmartScript::GetTargets(ObjectVector& targets, SmartScriptHolder const& e, WorldObject* invoker /*= nullptr*/) const
 {
-    Unit* scriptTrigger = nullptr;
+    WorldObject* scriptTrigger = nullptr;
     if (invoker)
         scriptTrigger = invoker;
-    else if (Unit* tempLastInvoker = GetLastInvoker())
+    else if (WorldObject* tempLastInvoker = GetLastInvoker())
         scriptTrigger = tempLastInvoker;
 
     WorldObject* baseObject = GetBaseObject();
 
-    ObjectList* l = new ObjectList();
     switch (e.GetTargetType())
     {
         case SMART_TARGET_SELF:
             if (baseObject)
-                l->push_back(baseObject);
+                targets.push_back(baseObject);
             break;
         case SMART_TARGET_VICTIM:
-            if (me && me->GetVictim())
-                l->push_back(me->GetVictim());
+            if (me)
+                if (Unit* victim = me->GetVictim())
+                    targets.push_back(victim);
             break;
         case SMART_TARGET_HOSTILE_SECOND_AGGRO:
             if (me)
             {
-                if (e.target.hostilRandom.powerType)
+                if (e.target.hostileRandom.powerType)
                 {
-                    if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MaxThreat, 1, PowerUsersSelector(me, Powers(e.target.hostilRandom.powerType - 1), (float)e.target.hostilRandom.maxDist, e.target.hostilRandom.playerOnly)))
-                        l->push_back(u);
+                    if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MaxThreat, 1, PowerUsersSelector(me, Powers(e.target.hostileRandom.powerType - 1), (float)e.target.hostileRandom.maxDist, e.target.hostileRandom.playerOnly)))
+                        targets.push_back(u);
                 }
-                else if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MaxThreat, 1, (float)e.target.hostilRandom.maxDist, e.target.hostilRandom.playerOnly))
-                    l->push_back(u);
+                else if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MaxThreat, 1, (float)e.target.hostileRandom.maxDist, e.target.hostileRandom.playerOnly, true, -e.target.hostileRandom.aura))
+                    targets.push_back(u);
             }
             break;
         case SMART_TARGET_HOSTILE_LAST_AGGRO:
             if (me)
             {
-                if (e.target.hostilRandom.powerType)
+                if (e.target.hostileRandom.powerType)
                 {
-                    if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MinThreat, 0, PowerUsersSelector(me, Powers(e.target.hostilRandom.powerType - 1), (float)e.target.hostilRandom.maxDist, e.target.hostilRandom.playerOnly)))
-                        l->push_back(u);
+                    if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MinThreat, 0, PowerUsersSelector(me, Powers(e.target.hostileRandom.powerType - 1), (float)e.target.hostileRandom.maxDist, e.target.hostileRandom.playerOnly)))
+                        targets.push_back(u);
                 }
-                else if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MinThreat, 0, (float)e.target.hostilRandom.maxDist, e.target.hostilRandom.playerOnly))
-                    l->push_back(u);
+                else if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MinThreat, 0, (float)e.target.hostileRandom.maxDist, e.target.hostileRandom.playerOnly, true, -e.target.hostileRandom.aura))
+                    targets.push_back(u);
             }
             break;
         case SMART_TARGET_HOSTILE_RANDOM:
             if (me)
             {
-                if (e.target.hostilRandom.powerType)
+                if (e.target.hostileRandom.powerType)
                 {
-                    if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::Random, 0, PowerUsersSelector(me, Powers(e.target.hostilRandom.powerType - 1), (float)e.target.hostilRandom.maxDist, e.target.hostilRandom.playerOnly)))
-                        l->push_back(u);
+                    if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::Random, 0, PowerUsersSelector(me, Powers(e.target.hostileRandom.powerType - 1), (float)e.target.hostileRandom.maxDist, e.target.hostileRandom.playerOnly)))
+                        targets.push_back(u);
                 }
-                else if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::Random, 0, (float)e.target.hostilRandom.maxDist, e.target.hostilRandom.playerOnly))
-                    l->push_back(u);
+                else if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::Random, 0, (float)e.target.hostileRandom.maxDist, e.target.hostileRandom.playerOnly, true, -e.target.hostileRandom.aura))
+                    targets.push_back(u);
             }
             break;
         case SMART_TARGET_HOSTILE_RANDOM_NOT_TOP:
             if (me)
             {
-                if (e.target.hostilRandom.powerType)
+                if (e.target.hostileRandom.powerType)
                 {
-                    if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::Random, 1, PowerUsersSelector(me, Powers(e.target.hostilRandom.powerType - 1), (float)e.target.hostilRandom.maxDist, e.target.hostilRandom.playerOnly)))
-                        l->push_back(u);
+                    if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::Random, 1, PowerUsersSelector(me, Powers(e.target.hostileRandom.powerType - 1), (float)e.target.hostileRandom.maxDist, e.target.hostileRandom.playerOnly)))
+                        targets.push_back(u);
                 }
-                else if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::Random, 1, (float)e.target.hostilRandom.maxDist, e.target.hostilRandom.playerOnly))
-                    l->push_back(u);
+                else if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::Random, 1, (float)e.target.hostileRandom.maxDist, e.target.hostileRandom.playerOnly, true, -e.target.hostileRandom.aura))
+                    targets.push_back(u);
             }
             break;
         case SMART_TARGET_FARTHEST:
             if (me)
             {
-                if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MinDistance, 0, FarthestTargetSelector(me, e.target.farthest.maxDist, e.target.farthest.playerOnly, e.target.farthest.isInLos)))
-                    l->push_back(u);
+                if (Unit* u = me->AI()->SelectTarget(SelectTargetMethod::MinDistance, 0, FarthestTargetSelector(me, e.target.farthest.maxDist, e.target.farthest.playerOnly, e.target.farthest.isInLos, e.target.farthest.minDist)))
+                    targets.push_back(u);
             }
             break;
         case SMART_TARGET_ACTION_INVOKER:
             if (scriptTrigger)
-                l->push_back(scriptTrigger);
+                targets.push_back(scriptTrigger);
             break;
         case SMART_TARGET_ACTION_INVOKER_VEHICLE:
-            if (scriptTrigger && scriptTrigger->GetVehicle() && scriptTrigger->GetVehicle()->GetBase())
-                l->push_back(scriptTrigger->GetVehicle()->GetBase());
+            if (scriptTrigger && IsUnit(scriptTrigger))
+                if (scriptTrigger->ToUnit()->GetVehicle() && scriptTrigger->ToUnit()->GetVehicle()->GetBase())
+                    targets.push_back(scriptTrigger->ToUnit()->GetVehicle()->GetBase());
             break;
         case SMART_TARGET_INVOKER_PARTY:
             if (scriptTrigger)
@@ -3630,391 +3528,497 @@ ObjectList* SmartScript::GetTargets(SmartScriptHolder const& e, Unit* invoker /*
                     {
                         for (GroupReference* groupRef = group->GetFirstMember(); groupRef != nullptr; groupRef = groupRef->next())
                             if (Player* member = groupRef->GetSource())
+                            {
                                 if (member->IsInMap(player))
-                                    l->push_back(member);
+                                    targets.push_back(member);
+
+                                if (e.target.invokerParty.includePets)
+                                    if (Creature* pet = ObjectAccessor::GetCreatureOrPetOrVehicle(*member, member->GetPetGUID()))
+                                        if (pet->IsPet() && pet->IsInMap(player))
+                                            targets.push_back(pet);
+                            }
                     }
                     // We still add the player to the list if there is no group. If we do
                     // this even if there is a group (thus the else-check), it will add the
                     // same player to the list twice. We don't want that to happen.
                     else
-                        l->push_back(scriptTrigger);
+                        targets.push_back(scriptTrigger);
                 }
             }
             break;
         case SMART_TARGET_CREATURE_RANGE:
+        {
+            WorldObject* ref = baseObject;
+            if (!ref)
+                ref = scriptTrigger;
+
+            if (!ref)
             {
-                // will always return a valid pointer, even if empty list
-                ObjectList* units = GetWorldObjectsInDist((float)e.target.unitRange.maxDist);
-                for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                {
-                    if (!IsCreature(*itr))
-                        continue;
-
-                    if (me && me->GetGUID() == (*itr)->GetGUID())
-                        continue;
-
-                    // check alive state - 1 alive, 2 dead, 0 both
-                    if (uint32 state = e.target.unitRange.livingState)
-                    {
-                        if ((*itr)->ToCreature()->IsAlive() && state == 2)
-                            continue;
-                        if (!(*itr)->ToCreature()->IsAlive() && state == 1)
-                            continue;
-                    }
-
-                    if (((e.target.unitRange.creature && (*itr)->ToCreature()->GetEntry() == e.target.unitRange.creature) || !e.target.unitRange.creature) && baseObject->IsInRange(*itr, (float)e.target.unitRange.minDist, (float)e.target.unitRange.maxDist))
-                        l->push_back(*itr);
-                }
-
-                delete units;
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_CREATURE_RANGE: Entry {} SourceType {} Event {} Action {} Target {} is missing base object or invoker",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
                 break;
             }
+
+            ObjectVector units;
+            GetWorldObjectsInDist(units, static_cast<float>(e.target.unitRange.maxDist));
+
+            for (WorldObject* unit : units)
+            {
+                if (!IsCreature(unit))
+                    continue;
+
+                if (me && me->GetGUID() == unit->GetGUID())
+                    continue;
+
+                // check alive state - 1 alive, 2 dead, 0 both
+                if (uint32 state = e.target.unitRange.livingState)
+                {
+                    if (unit->ToCreature()->IsAlive() && state == 2)
+                        continue;
+                    if (!unit->ToCreature()->IsAlive() && state == 1)
+                        continue;
+                }
+
+                if (((e.target.unitRange.creature && unit->ToCreature()->GetEntry() == e.target.unitRange.creature) || !e.target.unitRange.creature) && ref->IsInRange(unit, (float)e.target.unitRange.minDist, (float)e.target.unitRange.maxDist))
+                    targets.push_back(unit);
+            }
+
+            break;
+        }
         case SMART_TARGET_CREATURE_DISTANCE:
+        {
+            ObjectVector units;
+            GetWorldObjectsInDist(units, static_cast<float>(e.target.unitDistance.dist));
+
+            for (WorldObject* unit : units)
             {
-                // will always return a valid pointer, even if empty list
-                ObjectList* units = GetWorldObjectsInDist((float)e.target.unitDistance.dist);
-                for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
+                if (!IsCreature(unit))
+                    continue;
+
+                if (me && me->GetGUID() == unit->GetGUID())
+                    continue;
+
+                // check alive state - 1 alive, 2 dead, 0 both
+                if (uint32 state = e.target.unitDistance.livingState)
                 {
-                    if (!IsCreature(*itr))
+                    if (unit->ToCreature()->IsAlive() && state == 2)
                         continue;
-
-                    if (me && me->GetGUID() == (*itr)->GetGUID())
+                    if (!unit->ToCreature()->IsAlive() && state == 1)
                         continue;
-
-                    // check alive state - 1 alive, 2 dead, 0 both
-                    if (uint32 state = e.target.unitDistance.livingState)
-                    {
-                        if ((*itr)->ToCreature()->IsAlive() && state == 2)
-                            continue;
-                        if (!(*itr)->ToCreature()->IsAlive() && state == 1)
-                            continue;
-                    }
-
-                    if ((e.target.unitDistance.creature && (*itr)->ToCreature()->GetEntry() == e.target.unitDistance.creature) || !e.target.unitDistance.creature)
-                        l->push_back(*itr);
                 }
 
-                delete units;
-                break;
+                if ((e.target.unitDistance.creature && unit->ToCreature()->GetEntry() == e.target.unitDistance.creature) || !e.target.unitDistance.creature)
+                    targets.push_back(unit);
             }
+
+            break;
+        }
         case SMART_TARGET_GAMEOBJECT_DISTANCE:
+        {
+            ObjectVector units;
+            GetWorldObjectsInDist(units, static_cast<float>(e.target.goDistance.dist));
+
+            for (WorldObject* unit : units)
             {
-                // will always return a valid pointer, even if empty list
-                ObjectList* units = GetWorldObjectsInDist((float)e.target.goDistance.dist);
-                for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                {
-                    if (!IsGameObject(*itr))
-                        continue;
+                if (!IsGameObject(unit))
+                    continue;
 
-                    if (go && go->GetGUID() == (*itr)->GetGUID())
-                        continue;
+                if (go && go->GetGUID() == unit->GetGUID())
+                    continue;
 
-                    if ((e.target.goDistance.entry && (*itr)->ToGameObject()->GetEntry() == e.target.goDistance.entry) || !e.target.goDistance.entry)
-                        l->push_back(*itr);
-                }
-
-                delete units;
-                break;
+                if ((e.target.goDistance.entry && unit->ToGameObject()->GetEntry() == e.target.goDistance.entry) || !e.target.goDistance.entry)
+                    targets.push_back(unit);
             }
+
+            break;
+        }
         case SMART_TARGET_GAMEOBJECT_RANGE:
+        {
+
+            WorldObject* ref = baseObject;
+            if (!ref)
+                ref = scriptTrigger;
+
+            if (!ref)
             {
-                // will always return a valid pointer, even if empty list
-                ObjectList* units = GetWorldObjectsInDist((float)e.target.goRange.maxDist);
-                for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                {
-                    if (!IsGameObject(*itr))
-                        continue;
-
-                    if (go && go->GetGUID() == (*itr)->GetGUID())
-                        continue;
-
-                    if (((e.target.goRange.entry && IsGameObject(*itr) && (*itr)->ToGameObject()->GetEntry() == e.target.goRange.entry) || !e.target.goRange.entry) && baseObject->IsInRange((*itr), (float)e.target.goRange.minDist, (float)e.target.goRange.maxDist))
-                        l->push_back(*itr);
-                }
-
-                delete units;
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_GAMEOBJECT_RANGE: Entry: {} SourceType {} Event {} Action {} Target {} is missing base object or invoker.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
                 break;
             }
+
+            ObjectVector units;
+            GetWorldObjectsInDist(units, static_cast<float>(e.target.goRange.maxDist));
+
+            for (WorldObject* unit : units)
+            {
+                if (!IsGameObject(unit))
+                    continue;
+
+                if (go && go->GetGUID() == unit->GetGUID())
+                    continue;
+
+                if (((e.target.goRange.entry && IsGameObject(unit) && unit->ToGameObject()->GetEntry() == e.target.goRange.entry) || !e.target.goRange.entry) && ref->IsInRange((unit), (float)e.target.goRange.minDist, (float)e.target.goRange.maxDist))
+                    targets.push_back(unit);
+            }
+
+            break;
+        }
         case SMART_TARGET_CREATURE_GUID:
+        {
+            if (!scriptTrigger && !baseObject)
             {
-                if (!scriptTrigger && !baseObject)
-                {
-                    LOG_ERROR("scripts.ai.sai", "SMART_TARGET_CREATURE_GUID can not be used without invoker");
-                    break;
-                }
-
-                Creature* target = FindCreatureNear(scriptTrigger ? scriptTrigger : GetBaseObject(), e.target.unitGUID.dbGuid);
-                if (target && (!e.target.unitGUID.entry || target->GetEntry() == e.target.unitGUID.entry))
-                    l->push_back(target);
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_CREATURE_GUID: Entry {} SourceType {} Event {} Action {} Target {} is missing base object or invoker.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
                 break;
             }
+
+            Creature* target = FindCreatureNear(scriptTrigger ? scriptTrigger : GetBaseObject(), e.target.unitGUID.dbGuid);
+            if (target && (!e.target.unitGUID.entry || target->GetEntry() == e.target.unitGUID.entry))
+                targets.push_back(target);
+            break;
+        }
         case SMART_TARGET_GAMEOBJECT_GUID:
+        {
+            if (!scriptTrigger && !GetBaseObject())
             {
-                if (!scriptTrigger && !GetBaseObject())
-                {
-                    LOG_ERROR("scripts.ai.sai", "SMART_TARGET_GAMEOBJECT_GUID can not be used without invoker");
-                    break;
-                }
-
-                GameObject* target = FindGameObjectNear(scriptTrigger ? scriptTrigger : GetBaseObject(), e.target.goGUID.dbGuid);
-                if (target && (!e.target.goGUID.entry || target->GetEntry() == e.target.goGUID.entry))
-                    l->push_back(target);
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_GAMEOBJECT_GUID: Entry {} SourceType {} Event {} Action {} Target {} is missing base object or invoker.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
                 break;
             }
+
+            GameObject* target = FindGameObjectNear(scriptTrigger ? scriptTrigger : GetBaseObject(), e.target.goGUID.dbGuid);
+            if (target && (!e.target.goGUID.entry || target->GetEntry() == e.target.goGUID.entry))
+                targets.push_back(target);
+            break;
+        }
         case SMART_TARGET_PLAYER_RANGE:
-            {
-                // will always return a valid pointer, even if empty list
-                ObjectList* units = GetWorldObjectsInDist((float)e.target.playerRange.maxDist);
-                if (!units->empty() && GetBaseObject())
-                {
-                    for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                        if (IsPlayer(*itr) && GetBaseObject()->IsInRange(*itr, (float)e.target.playerRange.minDist, (float)e.target.playerRange.maxDist) && (*itr)->ToPlayer()->IsAlive() && !(*itr)->ToPlayer()->IsGameMaster())
-                            l->push_back(*itr);
+        {
+            ObjectVector units;
+            GetWorldObjectsInDist(units, static_cast<float>(e.target.playerRange.maxDist));
 
-                    // If Orientation is also set and we didnt find targets, try it with all the range
-                    if (l->empty() && e.target.o > 0)
-                        for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                            if (IsPlayer(*itr) && baseObject->IsInRange(*itr, 0.0f, float(e.target.playerRange.maxDist)) && (*itr)->ToPlayer()->IsAlive() && !(*itr)->ToPlayer()->IsGameMaster())
-                                l->push_back(*itr);
-
-                    if (e.target.playerRange.maxCount > 0)
-                        Acore::Containers::RandomResize(*l, e.target.playerRange.maxCount);
-                }
-
-                delete units;
-                break;
-            }
+            if (!units.empty() && baseObject)
+                for (WorldObject* unit : units)
+                    if (IsPlayer(unit) && baseObject->IsInRange(unit, float(e.target.playerRange.minDist), float(e.target.playerRange.maxDist)))
+                        targets.push_back(unit);
+            if (e.target.playerRange.maxCount)
+                Acore::Containers::RandomResize(targets, e.target.playerRange.maxCount);
+            break;
+        }
         case SMART_TARGET_PLAYER_DISTANCE:
-            {
-                // will always return a valid pointer, even if empty list
-                ObjectList* units = GetWorldObjectsInDist((float)e.target.playerDistance.dist);
-                for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                    if (IsPlayer(*itr))
-                        l->push_back(*itr);
+        {
+            ObjectVector units;
+            GetWorldObjectsInDist(units, static_cast<float>(e.target.playerDistance.dist));
 
-                delete units;
-                break;
-            }
+            for (WorldObject* unit : units)
+                if (IsPlayer(unit))
+                    targets.push_back(unit);
+            break;
+        }
         case SMART_TARGET_STORED:
-            {
-                ObjectListMap::iterator itr = mTargetStorage->find(e.target.stored.id);
-                if (itr != mTargetStorage->end())
-                {
-                    ObjectList* objectList = itr->second->GetObjectList();
-                    l->assign(objectList->begin(), objectList->end());
-                }
+        {
+            WorldObject* ref = baseObject;
+            if (!ref)
+                ref = scriptTrigger;
 
-                // xinef: return l, what if list is empty? will return empty list instead of null pointer
+            if (!ref)
+            {
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_STORED: Entry {} SourceType {} Event {} Action {} Target {} is missing base object or invoker.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
                 break;
             }
+
+            if (ObjectVector const* stored = GetStoredTargetVector(e.target.stored.id, *ref))
+                targets.assign(stored->begin(), stored->end());
+            break;
+        }
         case SMART_TARGET_CLOSEST_CREATURE:
+        {
+            WorldObject* ref = baseObject;
+
+            if (!ref)
+                ref = scriptTrigger;
+
+            if (!ref)
             {
-                Creature* target = GetClosestCreatureWithEntry(GetBaseObject(), e.target.unitClosest.entry, (float)(e.target.unitClosest.dist ? e.target.unitClosest.dist : 100), !e.target.unitClosest.dead);
-                if (target)
-                    l->push_back(target);
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_CLOSEST_CREATURE: Entry {} SourceType {} Event {} Action {} Target {} is missing base object or invoker.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
                 break;
             }
+
+            Creature* target = GetClosestCreatureWithEntry(ref, e.target.unitClosest.entry, (float)(e.target.unitClosest.dist ? e.target.unitClosest.dist : 100), !e.target.unitClosest.dead);
+            if (target)
+                targets.push_back(target);
+            break;
+        }
         case SMART_TARGET_CLOSEST_GAMEOBJECT:
+        {
+            WorldObject* ref = baseObject;
+
+            if (!ref)
+                ref = scriptTrigger;
+
+            if (!ref)
             {
-                GameObject* target = GetClosestGameObjectWithEntry(GetBaseObject(), e.target.goClosest.entry, (float)(e.target.goClosest.dist ? e.target.goClosest.dist : 100), e.target.goClosest.onlySpawned);
-                if (target)
-                    l->push_back(target);
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_CLOSEST_GAMEOBJECT: Entry {} SourceType {} Event {} Action {} Target {} is missing base object or invoker.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
                 break;
             }
+
+            GameObject* target = GetClosestGameObjectWithEntry(ref, e.target.goClosest.entry, (float)(e.target.goClosest.dist ? e.target.goClosest.dist : 100), e.target.goClosest.onlySpawned);
+            if (target)
+                targets.push_back(target);
+            break;
+        }
         case SMART_TARGET_CLOSEST_PLAYER:
+        {
+            WorldObject* ref = baseObject;
+
+            if (!ref)
+                ref = scriptTrigger;
+
+            if (!ref)
             {
-                if (WorldObject* obj = GetBaseObject())
-                {
-                    Player* target = obj->SelectNearestPlayer((float)e.target.playerDistance.dist);
-                    if (target)
-                        l->push_back(target);
-                }
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_CLOSEST_PLAYER: Entry {} SourceType {} Event {} Action {} Target {} is missing base object or invoker.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
                 break;
             }
+
+            if (Player* target = ref->SelectNearestPlayer((float)e.target.playerDistance.dist))
+                targets.push_back(target);
+            break;
+        }
         case SMART_TARGET_OWNER_OR_SUMMONER:
-            /*
-             * Owners/Summoners should be WorldObjects. This allows to have other objects
-             * such as gameobjects to execute SmartScripts using this type of target.
-             * Otherwise, only Units like creatures can summon other creatures.
-             */
+        /*
+         * Owners/Summoners should be WorldObjects. This allows to have other objects
+         * such as gameobjects to execute SmartScripts using this type of target.
+         * Otherwise, only Units like creatures can summon other creatures.
+         */
+        {
+            if (me)
             {
-                if (me)
+                if (WorldObject* owner = ObjectAccessor::GetWorldObject(*me, me->GetCharmerOrOwnerGUID()))
                 {
-                    if (WorldObject* owner = ObjectAccessor::GetWorldObject(*me, me->GetCharmerOrOwnerGUID()))
-                    {
-                        l->push_back(owner);
-                    }
+                    targets.push_back(owner);
                 }
-                else if (go)
+                else if (me->IsSummon() && me->ToTempSummon()->GetSummonerUnit())
                 {
-                    if (WorldObject* owner = ObjectAccessor::GetWorldObject(*go, go->GetOwnerGUID()))
-                    {
-                        l->push_back(owner);
-                    }
+                    targets.push_back(me->ToTempSummon()->GetSummonerUnit());
                 }
-
-                // xinef: Get owner of owner
-                if (e.target.owner.useCharmerOrOwner && !l->empty())
+            }
+            else if (go)
+            {
+                if (WorldObject* owner = ObjectAccessor::GetWorldObject(*go, go->GetOwnerGUID()))
                 {
-                    if (Unit* owner = l->front()->ToUnit())
-                    {
-                        l->clear();
+                    targets.push_back(owner);
+                }
+            }
 
-                        if (Unit* base = ObjectAccessor::GetUnit(*owner, owner->GetCharmerOrOwnerGUID()))
+            // xinef: Get owner of owner
+            if (e.target.owner.useCharmerOrOwner && !targets.empty())
+            {
+                if (WorldObject* owner = targets.front())
+                {
+                    targets.clear();
+
+                    if (owner->ToCreature())
+                    {
+                        if (Unit* base = ObjectAccessor::GetUnit(*owner, owner->ToCreature()->GetCharmerOrOwnerGUID()))
                         {
-                            l->push_back(base);
-                        }
-                    }
-                }
-                break;
-            }
-        case SMART_TARGET_THREAT_LIST:
-            {
-                if (me)
-                {
-                    ThreatContainer::StorageType threatList = me->getThreatMgr().getThreatList();
-                    for (ThreatContainer::StorageType::const_iterator i = threatList.begin(); i != threatList.end(); ++i)
-                        if (Unit* temp = ObjectAccessor::GetUnit(*me, (*i)->getUnitGuid()))
-                            // Xinef: added distance check
-                            if (e.target.threatList.maxDist == 0 || me->IsWithinCombatRange(temp, (float)e.target.threatList.maxDist))
-                                l->push_back(temp);
-                }
-                break;
-            }
-        case SMART_TARGET_CLOSEST_ENEMY:
-            {
-                if (me)
-                    if (Unit* target = me->SelectNearestTarget(e.target.closestAttackable.maxDist, e.target.closestAttackable.playerOnly))
-                        l->push_back(target);
-
-                break;
-            }
-        case SMART_TARGET_CLOSEST_FRIENDLY:
-            {
-                if (me)
-                    if (Unit* target = DoFindClosestFriendlyInRange(e.target.closestFriendly.maxDist, e.target.closestFriendly.playerOnly))
-                        l->push_back(target);
-
-                break;
-            }
-        case SMART_TARGET_PLAYER_WITH_AURA:
-            {
-                // will always return a valid pointer, even if empty list
-                ObjectList* units = GetWorldObjectsInDist(e.target.z ? e.target.z : float(e.target.playerWithAura.distMax));
-                for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                    if (IsPlayer(*itr) && (*itr)->ToPlayer()->IsAlive() && !(*itr)->ToPlayer()->IsGameMaster())
-                        if (GetBaseObject()->IsInRange(*itr, (float)e.target.playerWithAura.distMin, (float)e.target.playerWithAura.distMax))
-                            if (bool(e.target.playerWithAura.negation) != (*itr)->ToPlayer()->HasAura(e.target.playerWithAura.spellId))
-                                l->push_back(*itr);
-
-                if (e.target.o > 0)
-                    Acore::Containers::RandomResize(*l, e.target.o);
-
-                delete units;
-                break;
-            }
-        case SMART_TARGET_ROLE_SELECTION:
-            {
-                // will always return a valid pointer, even if empty list
-                ObjectList* units = GetWorldObjectsInDist(float(e.target.roleSelection.maxDist));
-                // 1 = Tanks, 2 = Healer, 4 = Damage
-                uint32 roleMask = e.target.roleSelection.roleMask;
-                for (ObjectList::const_iterator itr = units->begin(); itr != units->end(); ++itr)
-                    if (Player* targetPlayer = (*itr)->ToPlayer())
-                        if (targetPlayer->IsAlive() && !targetPlayer->IsGameMaster())
-                        {
-                            if (roleMask & SMART_TARGET_ROLE_FLAG_TANKS)
-                            {
-                                if (targetPlayer->HasTankSpec())
-                                {
-                                    l->push_back(*itr);
-                                    continue;
-                                }
-                            }
-                            if (roleMask & SMART_TARGET_ROLE_FLAG_HEALERS)
-                            {
-                                if (targetPlayer->HasHealSpec())
-                                {
-                                    l->push_back(*itr);
-                                    continue;
-                                }
-                            }
-                            if (roleMask & SMART_TARGET_ROLE_FLAG_DAMAGERS)
-                            {
-                                if (targetPlayer->HasCasterSpec() || targetPlayer->HasMeleeSpec())
-                                {
-                                    l->push_back(*itr);
-                                    continue;
-                                }
-                            }
-                        }
-
-                if (e.target.roleSelection.resize > 0)
-                    Acore::Containers::RandomResize(*l, e.target.roleSelection.resize);
-
-                delete units;
-                break;
-            }
-        case SMART_TARGET_VEHICLE_PASSENGER:
-            {
-                if (me && me->IsVehicle())
-                {
-                    if (Unit* target = me->GetVehicleKit()->GetPassenger(e.target.vehicle.seatMask))
-                    {
-                        l->push_back(target);
-                    }
-                }
-                break;
-            }
-        case SMART_TARGET_LOOT_RECIPIENTS:
-            {
-                if (me)
-                {
-                    if (Group* lootGroup = me->GetLootRecipientGroup())
-                    {
-                        for (GroupReference* it = lootGroup->GetFirstMember(); it != nullptr; it = it->next())
-                        {
-                            if (Player* recipient = it->GetSource())
-                            {
-                                l->push_back(recipient);
-                            }
+                            targets.push_back(base);
                         }
                     }
                     else
                     {
-                        if (Player* recipient = me->GetLootRecipient())
+                        if (Unit* base = ObjectAccessor::GetUnit(*owner, owner->ToGameObject()->GetOwnerGUID()))
                         {
-                            l->push_back(recipient);
+                            targets.push_back(base);
                         }
                     }
                 }
             }
+            break;
+        }
+        case SMART_TARGET_THREAT_LIST:
+        {
+            if (me)
+            {
+                ThreatContainer::StorageType threatList = me->GetThreatMgr().GetThreatList();
+                for (ThreatContainer::StorageType::const_iterator i = threatList.begin(); i != threatList.end(); ++i)
+                    if (Unit* temp = ObjectAccessor::GetUnit(*me, (*i)->getUnitGuid()))
+                        // Xinef: added distance check
+                        if (e.target.threatList.maxDist == 0 || me->IsWithinCombatRange(temp, (float)e.target.threatList.maxDist))
+                            targets.push_back(temp);
+            }
+            break;
+        }
+        case SMART_TARGET_CLOSEST_ENEMY:
+        {
+            if (me)
+                if (Unit* target = me->SelectNearestTarget(e.target.closestAttackable.maxDist, e.target.closestAttackable.playerOnly))
+                    targets.push_back(target);
+
+            break;
+        }
+        case SMART_TARGET_CLOSEST_FRIENDLY:
+        {
+            if (me)
+                if (Unit* target = DoFindClosestFriendlyInRange(e.target.closestFriendly.maxDist, e.target.closestFriendly.playerOnly))
+                    targets.push_back(target);
+
+            break;
+        }
+        case SMART_TARGET_PLAYER_WITH_AURA:
+        {
+            ObjectVector units;
+            GetWorldObjectsInDist(units, static_cast<float>(e.target.playerDistance.dist));
+
+            for (WorldObject* unit : units)
+                if (IsPlayer(unit) && unit->ToPlayer()->IsAlive() && !unit->ToPlayer()->IsGameMaster())
+                    if (GetBaseObject()->IsInRange(unit, (float)e.target.playerWithAura.distMin, (float)e.target.playerWithAura.distMax))
+                        if (bool(e.target.playerWithAura.negation) != unit->ToPlayer()->HasAura(e.target.playerWithAura.spellId))
+                            targets.push_back(unit);
+
+            if (e.target.o > 0)
+                Acore::Containers::RandomResize(targets, e.target.o);
+
+            break;
+        }
+        case SMART_TARGET_ROLE_SELECTION:
+        {
+            ObjectVector units;
+            GetWorldObjectsInDist(units, static_cast<float>(e.target.playerDistance.dist));
+            // 1 = Tanks, 2 = Healer, 4 = Damage
+            uint32 roleMask = e.target.roleSelection.roleMask;
+            for (WorldObject* unit : units)
+                if (Player* targetPlayer = unit->ToPlayer())
+                    if (targetPlayer->IsAlive() && !targetPlayer->IsGameMaster())
+                    {
+                        if (roleMask & SMART_TARGET_ROLE_FLAG_TANKS)
+                        {
+                            if (targetPlayer->HasTankSpec())
+                            {
+                                targets.push_back(unit);
+                                continue;
+                            }
+                        }
+                        if (roleMask & SMART_TARGET_ROLE_FLAG_HEALERS)
+                        {
+                            if (targetPlayer->HasHealSpec())
+                            {
+                                targets.push_back(unit);
+                                continue;
+                            }
+                        }
+                        if (roleMask & SMART_TARGET_ROLE_FLAG_DAMAGERS)
+                        {
+                            if (targetPlayer->HasCasterSpec() || targetPlayer->HasMeleeSpec())
+                            {
+                                targets.push_back(unit);
+                                continue;
+                            }
+                        }
+                    }
+
+            if (e.target.roleSelection.resize > 0)
+                Acore::Containers::RandomResize(targets, e.target.roleSelection.resize);
+
+            break;
+        }
+        case SMART_TARGET_VEHICLE_PASSENGER:
+        {
+            if (me && me->IsVehicle())
+            {
+                if (Unit* target = me->GetVehicleKit()->GetPassenger(e.target.vehicle.seatMask))
+                {
+                    targets.push_back(target);
+                }
+            }
+            break;
+        }
+        case SMART_TARGET_LOOT_RECIPIENTS:
+        {
+            if (me)
+            {
+                if (Group* lootGroup = me->GetLootRecipientGroup())
+                {
+                    for (GroupReference* it = lootGroup->GetFirstMember(); it != nullptr; it = it->next())
+                    {
+                        if (Player* recipient = it->GetSource())
+                        {
+                            targets.push_back(recipient);
+                        }
+                    }
+                }
+                else
+                {
+                    if (Player* recipient = me->GetLootRecipient())
+                    {
+                        targets.push_back(recipient);
+                    }
+                }
+            }
+            break;
+        }
+        case SMART_TARGET_SUMMONED_CREATURES:
+        {
+            if (me)
+            {
+                for (ObjectGuid const& guid : _summonList)
+                {
+                    if (!e.target.summonedCreatures.entry || guid.GetEntry() == e.target.summonedCreatures.entry)
+                    {
+                        if (Creature* creature = me->GetMap()->GetCreature(guid))
+                        {
+                            targets.push_back(creature);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        case SMART_TARGET_INSTANCE_STORAGE:
+        {
+            if (InstanceScript* instance = GetBaseObject()->GetInstanceScript())
+            {
+                if (e.target.instanceStorage.type == 1)
+                {
+                    if (Creature* creature = instance->GetCreature(e.target.instanceStorage.index))
+                    {
+                        targets.push_back(creature);
+                    }
+                }
+                else if (e.target.instanceStorage.type == 2)
+                {
+                    if (GameObject* go = instance->GetGameObject(e.target.instanceStorage.index))
+                    {
+                        targets.push_back(go);
+                    }
+                }
+            }
+            else
+            {
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_INSTANCE_STORAGE: Entry {} SourceType {} Event {} Action {} Target {} called outside an instance map.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
+            }
+
+            break;
+        }
         case SMART_TARGET_NONE:
         case SMART_TARGET_POSITION:
         default:
             break;
     }
-
-    if (l->empty())
-    {
-        delete l;
-        l = nullptr;
-    }
-
-    return l;
 }
 
-ObjectList* SmartScript::GetWorldObjectsInDist(float dist)
+void SmartScript::GetWorldObjectsInDist(ObjectVector& targets, float dist) const
 {
-    ObjectList* targets = new ObjectList();
     WorldObject* obj = GetBaseObject();
-    if (obj)
-    {
-        Acore::AllWorldObjectsInRange u_check(obj, dist);
-        Acore::WorldObjectListSearcher<Acore::AllWorldObjectsInRange> searcher(obj, *targets, u_check);
-        Cell::VisitAllObjects(obj, searcher, dist);
-    }
-    return targets;
+    if (!obj)
+        return;
+
+    Acore::AllWorldObjectsInRange u_check(obj, dist);
+    Acore::WorldObjectListSearcher<Acore::AllWorldObjectsInRange> searcher(obj, targets, u_check);
+    Cell::VisitAllObjects(obj, searcher, dist);
 }
 
 void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, uint32 var1, bool bvar, SpellInfo const* spell, GameObject* gob)
@@ -4023,6 +4027,9 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
         return;
 
     if ((e.event.event_phase_mask && !IsInPhase(e.event.event_phase_mask)) || ((e.event.event_flags & SMART_EVENT_FLAG_NOT_REPEATABLE) && e.runOnce))
+        return;
+
+    if (!(e.event.event_flags & SMART_EVENT_FLAG_WHILE_CHARMED) && IsCharmedCreature(me))
         return;
 
     switch (e.GetEventType())
@@ -4035,18 +4042,18 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             ProcessTimedAction(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax);
             break;
         case SMART_EVENT_UPDATE_OOC:
-            if (me && me->IsInCombat())
+            if (me && me->IsEngaged())
                 return;
             ProcessTimedAction(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax);
             break;
         case SMART_EVENT_UPDATE_IC:
-            if (!me || !me->IsInCombat())
+            if (!me || !me->IsEngaged())
                 return;
             ProcessTimedAction(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax);
             break;
         case SMART_EVENT_HEALTH_PCT:
             {
-                if (!me || !me->IsInCombat() || !me->GetMaxHealth())
+                if (!me || !me->IsEngaged() || !me->GetMaxHealth())
                     return;
                 uint32 perc = (uint32)me->GetHealthPct();
                 if (perc > e.event.minMaxRepeat.max || perc < e.event.minMaxRepeat.min)
@@ -4056,7 +4063,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_TARGET_HEALTH_PCT:
             {
-                if (!me || !me->IsInCombat() || !me->GetVictim() || !me->GetVictim()->GetMaxHealth())
+                if (!me || !me->IsEngaged() || !me->GetVictim() || !me->GetVictim()->GetMaxHealth())
                     return;
                 uint32 perc = (uint32)me->GetVictim()->GetHealthPct();
                 if (perc > e.event.minMaxRepeat.max || perc < e.event.minMaxRepeat.min)
@@ -4066,7 +4073,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_MANA_PCT:
             {
-                if (!me || !me->IsInCombat() || !me->GetMaxPower(POWER_MANA))
+                if (!me || !me->IsEngaged() || !me->GetMaxPower(POWER_MANA))
                     return;
                 uint32 perc = uint32(me->GetPowerPct(POWER_MANA));
                 if (perc > e.event.minMaxRepeat.max || perc < e.event.minMaxRepeat.min)
@@ -4076,7 +4083,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_TARGET_MANA_PCT:
             {
-                if (!me || !me->IsInCombat() || !me->GetVictim() || !me->GetVictim()->GetMaxPower(POWER_MANA))
+                if (!me || !me->IsEngaged() || !me->GetVictim() || !me->GetVictim()->GetMaxPower(POWER_MANA))
                     return;
                 uint32 perc = uint32(me->GetVictim()->GetPowerPct(POWER_MANA));
                 if (perc > e.event.minMaxRepeat.max || perc < e.event.minMaxRepeat.min)
@@ -4086,18 +4093,19 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_RANGE:
             {
-                if (!me || !me->IsInCombat() || !me->GetVictim())
+                if (!me || !me->IsEngaged() || !me->GetVictim())
                     return;
 
-                if (me->IsInRange(me->GetVictim(), (float)e.event.minMaxRepeat.min, (float)e.event.minMaxRepeat.max))
+                if (me->IsInRange(me->GetVictim(), (float)e.event.minMaxRepeat.rangeMin, (float)e.event.minMaxRepeat.rangeMax))
                     ProcessTimedAction(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax, me->GetVictim());
-                else // xinef: make it predictable
-                    RecalcTimer(e, 500, 500);
+                else
+                    RecalcTimer(e, 1200, 1200); // make it predictable
+
                 break;
             }
         case SMART_EVENT_VICTIM_CASTING:
             {
-                if (!me || !me->IsInCombat())
+                if (!me || !me->IsEngaged())
                     return;
 
                 Unit* victim = me->GetVictim();
@@ -4115,7 +4123,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_FRIENDLY_HEALTH:
             {
-                if (!me || !me->IsInCombat())
+                if (!me || !me->IsEngaged())
                     return;
 
                 Unit* target = DoSelectLowestHpFriendly((float)e.event.friendlyHealth.radius, e.event.friendlyHealth.hpDeficit);
@@ -4130,31 +4138,36 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_FRIENDLY_IS_CC:
             {
-                if (!me || !me->IsInCombat())
+                if (!me || !me->IsEngaged())
                     return;
 
-                std::list<Creature*> pList;
-                DoFindFriendlyCC(pList, (float)e.event.friendlyCC.radius);
-                if (pList.empty())
+                std::vector<Creature*> creatures;
+                DoFindFriendlyCC(creatures, float(e.event.friendlyCC.radius));
+                if (creatures.empty())
                 {
                     // Xinef: if there are at least two same npcs, they will perform the same action immediately even if this is useless...
                     RecalcTimer(e, 1000, 3000);
                     return;
                 }
-                ProcessTimedAction(e, e.event.friendlyCC.repeatMin, e.event.friendlyCC.repeatMax, Acore::Containers::SelectRandomContainerElement(pList));
+                ProcessTimedAction(e, e.event.friendlyCC.repeatMin, e.event.friendlyCC.repeatMax, Acore::Containers::SelectRandomContainerElement(creatures));
                 break;
             }
         case SMART_EVENT_FRIENDLY_MISSING_BUFF:
+        {
+            if (e.event.missingBuff.onlyInCombat && !me->IsEngaged())
             {
-                std::list<Creature*> pList;
-                DoFindFriendlyMissingBuff(pList, (float)e.event.missingBuff.radius, e.event.missingBuff.spell);
-
-                if (pList.empty())
-                    return;
-
-                ProcessTimedAction(e, e.event.missingBuff.repeatMin, e.event.missingBuff.repeatMax, Acore::Containers::SelectRandomContainerElement(pList));
-                break;
+                return;
             }
+
+            std::vector<Creature*> creatures;
+            DoFindFriendlyMissingBuff(creatures, float(e.event.missingBuff.radius), e.event.missingBuff.spell);
+
+            if (creatures.empty())
+                return;
+
+            ProcessTimedAction(e, e.event.missingBuff.repeatMin, e.event.missingBuff.repeatMax, Acore::Containers::SelectRandomContainerElement(creatures));
+            break;
+        }
         case SMART_EVENT_HAS_AURA:
             {
                 if (!me)
@@ -4174,12 +4187,17 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                 ProcessTimedAction(e, e.event.aura.repeatMin, e.event.aura.repeatMax, me->GetVictim());
                 break;
             }
+        case SMART_EVENT_CHARMED:
+            {
+                if (bvar == (e.event.charm.onRemove != 1))
+                    ProcessAction(e, unit, var0, var1, bvar, spell, gob);
+                break;
+            }
         //no params
         case SMART_EVENT_AGGRO:
         case SMART_EVENT_DEATH:
         case SMART_EVENT_EVADE:
         case SMART_EVENT_REACHED_HOME:
-        case SMART_EVENT_CHARMED:
         case SMART_EVENT_CHARMED_TARGET:
         case SMART_EVENT_CORPSE_REMOVED:
         case SMART_EVENT_AI_INIT:
@@ -4232,9 +4250,23 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
 
                 if (Unit* victim = me->GetVictim())
                 {
-                    if (!victim->HasInArc(static_cast<float>(M_PI), me))
-                        ProcessTimedAction(e, e.event.behindTarget.cooldownMin, e.event.behindTarget.cooldownMax, victim);
+                    if (e.event.minMaxRepeat.rangeMax && (me->IsInRange(victim, (float)e.event.minMaxRepeat.rangeMin, (float)e.event.minMaxRepeat.rangeMax)))
+                        if (!victim->HasInArc(static_cast<float>(M_PI), me))
+                            ProcessTimedAction(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax, victim);
                 }
+
+                break;
+            }
+        case SMART_EVENT_IS_IN_MELEE_RANGE:
+            {
+                if (!me)
+                    return;
+
+                if (Unit* victim = me->GetVictim())
+                    if ((!e.event.meleeRange.invert && me->IsWithinMeleeRange(victim, static_cast<float>(e.event.meleeRange.dist))) ||
+                        (e.event.meleeRange.invert && !me->IsWithinMeleeRange(victim, static_cast<float>(e.event.meleeRange.dist))))
+                        ProcessTimedAction(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax, victim);
+
                 break;
             }
         case SMART_EVENT_RECEIVE_EMOTE:
@@ -4248,7 +4280,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             {
                 if (!me || !unit)
                     return;
-                if (e.event.kill.playerOnly && unit->GetTypeId() != TYPEID_PLAYER)
+                if (e.event.kill.playerOnly && !unit->IsPlayer())
                     return;
                 if (e.event.kill.creature && unit->GetEntry() != e.event.kill.creature)
                     return;
@@ -4271,7 +4303,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_OOC_LOS:
             {
-                if (!me || me->IsInCombat())
+                if (!me || me->IsEngaged())
                     return;
                 //can trigger if closer than fMaxAllowedRange
                 float range = (float)e.event.los.maxDist;
@@ -4285,7 +4317,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                         (hostilityMode == SmartEvent::LOSHostilityMode::NotHostile && !me->IsHostileTo(unit)) ||
                         (hostilityMode == SmartEvent::LOSHostilityMode::Hostile && me->IsHostileTo(unit)))
                     {
-                        if (e.event.los.playerOnly && unit->GetTypeId() != TYPEID_PLAYER)
+                        if (e.event.los.playerOnly && !unit->IsPlayer())
                             return;
                         RecalcTimer(e, e.event.los.cooldownMin, e.event.los.cooldownMax);
                         ProcessAction(e, unit);
@@ -4295,7 +4327,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_IC_LOS:
             {
-                if (!me || !me->IsInCombat())
+                if (!me || !me->IsEngaged())
                     return;
                 //can trigger if closer than fMaxAllowedRange
                 float range = (float)e.event.los.maxDist;
@@ -4309,7 +4341,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                         (hostilityMode == SmartEvent::LOSHostilityMode::NotHostile && !me->IsHostileTo(unit)) ||
                         (hostilityMode == SmartEvent::LOSHostilityMode::Hostile && me->IsHostileTo(unit)))
                     {
-                        if (e.event.los.playerOnly && unit->GetTypeId() != TYPEID_PLAYER)
+                        if (e.event.los.playerOnly && !unit->IsPlayer())
                             return;
                         RecalcTimer(e, e.event.los.cooldownMin, e.event.los.cooldownMax);
                         ProcessAction(e, unit);
@@ -4330,6 +4362,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_SUMMONED_UNIT:
         case SMART_EVENT_SUMMONED_UNIT_DIES:
+        case SMART_EVENT_SUMMONED_UNIT_EVADE:
             {
                 if (!IsCreature(unit))
                     return;
@@ -4396,6 +4429,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             {
                 if (e.event.quest.quest && var0 != e.event.quest.quest)
                     return;
+                RecalcTimer(e, e.event.quest.cooldownMin, e.event.quest.cooldownMax);
                 ProcessAction(e, unit, var0);
                 break;
             }
@@ -4425,7 +4459,7 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                 if (e.event.dataSet.id != var0 || e.event.dataSet.value != var1)
                     return;
                 RecalcTimer(e, e.event.dataSet.cooldownMin, e.event.dataSet.cooldownMax);
-                ProcessAction(e, unit, var0, var1);
+                ProcessAction(e, unit, var0, var1, false, nullptr, gob);
                 break;
             }
         case SMART_EVENT_PASSENGER_REMOVED:
@@ -4449,6 +4483,21 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                 if (e.event.gossip.sender != var0 || e.event.gossip.action != var1)
                     return;
                 ProcessAction(e, unit, var0, var1);
+                break;
+            }
+        case SMART_EVENT_EVENT_PHASE_CHANGE:
+            {
+                if (!IsInPhase(e.event.eventPhaseChange.phasemask))
+                    return;
+
+                WorldObject* templastInvoker = GetLastInvoker();
+                if (!templastInvoker)
+                    return;
+
+                if (!IsUnit(templastInvoker))
+                    return;
+
+                ProcessAction(e, templastInvoker->ToUnit());
                 break;
             }
         case SMART_EVENT_GAME_EVENT_START:
@@ -4482,11 +4531,10 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             }
         case SMART_EVENT_FRIENDLY_HEALTH_PCT:
             {
-                if (!me || !me->IsInCombat())
+                if (!me || !me->IsEngaged())
                     return;
 
-                ObjectList* _targets = nullptr;
-
+                Unit* unitTarget = nullptr;
                 switch (e.GetTargetType())
                 {
                     case SMART_TARGET_CREATURE_RANGE:
@@ -4496,37 +4544,38 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                     case SMART_TARGET_CLOSEST_PLAYER:
                     case SMART_TARGET_PLAYER_RANGE:
                     case SMART_TARGET_PLAYER_DISTANCE:
-                        _targets = GetTargets(e);
+                    {
+                        ObjectVector targets;
+                        GetTargets(targets, e);
+                        for (WorldObject* target : targets)
+                        {
+                            if (IsUnit(target) && me->IsFriendlyTo(target->ToUnit()) && target->ToUnit()->IsAlive() && target->ToUnit()->IsInCombat())
+                            {
+                                uint32 healthPct = uint32(target->ToUnit()->GetHealthPct());
+                                if (healthPct > e.event.friendlyHealthPct.hpPct)
+                                {
+                                    continue;
+                                }
+
+                                unitTarget = target->ToUnit();
+                                break;
+                            }
+                        }
+
+                        break;
+                    }
+                    case SMART_TARGET_SELF:
+                    case SMART_TARGET_ACTION_INVOKER:
+                        unitTarget = DoSelectLowestHpPercentFriendly((float)e.event.friendlyHealthPct.radius, 0, e.event.friendlyHealthPct.hpPct);
                         break;
                     default:
                         return;
                 }
 
-                if (!_targets)
+                if (!unitTarget)
                     return;
 
-                Unit* target = nullptr;
-
-                for (ObjectList::const_iterator itr = _targets->begin(); itr != _targets->end(); ++itr)
-                {
-                    if (IsUnit(*itr) && me->IsFriendlyTo((*itr)->ToUnit()) && (*itr)->ToUnit()->IsAlive() && (*itr)->ToUnit()->IsInCombat())
-                    {
-                        uint32 healthPct = uint32((*itr)->ToUnit()->GetHealthPct());
-
-                        if (healthPct > e.event.friendlyHealthPct.maxHpPct || healthPct < e.event.friendlyHealthPct.minHpPct)
-                            continue;
-
-                        target = (*itr)->ToUnit();
-                        break;
-                    }
-                }
-
-                delete _targets;
-
-                if (!target)
-                    return;
-
-                ProcessTimedAction(e, e.event.friendlyHealthPct.repeatMin, e.event.friendlyHealthPct.repeatMax, target);
+                ProcessTimedAction(e, e.event.friendlyHealthPct.repeatMin, e.event.friendlyHealthPct.repeatMax, unitTarget);
                 break;
             }
         case SMART_EVENT_DISTANCE_CREATURE:
@@ -4598,33 +4647,165 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             ProcessTimedAction(e, e.event.counter.cooldownMin, e.event.counter.cooldownMax);
             break;
         case SMART_EVENT_NEAR_PLAYERS:
-            {
-                float range = (float)e.event.nearPlayer.radius;
-                ObjectList* units = GetWorldObjectsInDist(range);
-                if (!units->empty())
-                {
-                    units->remove_if([](WorldObject * unit) { return unit->GetTypeId() != TYPEID_PLAYER; });
+        {
+            uint32 playerCount = 0;
+            ObjectVector targets;
+            GetWorldObjectsInDist(targets, static_cast<float>(e.event.nearPlayer.radius));
 
-                    if (units->size() >= e.event.nearPlayer.minCount)
-                        ProcessAction(e, unit);
+            if (!targets.empty())
+            {
+                for (WorldObject* target : targets)
+                {
+                    if (IsPlayer(target))
+                        playerCount++;
                 }
-                RecalcTimer(e, e.event.nearPlayer.checkTimer, e.event.nearPlayer.checkTimer);
-                break;
+                    if (playerCount >= e.event.nearPlayer.minCount)
+                        ProcessAction(e, unit);
             }
+            RecalcTimer(e, e.event.nearPlayer.repeatMin, e.event.nearPlayer.repeatMax);
+            break;
+        }
         case SMART_EVENT_NEAR_PLAYERS_NEGATION:
-            {
-                float range = (float)e.event.nearPlayerNegation.radius;
-                ObjectList* units = GetWorldObjectsInDist(range);
-                if (!units->empty())
-                {
-                    units->remove_if([](WorldObject * unit) { return unit->GetTypeId() != TYPEID_PLAYER; });
+        {
+            uint32 playerCount = 0;
+            ObjectVector targets;
+            GetWorldObjectsInDist(targets, static_cast<float>(e.event.nearPlayerNegation.radius));
 
-                    if (units->size() < e.event.nearPlayerNegation.minCount)
-                        ProcessAction(e, unit);
+            if (!targets.empty())
+            {
+                for (WorldObject* target : targets)
+                {
+                    if (IsPlayer(target))
+                        playerCount++;
                 }
-                RecalcTimer(e, e.event.nearPlayerNegation.checkTimer, e.event.nearPlayerNegation.checkTimer);
+
+                if (playerCount < e.event.nearPlayerNegation.maxCount)
+                    ProcessAction(e, unit);
+            }
+            RecalcTimer(e, e.event.nearPlayerNegation.repeatMin, e.event.nearPlayerNegation.repeatMax);
+            break;
+        }
+        case SMART_EVENT_NEAR_UNIT:
+        {
+            uint32 unitCount = 0;
+            ObjectVector targets;
+            GetWorldObjectsInDist(targets, static_cast<float>(e.event.nearUnit.range));
+
+            if (!targets.empty())
+            {
+                if (e.event.nearUnit.type)
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsGameObject(target) && target->GetEntry() == e.event.nearUnit.entry)
+                            unitCount++;
+                    }
+                }
+                else
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsCreature(target) && target->GetEntry() == e.event.nearUnit.entry)
+                            unitCount++;
+                    }
+                }
+
+                if (unitCount >= e.event.nearUnit.count)
+                    ProcessAction(e, unit);
+            }
+            RecalcTimer(e, e.event.nearUnit.timer, e.event.nearUnit.timer);
+            break;
+        }
+        case SMART_EVENT_NEAR_UNIT_NEGATION:
+        {
+            uint32 unitCount = 0;
+            ObjectVector targets;
+            GetWorldObjectsInDist(targets, static_cast<float>(e.event.nearUnitNegation.range));
+
+            if (!targets.empty())
+            {
+                if (e.event.nearUnitNegation.type)
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsGameObject(target) && target->GetEntry() == e.event.nearUnitNegation.entry)
+                            unitCount++;
+                    }
+                }
+                else
+                {
+                    for (WorldObject* target : targets)
+                    {
+                        if (IsCreature(target) && target->GetEntry() == e.event.nearUnitNegation.entry)
+                            unitCount++;
+                    }
+                }
+
+                if (unitCount < e.event.nearUnitNegation.count)
+                    ProcessAction(e, unit);
+            }
+            RecalcTimer(e, e.event.nearUnitNegation.timer, e.event.nearUnitNegation.timer);
+            break;
+        }
+        case SMART_EVENT_AREA_CASTING:
+        {
+            if (!me || !me->IsEngaged())
+                return;
+
+            ThreatContainer::StorageType threatList = me->GetThreatMgr().GetThreatList();
+            for (ThreatContainer::StorageType::const_iterator i = threatList.begin(); i != threatList.end(); ++i)
+            {
+                if (Unit* target = ObjectAccessor::GetUnit(*me, (*i)->getUnitGuid()))
+                {
+                    if (!target || !IsPlayer(target) || !target->IsNonMeleeSpellCast(false, false, true))
+                        continue;
+
+                    if (!(me->IsInRange(target, (float)e.event.minMaxRepeat.rangeMin, (float)e.event.minMaxRepeat.rangeMax)))
+                        continue;
+
+                    ProcessAction(e, target);
+                    RecalcTimer(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax);
+                    return;
+                }
+
+                // If no targets are found and it's off cooldown, check again in 1200ms
+                RecalcTimer(e, 1200, 1200);
                 break;
             }
+
+            break;
+        }
+        case SMART_EVENT_AREA_RANGE:
+        {
+            if (!me || !me->IsEngaged())
+                return;
+
+            ThreatContainer::StorageType threatList = me->GetThreatMgr().GetThreatList();
+            for (ThreatContainer::StorageType::const_iterator i = threatList.begin(); i != threatList.end(); ++i)
+            {
+                if (Unit* target = ObjectAccessor::GetUnit(*me, (*i)->getUnitGuid()))
+                {
+                    if (!(me->IsInRange(target, (float)e.event.minMaxRepeat.rangeMin, (float)e.event.minMaxRepeat.rangeMax)))
+                        continue;
+
+                    ProcessAction(e, target);
+                    RecalcTimer(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax);
+                    return;
+                }
+            }
+
+            // If no targets are found and it's off cooldown, check again
+            RecalcTimer(e, 1200, 1200);
+            break;
+        }
+        case SMART_EVENT_WAYPOINT_DATA_REACHED:
+        case SMART_EVENT_WAYPOINT_DATA_ENDED:
+        {
+            if (!me || (e.event.wpData.pointId && var0 != e.event.wpData.pointId) || (e.event.wpData.pathId && me->GetWaypointPath() != e.event.wpData.pathId))
+                return;
+            ProcessAction(e, unit);
+            break;
+        }
         default:
             LOG_ERROR("sql.sql", "SmartScript::ProcessEvent: Unhandled Event type {}", e.GetEventType());
             break;
@@ -4643,16 +4824,21 @@ void SmartScript::InitTimer(SmartScriptHolder& e)
         case SMART_EVENT_UPDATE:
         case SMART_EVENT_UPDATE_IC:
         case SMART_EVENT_UPDATE_OOC:
+        case SMART_EVENT_RANGE:
+        case SMART_EVENT_AREA_RANGE:
+        case SMART_EVENT_AREA_CASTING:
+        case SMART_EVENT_IS_BEHIND_TARGET:
+        case SMART_EVENT_FRIENDLY_HEALTH_PCT:
+        case SMART_EVENT_IS_IN_MELEE_RANGE:
             RecalcTimer(e, e.event.minMaxRepeat.min, e.event.minMaxRepeat.max);
             break;
-        case SMART_EVENT_OOC_LOS:
-        case SMART_EVENT_IC_LOS:
-        // Xinef: cooldown should be processed AFTER action is done, not before...
-        //RecalcTimer(e, e.event.los.cooldownMin, e.event.los.cooldownMax);
-        //break;
         case SMART_EVENT_DISTANCE_CREATURE:
         case SMART_EVENT_DISTANCE_GAMEOBJECT:
             RecalcTimer(e, e.event.distance.repeat, e.event.distance.repeat);
+            break;
+        case SMART_EVENT_NEAR_UNIT:
+        case SMART_EVENT_NEAR_UNIT_NEGATION:
+            RecalcTimer(e, e.event.nearUnit.timer, e.event.nearUnit.timer);
             break;
         default:
             e.active = true;
@@ -4674,32 +4860,41 @@ void SmartScript::UpdateTimer(SmartScriptHolder& e, uint32 const diff)
     if (e.event.event_phase_mask && !IsInPhase(e.event.event_phase_mask))
         return;
 
-    if (e.GetEventType() == SMART_EVENT_UPDATE_IC && (!me || !me->IsInCombat()))
+    if (e.GetEventType() == SMART_EVENT_UPDATE_IC && (!me || !me->IsEngaged()))
         return;
 
-    if (e.GetEventType() == SMART_EVENT_UPDATE_OOC && (me && me->IsInCombat()))//can be used with me=nullptr (go script)
+    if (e.GetEventType() == SMART_EVENT_UPDATE_OOC && (me && me->IsEngaged()))//can be used with me=nullptr (go script)
         return;
 
     if (e.timer < diff)
     {
-        // delay spell cast event if another spell is being casted
+        // delay spell cast for another AI tick if another spell is being cast
         if (e.GetActionType() == SMART_ACTION_CAST)
         {
-            if (!(e.action.cast.flags & (SMARTCAST_INTERRUPT_PREVIOUS | SMARTCAST_TRIGGERED)))
+            if (!(e.action.cast.castFlags & SMARTCAST_INTERRUPT_PREVIOUS))
             {
                 if (me && me->HasUnitState(UNIT_STATE_CASTING))
                 {
-                    e.timer = 1;
+                    RaisePriority(e);
                     return;
                 }
             }
         }
+
+        // Delay flee for assist event if casting
+        if (e.GetActionType() == SMART_ACTION_FLEE_FOR_ASSIST && me && me->HasUnitState(UNIT_STATE_CASTING))
+        {
+            e.timer = 1200;
+            return;
+        } // @TODO: Can't these be handled by the action themselves instead? Less expensive
 
         e.active = true;//activate events with cooldown
         switch (e.GetEventType())//process ONLY timed events
         {
             case SMART_EVENT_NEAR_PLAYERS:
             case SMART_EVENT_NEAR_PLAYERS_NEGATION:
+            case SMART_EVENT_NEAR_UNIT:
+            case SMART_EVENT_NEAR_UNIT_NEGATION:
             case SMART_EVENT_UPDATE:
             case SMART_EVENT_UPDATE_OOC:
             case SMART_EVENT_UPDATE_IC:
@@ -4708,7 +4903,9 @@ void SmartScript::UpdateTimer(SmartScriptHolder& e, uint32 const diff)
             case SMART_EVENT_MANA_PCT:
             case SMART_EVENT_TARGET_MANA_PCT:
             case SMART_EVENT_RANGE:
+            case SMART_EVENT_AREA_RANGE:
             case SMART_EVENT_VICTIM_CASTING:
+            case SMART_EVENT_AREA_CASTING:
             case SMART_EVENT_FRIENDLY_HEALTH:
             case SMART_EVENT_FRIENDLY_IS_CC:
             case SMART_EVENT_FRIENDLY_MISSING_BUFF:
@@ -4718,8 +4915,16 @@ void SmartScript::UpdateTimer(SmartScriptHolder& e, uint32 const diff)
             case SMART_EVENT_FRIENDLY_HEALTH_PCT:
             case SMART_EVENT_DISTANCE_CREATURE:
             case SMART_EVENT_DISTANCE_GAMEOBJECT:
+            case SMART_EVENT_IS_IN_MELEE_RANGE:
                 {
-                    ProcessEvent(e);
+                    ASSERT(executionStack.empty());
+                    executionStack.emplace_back(SmartScriptFrame{ e, nullptr, 0, 0, false, nullptr, nullptr });
+                    while (!executionStack.empty())
+                    {
+                        auto [stack_holder, stack_unit, stack_var0, stack_var1, stack_bvar, stack_spell, stack_gob] = executionStack.back();
+                        executionStack.pop_back();
+                        ProcessEvent(stack_holder, stack_unit, stack_var0, stack_var1, stack_bvar, stack_spell, stack_gob);
+                    }
                     if (e.GetScriptType() == SMART_SCRIPT_TYPE_TIMED_ACTIONLIST)
                     {
                         e.enableTimed = false;//disable event if it is in an ActionList and was processed once
@@ -4735,6 +4940,18 @@ void SmartScript::UpdateTimer(SmartScriptHolder& e, uint32 const diff)
                     }
                     break;
                 }
+        }
+
+        if (e.priority != SmartScriptHolder::DEFAULT_PRIORITY)
+        {
+            // Reset priority to default one only if the event hasn't been rescheduled again to next loop
+            if (e.timer > 1)
+            {
+                // Re-sort events if this was moved to the top of the queue
+                mEventSortingRequired = true;
+                // Reset priority to default one
+                e.priority = SmartScriptHolder::DEFAULT_PRIORITY;
+            }
         }
     }
     else
@@ -4763,6 +4980,12 @@ void SmartScript::OnUpdate(uint32 const diff)
         return;
 
     InstallEvents();//before UpdateTimers
+
+    if (mEventSortingRequired)
+    {
+        SortEvents(mEvents);
+        mEventSortingRequired = false;
+    }
 
     for (SmartAIEventList::iterator i = mEvents.begin(); i != mEvents.end(); ++i)
         UpdateTimer(*i, diff);
@@ -4819,6 +5042,33 @@ void SmartScript::OnUpdate(uint32 const diff)
     }
 }
 
+void SmartScript::SortEvents(SmartAIEventList& events)
+{
+    std::sort(events.begin(), events.end());
+}
+
+void SmartScript::RaisePriority(SmartScriptHolder& e)
+{
+    e.timer = 1200;
+    // Change priority only if it's set to default, otherwise keep the current order of events
+    if (e.priority == SmartScriptHolder::DEFAULT_PRIORITY)
+    {
+        e.priority = mCurrentPriority++;
+        mEventSortingRequired = true;
+    }
+}
+
+void SmartScript::RetryLater(SmartScriptHolder& e, bool ignoreChanceRoll)
+{
+    RaisePriority(e);
+
+    // This allows to retry the action later without rolling again the chance roll (which might fail and end up not executing the action)
+    if (ignoreChanceRoll)
+        e.event.event_flags |= SMART_EVENT_FLAG_TEMP_IGNORE_CHANCE_ROLL;
+
+    e.runOnce = false;
+}
+
 void SmartScript::FillScript(SmartAIEventList e, WorldObject* obj, AreaTrigger const* at)
 {
     (void)at; // ensure that the variable is referenced even if extra logs are disabled in order to pass compiler checks
@@ -4862,7 +5112,17 @@ void SmartScript::GetScript()
         e = sSmartScriptMgr->GetScript(-((int32)me->GetSpawnId()), mScriptType);
         if (e.empty())
             e = sSmartScriptMgr->GetScript((int32)me->GetEntry(), mScriptType);
+
         FillScript(e, me, nullptr);
+
+        if (CreatureTemplate const* cInfo = me->GetCreatureTemplate())
+        {
+            if (cInfo->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_OVERRIDE_ENTRY_SAI))
+            {
+                e = sSmartScriptMgr->GetScript((int32)me->GetEntry(), mScriptType);
+                FillScript(e, me, nullptr);
+            }
+        }
     }
     else if (go)
     {
@@ -4913,37 +5173,8 @@ void SmartScript::OnInitialize(WorldObject* obj, AreaTrigger const* at)
 
     GetScript();//load copy of script
 
-    uint32 maxDisableDist = 0;
-    uint32 minEnableDist = 0;
-    for (SmartAIEventList::iterator i = mEvents.begin(); i != mEvents.end(); ++i)
-    {
-        InitTimer((*i));//calculate timers for first time use
-        if (i->GetEventType() == SMART_EVENT_RANGE && i->GetActionType() == SMART_ACTION_ALLOW_COMBAT_MOVEMENT)
-        {
-            if (i->action.combatMove.move == 1 && i->event.minMaxRepeat.min > minEnableDist)
-                minEnableDist = i->event.minMaxRepeat.min;
-            else if (i->action.combatMove.move == 0 && (i->event.minMaxRepeat.max < maxDisableDist || maxDisableDist == 0))
-                maxDisableDist = i->event.minMaxRepeat.max;
-        }
-
-        // Xinef: if smartcast combat move flag is present
-        if (i->GetActionType() == SMART_ACTION_CAST && (i->action.cast.flags & SMARTCAST_COMBAT_MOVE))
-        {
-            if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(i->action.cast.spell))
-            {
-                float maxRange = spellInfo->GetMaxRange(spellInfo->IsPositive());
-                float minRange = spellInfo->GetMinRange(spellInfo->IsPositive());
-
-                if (maxRange > 0 && minRange <= maxRange)
-                {
-                    smartCasterMaxDist = minRange + ((maxRange - minRange) * 0.65f);
-                    smartCasterPowerType = (Powers)spellInfo->PowerType;
-                }
-            }
-        }
-    }
-    if (maxDisableDist > 0 && minEnableDist >= maxDisableDist)
-        mMaxCombatDist = uint32(maxDisableDist + ((minEnableDist - maxDisableDist) / 2));
+    for (SmartScriptHolder& event : mEvents)
+        InitTimer(event);//calculate timers for first time use
 
     ProcessEventsFor(SMART_EVENT_AI_INIT);
     InstallEvents();
@@ -4955,7 +5186,7 @@ void SmartScript::OnMoveInLineOfSight(Unit* who)
     if (!me)
         return;
 
-    ProcessEventsFor(me->IsInCombat() ? SMART_EVENT_IC_LOS : SMART_EVENT_OOC_LOS, who);
+    ProcessEventsFor(me->IsEngaged() ? SMART_EVENT_IC_LOS : SMART_EVENT_OOC_LOS, who);
 }
 
 /*
@@ -5003,7 +5234,7 @@ uint32 SmartScript::DoChat(int8 id, ObjectGuid whisperGuid)
 }*/
 // SmartScript end
 
-Unit* SmartScript::DoSelectLowestHpFriendly(float range, uint32 MinHPDiff)
+Unit* SmartScript::DoSelectLowestHpFriendly(float range, uint32 MinHPDiff) const
 {
     if (!me)
         return nullptr;
@@ -5016,27 +5247,41 @@ Unit* SmartScript::DoSelectLowestHpFriendly(float range, uint32 MinHPDiff)
     return unit;
 }
 
-void SmartScript::DoFindFriendlyCC(std::list<Creature*>& _list, float range)
+Unit* SmartScript::DoSelectLowestHpPercentFriendly(float range, uint32 minHpPct, uint32 maxHpPct) const
+{
+    if (!me)
+    {
+        return nullptr;
+    }
+
+    Unit* unit = nullptr;
+    Acore::MostHPPercentMissingInRange u_check(me, range, minHpPct, maxHpPct);
+    Acore::UnitLastSearcher<Acore::MostHPPercentMissingInRange> searcher(me, unit, u_check);
+    Cell::VisitGridObjects(me, searcher, range);
+    return unit;
+}
+
+void SmartScript::DoFindFriendlyCC(std::vector<Creature*>& creatures, float range) const
 {
     if (!me)
         return;
 
     Acore::FriendlyCCedInRange u_check(me, range);
-    Acore::CreatureListSearcher<Acore::FriendlyCCedInRange> searcher(me, _list, u_check);
+    Acore::CreatureListSearcher<Acore::FriendlyCCedInRange> searcher(me, creatures, u_check);
     Cell::VisitGridObjects(me, searcher, range);
 }
 
-void SmartScript::DoFindFriendlyMissingBuff(std::list<Creature*>& list, float range, uint32 spellid)
+void SmartScript::DoFindFriendlyMissingBuff(std::vector<Creature*>& creatures, float range, uint32 spellid) const
 {
     if (!me)
         return;
 
     Acore::FriendlyMissingBuffInRange u_check(me, range, spellid);
-    Acore::CreatureListSearcher<Acore::FriendlyMissingBuffInRange> searcher(me, list, u_check);
+    Acore::CreatureListSearcher<Acore::FriendlyMissingBuffInRange> searcher(me, creatures, u_check);
     Cell::VisitGridObjects(me, searcher, range);
 }
 
-Unit* SmartScript::DoFindClosestFriendlyInRange(float range, bool playerOnly)
+Unit* SmartScript::DoFindClosestFriendlyInRange(float range, bool playerOnly) const
 {
     if (!me)
         return nullptr;
@@ -5055,6 +5300,12 @@ void SmartScript::SetScript9(SmartScriptHolder& e, uint32 entry)
     if (isProcessingTimedActionList)
     {
         LOG_ERROR("scripts.ai.sai", "Entry {} SourceType {} Event {} Action {} is trying to overwrite timed action list from a timed action, this is not allowed!.", e.entryOrGuid, e.GetScriptType(), e.GetEventType(), e.GetActionType());
+        return;
+    }
+
+    // Do NOT allow to start a new actionlist if a previous one is already running, unless explicitly allowed. We need to always finish the current actionlist
+    if (!e.action.timedActionList.allowOverride && !mTimedActionList.empty())
+    {
         return;
     }
 
@@ -5077,13 +5328,94 @@ void SmartScript::SetScript9(SmartScriptHolder& e, uint32 entry)
     }
 }
 
-Unit* SmartScript::GetLastInvoker(Unit* invoker)
+WorldObject* SmartScript::GetLastInvoker(WorldObject* invoker) const
 {
     // Xinef: Look for invoker only on map of base object... Prevents multithreaded crashes
     if (GetBaseObject())
-        return ObjectAccessor::GetUnit(*GetBaseObject(), mLastInvoker);
+        return ObjectAccessor::GetWorldObject(*GetBaseObject(), mLastInvoker);
     // xinef: used for area triggers invoker cast
     else if (invoker)
-        return ObjectAccessor::GetUnit(*invoker, mLastInvoker);
+        return ObjectAccessor::GetWorldObject(*invoker, mLastInvoker);
     return nullptr;
+}
+
+bool SmartScript::IsUnit(WorldObject* obj)
+{
+    return obj && (obj->IsCreature() || obj->IsPlayer());
+}
+
+bool SmartScript::IsPlayer(WorldObject* obj)
+{
+    return obj && obj->IsPlayer();
+}
+
+bool SmartScript::IsCreature(WorldObject* obj)
+{
+    return obj && obj->IsCreature();
+}
+
+bool SmartScript::IsCharmedCreature(WorldObject* obj)
+{
+    if (!obj)
+        return false;
+
+    if (Creature* creatureObj = obj->ToCreature())
+        return creatureObj->IsCharmed();
+
+    return false;
+}
+
+bool SmartScript::IsGameObject(WorldObject* obj)
+{
+    return obj && obj->IsGameObject();
+}
+
+void SmartScript::IncPhase(uint32 p)
+{
+    // protect phase from overflowing
+    SetPhase(std::min<uint32>(SMART_EVENT_PHASE_12, mEventPhase + p));
+}
+
+void SmartScript::DecPhase(uint32 p)
+{
+    if (p >= mEventPhase)
+    {
+        SetPhase(0);
+    }
+    else
+    {
+        SetPhase(mEventPhase - p);
+    }
+}
+
+void SmartScript::SetPhase(uint32 p)
+{
+    uint32 oldPhase = mEventPhase;
+
+    mEventPhase = p;
+
+    if (oldPhase != mEventPhase)
+    {
+        ProcessEventsFor(SMART_EVENT_EVENT_PHASE_CHANGE);
+    }
+}
+
+bool SmartScript::IsInPhase(uint32 p) const
+{
+    if (mEventPhase == 0)
+    {
+        return false;
+    }
+
+    return ((1 << (mEventPhase - 1)) & p) != 0;
+}
+
+void SmartScript::AddCreatureSummon(ObjectGuid const& guid)
+{
+    _summonList.insert(guid);
+}
+
+void SmartScript::RemoveCreatureSummon(ObjectGuid const& guid)
+{
+    _summonList.erase(guid);
 }

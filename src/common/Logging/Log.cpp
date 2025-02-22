@@ -20,14 +20,15 @@
 #include "AppenderFile.h"
 #include "Config.h"
 #include "Errors.h"
+#include "IoContext.h"
 #include "LogMessage.h"
 #include "LogOperation.h"
 #include "Logger.h"
+#include "Strand.h"
 #include "StringConvert.h"
 #include "Timer.h"
 #include "Tokenize.h"
 #include <chrono>
-#include <sstream>
 
 Log::Log() : AppenderId(0), highestLogLevel(LOG_LEVEL_FATAL)
 {
@@ -38,6 +39,7 @@ Log::Log() : AppenderId(0), highestLogLevel(LOG_LEVEL_FATAL)
 
 Log::~Log()
 {
+    delete _strand;
     Close();
 }
 
@@ -71,7 +73,7 @@ void Log::CreateAppenderFromConfig(std::string const& appenderName)
 
     std::vector<std::string_view> tokens = Acore::Tokenize(options, ',', true);
 
-    size_t const size = tokens.size();
+    std::size_t const size = tokens.size();
     std::string name = appenderName.substr(9);
 
     if (size < 2)
@@ -240,7 +242,13 @@ void Log::write(std::unique_ptr<LogMessage>&& msg) const
 {
     Logger const* logger = GetLoggerByType(msg->type);
 
-    logger->write(msg.get());
+    if (_ioContext)
+    {
+        std::shared_ptr<LogOperation> logOperation = std::make_shared<LogOperation>(logger, std::move(msg));
+        Acore::Asio::post(*_ioContext, Acore::Asio::bind_executor(*_strand, [logOperation]() { logOperation->call(); }));
+    }
+    else
+        logger->write(msg.get());
 }
 
 Logger const* Log::GetLoggerByType(std::string const& type) const
@@ -257,7 +265,7 @@ Logger const* Log::GetLoggerByType(std::string const& type) const
     }
 
     std::string parentLogger = LOGGER_ROOT;
-    size_t found = type.find_last_of('.');
+    std::size_t found = type.find_last_of('.');
     if (found != std::string::npos)
     {
         parentLogger = type.substr(0, found);
@@ -330,7 +338,7 @@ void Log::Close()
 
 bool Log::ShouldLog(std::string const& type, LogLevel level) const
 {
-    // TODO: Use cache to store "Type.sub1.sub2": "Type" equivalence, should
+    /// @todo: Use cache to store "Type.sub1.sub2": "Type" equivalence, should
     // Speed up in cases where requesting "Type.sub1.sub2" but only configured
     // Logger "Type"
 
@@ -356,9 +364,22 @@ Log* Log::instance()
     return &instance;
 }
 
-void Log::Initialize()
+void Log::Initialize(Acore::Asio::IoContext* ioContext)
 {
+    if (ioContext)
+    {
+        _ioContext = ioContext;
+        _strand = new Acore::Asio::Strand(*ioContext);
+    }
+
     LoadFromConfig();
+}
+
+void Log::SetSynchronous()
+{
+    delete _strand;
+    _strand = nullptr;
+    _ioContext = nullptr;
 }
 
 void Log::LoadFromConfig()
@@ -377,6 +398,4 @@ void Log::LoadFromConfig()
 
     ReadAppendersFromConfig();
     ReadLoggersFromConfig();
-
-    _debugLogMask = DebugLogFilters(sConfigMgr->GetOption<uint32>("DebugLogMask", LOG_FILTER_NONE, false));
 }

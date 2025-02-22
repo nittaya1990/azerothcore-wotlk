@@ -24,7 +24,7 @@ EndScriptData */
 
 #include "BattlefieldMgr.h"
 #include "Chat.h"
-#include "ScriptMgr.h"
+#include "CommandScript.h"
 
 using namespace Acore::ChatCommands;
 
@@ -117,8 +117,31 @@ public:
         return true;
     }
 
-    static bool HandleBattlefieldTimer(ChatHandler* handler, uint32 battleId, uint32 time)
+    static bool HandleBattlefieldTimer(ChatHandler* handler, uint32 battleId, std::string timeStr)
     {
+        if (timeStr.empty())
+        {
+            return false;
+        }
+
+        if (Acore::StringTo<int32>(timeStr).value_or(0) < 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
+
+        int32 time = TimeStringToSecs(timeStr);
+        if (time <= 0)
+        {
+            time = Acore::StringTo<int32>(timeStr).value_or(0);
+        }
+
+        if (time <= 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
+
         Battlefield* bf = sBattlefieldMgr->GetBattlefieldByBattleId(battleId);
 
         if (!bf)

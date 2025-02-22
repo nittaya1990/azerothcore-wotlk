@@ -17,7 +17,6 @@
 
 #include "Item.h"
 #include "Common.h"
-#include "ConditionMgr.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
 #include "ItemEnchantmentMgr.h"
@@ -26,10 +25,9 @@
 #include "ScriptMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
-#include "WorldPacket.h"
-#include "WorldSession.h"
-#include "Tokenize.h"
 #include "StringConvert.h"
+#include "Tokenize.h"
+#include "WorldPacket.h"
 
 void AddItemsSetItem(Player* player, Item* item)
 {
@@ -49,7 +47,7 @@ void AddItemsSetItem(Player* player, Item* item)
 
     ItemSetEffect* eff = nullptr;
 
-    for (size_t x = 0; x < player->ItemSetEff.size(); ++x)
+    for (std::size_t x = 0; x < player->ItemSetEff.size(); ++x)
     {
         if (player->ItemSetEff[x] && player->ItemSetEff[x]->setid == setid)
         {
@@ -63,7 +61,7 @@ void AddItemsSetItem(Player* player, Item* item)
         eff = new ItemSetEffect();
         eff->setid = setid;
 
-        size_t x = 0;
+        std::size_t x = 0;
         for (; x < player->ItemSetEff.size(); ++x)
             if (!player->ItemSetEff[x])
                 break;
@@ -130,7 +128,7 @@ void RemoveItemsSetItem(Player* player, ItemTemplate const* proto)
     }
 
     ItemSetEffect* eff = nullptr;
-    size_t setindex = 0;
+    std::size_t setindex = 0;
     for (; setindex < player->ItemSetEff.size(); setindex++)
     {
         if (player->ItemSetEff[setindex] && player->ItemSetEff[setindex]->setid == setid)
@@ -183,46 +181,64 @@ bool ItemCanGoIntoBag(ItemTemplate const* pProto, ItemTemplate const* pBagProto)
     switch (pBagProto->Class)
     {
         case ITEM_CLASS_CONTAINER:
-            switch (pBagProto->SubClass)
+        {
+            if (pBagProto->SubClass == ITEM_SUBCLASS_CONTAINER)
             {
-                case ITEM_SUBCLASS_CONTAINER:
-                    return true;
-                case ITEM_SUBCLASS_SOUL_CONTAINER:
-                    if (!(pProto->BagFamily & BAG_FAMILY_MASK_SOUL_SHARDS))
-                        return false;
-                    return true;
-                case ITEM_SUBCLASS_HERB_CONTAINER:
-                    if (!(pProto->BagFamily & BAG_FAMILY_MASK_HERBS))
-                        return false;
-                    return true;
-                case ITEM_SUBCLASS_ENCHANTING_CONTAINER:
-                    if (!(pProto->BagFamily & BAG_FAMILY_MASK_ENCHANTING_SUPP))
-                        return false;
-                    return true;
-                case ITEM_SUBCLASS_MINING_CONTAINER:
-                    if (!(pProto->BagFamily & BAG_FAMILY_MASK_MINING_SUPP))
-                        return false;
-                    return true;
-                case ITEM_SUBCLASS_ENGINEERING_CONTAINER:
-                    if (!(pProto->BagFamily & BAG_FAMILY_MASK_ENGINEERING_SUPP))
-                        return false;
-                    return true;
-                case ITEM_SUBCLASS_GEM_CONTAINER:
-                    if (!(pProto->BagFamily & BAG_FAMILY_MASK_GEMS))
-                        return false;
-                    return true;
-                case ITEM_SUBCLASS_LEATHERWORKING_CONTAINER:
-                    if (!(pProto->BagFamily & BAG_FAMILY_MASK_LEATHERWORKING_SUPP))
-                        return false;
-                    return true;
-                case ITEM_SUBCLASS_INSCRIPTION_CONTAINER:
-                    if (!(pProto->BagFamily & BAG_FAMILY_MASK_INSCRIPTION_SUPP))
-                        return false;
-                    return true;
-                default:
-                    return false;
+                return true;
             }
+            else
+            {
+                if (pProto->Class == ITEM_CLASS_CONTAINER)
+                {
+                    return false;
+                }
+
+                switch (pBagProto->SubClass)
+                {
+                    case ITEM_SUBCLASS_SOUL_CONTAINER:
+                        if (!(pProto->BagFamily & BAG_FAMILY_MASK_SOUL_SHARDS))
+                            return false;
+                        return true;
+                    case ITEM_SUBCLASS_HERB_CONTAINER:
+                        if (!(pProto->BagFamily & BAG_FAMILY_MASK_HERBS))
+                            return false;
+                        return true;
+                    case ITEM_SUBCLASS_ENCHANTING_CONTAINER:
+                        if (!(pProto->BagFamily & BAG_FAMILY_MASK_ENCHANTING_SUPP))
+                            return false;
+                        return true;
+                    case ITEM_SUBCLASS_MINING_CONTAINER:
+                        if (!(pProto->BagFamily & BAG_FAMILY_MASK_MINING_SUPP))
+                            return false;
+                        return true;
+                    case ITEM_SUBCLASS_ENGINEERING_CONTAINER:
+                        if (!(pProto->BagFamily & BAG_FAMILY_MASK_ENGINEERING_SUPP))
+                            return false;
+                        return true;
+                    case ITEM_SUBCLASS_GEM_CONTAINER:
+                        if (!(pProto->BagFamily & BAG_FAMILY_MASK_GEMS))
+                            return false;
+                        return true;
+                    case ITEM_SUBCLASS_LEATHERWORKING_CONTAINER:
+                        if (!(pProto->BagFamily & BAG_FAMILY_MASK_LEATHERWORKING_SUPP))
+                            return false;
+                        return true;
+                    case ITEM_SUBCLASS_INSCRIPTION_CONTAINER:
+                        if (!(pProto->BagFamily & BAG_FAMILY_MASK_INSCRIPTION_SUPP))
+                            return false;
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        }
         case ITEM_CLASS_QUIVER:
+        {
+            if (pProto->Class == ITEM_CLASS_QUIVER)
+            {
+                return false;
+            }
+
             switch (pBagProto->SubClass)
             {
                 case ITEM_SUBCLASS_QUIVER:
@@ -236,7 +252,9 @@ bool ItemCanGoIntoBag(ItemTemplate const* pProto, ItemTemplate const* pBagProto)
                 default:
                     return false;
             }
+        }
     }
+
     return false;
 }
 
@@ -360,7 +378,7 @@ void Item::SaveToDB(CharacterDatabaseTransaction trans)
 
                 trans->Append(stmt);
 
-                if ((uState == ITEM_CHANGED) && HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_WRAPPED))
+                if ((uState == ITEM_CHANGED) && IsWrapped())
                 {
                     stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GIFT_OWNER);
                     stmt->SetData(0, GetOwnerGUID().GetCounter());
@@ -375,7 +393,7 @@ void Item::SaveToDB(CharacterDatabaseTransaction trans)
                 stmt->SetData(0, guid);
                 trans->Append(stmt);
 
-                if (HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_WRAPPED))
+                if (IsWrapped())
                 {
                     stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_GIFT);
                     stmt->SetData(0, guid);
@@ -474,7 +492,7 @@ bool Item::LoadFromDB(ObjectGuid::LowType guid, ObjectGuid owner_guid, Field* fi
     // update max durability (and durability) if need
     // xinef: do not overwrite durability for wrapped items!!
     SetUInt32Value(ITEM_FIELD_MAXDURABILITY, proto->MaxDurability);
-    if (durability > proto->MaxDurability && !HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_WRAPPED))
+    if (durability > proto->MaxDurability && !IsWrapped())
     {
         SetUInt32Value(ITEM_FIELD_DURABILITY, proto->MaxDurability);
         need_save = true;
@@ -728,7 +746,7 @@ void Item::AddToUpdateQueueOf(Player* player)
     if (IsInUpdateQueue())
         return;
 
-    ASSERT(player != nullptr);
+    ASSERT(player);
 
     if (player->GetGUID() != GetOwnerGUID())
     {
@@ -748,7 +766,7 @@ void Item::RemoveFromUpdateQueueOf(Player* player)
     if (!IsInUpdateQueue())
         return;
 
-    ASSERT(player != nullptr);
+    ASSERT(player);
 
     if (player->GetGUID() != GetOwnerGUID())
     {
@@ -775,7 +793,7 @@ bool Item::IsEquipped() const
 
 bool Item::CanBeTraded(bool mail, bool trade) const
 {
-    if ((!mail || !IsBoundAccountWide()) && (IsSoulBound() && (!HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_BOP_TRADEABLE) || !trade)))
+    if ((!mail || !IsBoundAccountWide()) && (IsSoulBound() && (!IsBOPTradable() || !trade)))
         return false;
 
     if (IsBag() && (Player::IsBagPos(GetPos()) || !((Bag const*)this)->IsEmpty()))
@@ -1077,7 +1095,7 @@ Item* Item::CreateItem(uint32 item, uint32 count, Player const* player, bool clo
         if (count > pProto->GetMaxStackSize())
             count = pProto->GetMaxStackSize();
 
-        ASSERT(count != 0 && "pProto->Stackable == 0 but checked at loading already");
+        ASSERT_NODEBUGINFO(count != 0 && "pProto->Stackable == 0 but checked at loading already");
 
         Item* pItem = NewItemOrBag(pProto);
         if (pItem->Create(sObjectMgr->GetGenerator<HighGuid::Item>().Generate(), item, player))
@@ -1121,7 +1139,7 @@ bool Item::IsBindedNotWith(Player const* player) const
     if (GetOwnerGUID() == player->GetGUID())
         return false;
 
-    if (HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_BOP_TRADEABLE))
+    if (IsBOPTradable())
         if (allowedGUIDs.find(player->GetGUID()) != allowedGUIDs.end())
             return false;
 
@@ -1181,7 +1199,7 @@ void Item::DeleteRefundDataFromDB(CharacterDatabaseTransaction* trans)
 
 void Item::SetNotRefundable(Player* owner, bool changestate /*=true*/, CharacterDatabaseTransaction* trans /*=nullptr*/)
 {
-    if (!HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_REFUNDABLE))
+    if (!IsRefundable())
         return;
 
     RemoveFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_REFUNDABLE);
@@ -1266,4 +1284,14 @@ bool Item::CheckSoulboundTradeExpire()
     }
 
     return false;
+}
+
+std::string Item::GetDebugInfo() const
+{
+    std::stringstream sstr;
+    sstr << Object::GetDebugInfo() << "\n"
+        << std::boolalpha
+        << "Owner: " << GetOwnerGUID().ToString() << " Count: " << GetCount()
+        << " BagSlot: " << std::to_string(GetBagSlot()) << " Slot: " << std::to_string(GetSlot()) << " Equipped: " << IsEquipped();
+    return sstr.str();
 }

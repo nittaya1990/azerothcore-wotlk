@@ -15,7 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "violet_hold.h"
 
@@ -32,23 +32,16 @@ enum Yells
 
 enum eSpells
 {
-    SPELL_ARCANE_BARRAGE_VOLLEY_N               = 54202,
-    SPELL_ARCANE_BARRAGE_VOLLEY_H               = 59483,
-    SPELL_ARCANE_BUFFET_N                       = 54226,
-    SPELL_ARCANE_BUFFET_H                       = 59485,
+    SPELL_ARCANE_BARRAGE_VOLLEY                 = 54202,
+    SPELL_ARCANE_BUFFET                         = 54226,
     SPELL_SUMMON_ETHEREAL_SPHERE_1              = 54102,
     SPELL_SUMMON_ETHEREAL_SPHERE_2              = 54137,
     SPELL_SUMMON_ETHEREAL_SPHERE_3              = 54138,
 
-    SPELL_ARCANE_POWER_N                        = 54160,
-    SPELL_ARCANE_POWER_H                        = 59474,
+    SPELL_ARCANE_POWER                          = 54160
     //SPELL_SUMMON_PLAYERS                      = 54164, // not used
     //SPELL_POWER_BALL_VISUAL                   = 54141,
 };
-
-#define SPELL_ARCANE_BARRAGE_VOLLEY             DUNGEON_MODE(SPELL_ARCANE_BARRAGE_VOLLEY_N, SPELL_ARCANE_BARRAGE_VOLLEY_H)
-#define SPELL_ARCANE_BUFFET                     DUNGEON_MODE(SPELL_ARCANE_BUFFET_N, SPELL_ARCANE_BUFFET_H)
-#define SPELL_ARCANE_POWER                      DUNGEON_MODE(SPELL_ARCANE_POWER_N, SPELL_ARCANE_POWER_H)
 
 enum eEvents
 {
@@ -85,13 +78,13 @@ public:
             spheres.DespawnAll();
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
             Talk(SAY_AGGRO);
             DoZoneInCombat();
             events.Reset();
-            events.RescheduleEvent(EVENT_SPELL_ARCANE_BARRAGE_VOLLEY, urand(16000, 20000));
-            events.RescheduleEvent(EVENT_SUMMON_SPHERES, 10000);
+            events.RescheduleEvent(EVENT_SPELL_ARCANE_BARRAGE_VOLLEY, 16s, 20s);
+            events.RescheduleEvent(EVENT_SUMMON_SPHERES, 10s);
         }
 
         void UpdateAI(uint32 diff) override
@@ -104,13 +97,13 @@ public:
             if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
-            switch(events.ExecuteEvent())
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
                 case EVENT_SPELL_ARCANE_BARRAGE_VOLLEY:
                     me->CastSpell((Unit*)nullptr, SPELL_ARCANE_BARRAGE_VOLLEY, false);
-                    events.RepeatEvent(20000);
+                    events.Repeat(20s);
                     break;
                 case EVENT_SPELL_ARCANE_BUFFET:
                     me->CastSpell(me->GetVictim(), SPELL_ARCANE_BUFFET, false);
@@ -129,8 +122,8 @@ public:
                             me->CastSpell((Unit*)nullptr, entry2, true);
                         }
                         events.RepeatEvent(45000);
-                        events.RescheduleEvent(EVENT_SPELL_ARCANE_BUFFET, 5000);
-                        events.RescheduleEvent(EVENT_CHECK_DISTANCE, 6000);
+                        events.RescheduleEvent(EVENT_SPELL_ARCANE_BUFFET, 5s);
+                        events.RescheduleEvent(EVENT_CHECK_DISTANCE, 6s);
                     }
                     break;
                 case EVENT_CHECK_DISTANCE:
@@ -148,11 +141,11 @@ public:
                         if (found)
                         {
                             Talk(SAY_CHARGED);
-                            events.RepeatEvent(9000);
-                            events.RescheduleEvent(EVENT_SUMMON_SPHERES, 10000);
+                            events.Repeat(9s);
+                            events.RescheduleEvent(EVENT_SUMMON_SPHERES, 10s);
                         }
                         else
-                            events.RepeatEvent(2000);
+                            events.Repeat(2s);
                     }
                     break;
             }
@@ -200,11 +193,11 @@ public:
 
         void MoveInLineOfSight(Unit* /*who*/) override {}
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
-            ScriptedAI::EnterEvadeMode();
+            ScriptedAI::EnterEvadeMode(why);
             events.Reset();
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
             if (pInstance)
                 pInstance->SetData(DATA_FAILED, 1);
         }

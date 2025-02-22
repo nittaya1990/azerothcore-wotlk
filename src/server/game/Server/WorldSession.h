@@ -25,7 +25,6 @@
 #include "AccountMgr.h"
 #include "AddonMgr.h"
 #include "AuthDefines.h"
-#include "BanMgr.h"
 #include "CircularBuffer.h"
 #include "Common.h"
 #include "DatabaseEnv.h"
@@ -34,6 +33,7 @@
 #include "SharedDefines.h"
 #include "World.h"
 #include <map>
+#include <memory>
 #include <utility>
 
 class Creature;
@@ -322,7 +322,7 @@ protected:
 struct PacketCounter
 {
     time_t lastReceiveTime;
-    uint32 amountCounter;
+    uint16 amountCounter;
 };
 
 /// Player session in the World
@@ -332,8 +332,11 @@ public:
     WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldSocket> sock, AccountTypes sec, uint8 expansion, time_t mute_time, LocaleConstant locale, uint32 recruiter, bool isARecruiter, bool skipQueue, uint32 TotalTime);
     ~WorldSession();
 
+    bool IsGMAccount() const;
+
     bool PlayerLoading() const { return m_playerLoading; }
     bool PlayerLogout() const { return m_playerLogout; }
+    bool PlayerRecentlyLoggedOut() const { return m_playerRecentlyLogout; }
     bool PlayerLogoutWithSave() const { return m_playerLogout && m_playerSave; }
 
     void ReadAddonsInfo(ByteBuffer& data);
@@ -343,11 +346,24 @@ public:
     void WriteMovementInfo(WorldPacket* data, MovementInfo* mi);
 
     void SendPacket(WorldPacket const* packet);
-    void SendNotification(const char* format, ...) ATTR_PRINTF(2, 3);
-    void SendNotification(uint32 string_id, ...);
     void SendPetNameInvalid(uint32 error, std::string const& name, DeclinedName* declinedName);
     void SendPartyResult(PartyOperation operation, std::string const& member, PartyResult res, uint32 val = 0);
-    void SendAreaTriggerMessage(const char* Text, ...) ATTR_PRINTF(2, 3);
+
+    void SendAreaTriggerMessage(std::string_view str);
+
+    template<typename... Args>
+    void SendAreaTriggerMessage(char const* fmt, Args&&... args)
+    {
+        if (!m_playerLoading)
+            SendAreaTriggerMessage(Acore::StringFormat(fmt, std::forward<Args>(args)...));
+    }
+    template<typename... Args>
+    void SendAreaTriggerMessage(uint32 strId, Args&&... args)
+    {
+        if (!m_playerLoading)
+            SendAreaTriggerMessage(Acore::StringFormat(GetAcoreString(strId), std::forward<Args>(args)...));
+    }
+
     void SendSetPhaseShift(uint32 phaseShift);
     void SendQueryTimeResponse();
 
@@ -374,6 +390,7 @@ public:
     uint32 GetTotalTime() const { return m_total_time; }
 
     void InitWarden(SessionKey const&, std::string const& os);
+    Warden* GetWarden();
 
     /// Session in auth.queue currently
     void SetInQueue(bool state) { m_inQueue = state; }
@@ -429,7 +446,7 @@ public:
 
     void SendTradeStatus(TradeStatus status);
     void SendUpdateTrade(bool trader_data = true);
-    void SendCancelTrade();
+    void SendCancelTrade(TradeStatus status);
 
     void SendPetitionQueryOpcode(ObjectGuid petitionguid);
 
@@ -447,10 +464,9 @@ public:
     AccountData* GetAccountData(AccountDataType type) { return &m_accountData[type]; }
     void SetAccountData(AccountDataType type, time_t tm, std::string const& data);
     void SendAccountDataTimes(uint32 mask);
-    void LoadGlobalAccountData();
     void LoadAccountData(PreparedQueryResult result, uint32 mask);
 
-    void LoadTutorialsData();
+    void LoadTutorialsData(PreparedQueryResult result);
     void SendTutorialsData();
     void SaveTutorialsData(CharacterDatabaseTransaction trans);
     uint32 GetTutorialInt(uint8 index) const { return m_Tutorials[index]; }
@@ -494,7 +510,8 @@ public:
     // Locales
     LocaleConstant GetSessionDbcLocale() const { return m_sessionDbcLocale; }
     LocaleConstant GetSessionDbLocaleIndex() const { return m_sessionDbLocaleIndex; }
-    char const* GetAcoreString(uint32 entry) const;
+    std::string GetAcoreString(uint32 entry) const;
+    std::string const* GetModuleString(std::string module, uint32 id) const;
 
     uint32 GetLatency() const { return m_latency; }
     void SetLatency(uint32 latency) { m_latency = latency; }
@@ -759,7 +776,6 @@ public:                                                 // opcodes handlers
     void HandleAuctionSellItem(WorldPacket& recvData);
     void HandleAuctionRemoveItem(WorldPacket& recvData);
     void HandleAuctionListOwnerItems(WorldPacket& recvData);
-    void HandleAuctionListOwnerItemsEvent(ObjectGuid creatureGuid);
     void HandleAuctionPlaceBid(WorldPacket& recvData);
     void HandleAuctionListPendingSales(WorldPacket& recvData);
 
@@ -1056,17 +1072,12 @@ public:                                                 // opcodes handlers
     void HandleEnterPlayerVehicle(WorldPacket& data);
     void HandleUpdateProjectilePosition(WorldPacket& recvPacket);
 
-    uint32 _lastAuctionListItemsMSTime;
-    uint32 _lastAuctionListOwnerItemsMSTime;
-
     void HandleTeleportTimeout(bool updateInSessions);
     bool HandleSocketClosed();
     void SetOfflineTime(uint32 time) { _offlineTime = time; }
     uint32 GetOfflineTime() const { return _offlineTime; }
     bool IsKicked() const { return _kicked; }
     void SetKicked(bool val) { _kicked = val; }
-    void SetShouldSetOfflineInDB(bool val) { _shouldSetOfflineInDB = val; }
-    bool GetShouldSetOfflineInDB() const { return _shouldSetOfflineInDB; }
     bool IsSocketClosed() const;
 
     /*
@@ -1076,6 +1087,9 @@ public:                                                 // opcodes handlers
     QueryCallbackProcessor& GetQueryProcessor() { return _queryProcessor; }
     TransactionCallback& AddTransactionCallback(TransactionCallback&& callback);
     SQLQueryHolderCallback& AddQueryHolderCallback(SQLQueryHolderCallback&& callback);
+
+    void InitializeSession();
+    void InitializeSessionCallback(CharacterDatabaseQueryHolder const& realmHolder, uint32 clientCacheVersion);
 
 private:
     void ProcessQueryCallbacks();
@@ -1090,22 +1104,21 @@ protected:
     {
         friend class World;
     public:
-        DosProtection(WorldSession* s);
-        bool EvaluateOpcode(WorldPacket& p, time_t time) const;
-    protected:
-        enum Policy
+        enum class Policy
         {
-            POLICY_LOG,
-            POLICY_KICK,
-            POLICY_BAN
+            Process,
+            Kick,
+            Ban,
+            Log,
+            BlockingThrottle,
+            DropPacket
         };
 
-        uint32 GetMaxPacketCounterAllowed(uint16 opcode) const;
-
+        DosProtection(WorldSession* s);
+        Policy EvaluateOpcode(WorldPacket const& p, time_t const time) const;
+    protected:
         WorldSession* Session;
-
     private:
-        Policy _policy;
         typedef std::unordered_map<uint16, PacketCounter> PacketThrottlingMap;
         // mark this member as "mutable" so it can be modified even in const functions
         mutable PacketThrottlingMap _PacketThrottlingMap;
@@ -1136,7 +1149,7 @@ private:
     // characters who failed on Player::BuildEnumData shouldn't login
     GuidSet _legitCharacters;
 
-    ObjectGuid::LowType m_GUIDLow;
+    ObjectGuid::LowType m_GUIDLow;                     // set logined or recently logout player (while m_playerRecentlyLogout set)
     Player* _player;
     std::shared_ptr<WorldSocket> m_Socket;
     std::string m_Address;
@@ -1157,6 +1170,7 @@ private:
     bool m_inQueue;                                     // session wait in auth.queue
     bool m_playerLoading;                               // code processed in LoginPlayer
     bool m_playerLogout;                                // code processed in LogoutPlayer
+    bool m_playerRecentlyLogout;
     bool m_playerSave;
     LocaleConstant m_sessionDbcLocale;
     LocaleConstant m_sessionDbLocaleIndex;
@@ -1172,9 +1186,11 @@ private:
     ObjectGuid m_currentBankerGUID;
     uint32 _offlineTime;
     bool _kicked;
-    bool _shouldSetOfflineInDB;
     // Packets cooldown
     time_t _calendarEventCreationCooldown;
+
+    // Addon Message count for Metric
+    std::atomic<uint32> _addonMessageReceiveCount;
 
     CircularBuffer<std::pair<int64, uint32>> _timeSyncClockDeltaQueue; // first member: clockDelta. Second member: latency of the packet exchange that was used to compute that clockDelta.
     int64 _timeSyncClockDelta;

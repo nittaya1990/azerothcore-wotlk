@@ -18,15 +18,8 @@
 #include "ConfusedMovementGenerator.h"
 #include "Creature.h"
 #include "MapMgr.h"
-#include "MoveSpline.h"
 #include "MoveSplineInit.h"
 #include "Player.h"
-#include "VMapFactory.h"
-
-#ifdef MAP_BASED_RAND_GEN
-#define rand_norm() unit.rand_norm()
-#define urand(a, b) unit.urand(a, b)
-#endif
 
 template<class T>
 void ConfusedMovementGenerator<T>::DoInitialize(T* unit)
@@ -94,7 +87,7 @@ void ConfusedMovementGenerator<T>::DoInitialize(T* unit)
     i_nextMove = urand(1, MAX_CONF_WAYPOINTS);
     DoUpdate(unit, 1);
 
-    unit->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CONFUSED);
+    unit->SetUnitFlag(UNIT_FLAG_CONFUSED);
     unit->AddUnitState(UNIT_STATE_CONFUSED | UNIT_STATE_CONFUSED_MOVE);
 }
 
@@ -163,7 +156,7 @@ bool ConfusedMovementGenerator<T>::DoUpdate(T* unit, uint32 diff)
 template<>
 void ConfusedMovementGenerator<Player>::DoFinalize(Player* unit)
 {
-    unit->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CONFUSED);
+    unit->RemoveUnitFlag(UNIT_FLAG_CONFUSED);
     unit->ClearUnitState(UNIT_STATE_CONFUSED | UNIT_STATE_CONFUSED_MOVE);
     unit->StopMoving();
 }
@@ -171,7 +164,7 @@ void ConfusedMovementGenerator<Player>::DoFinalize(Player* unit)
 template<>
 void ConfusedMovementGenerator<Creature>::DoFinalize(Creature* unit)
 {
-    unit->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CONFUSED);
+    unit->RemoveUnitFlag(UNIT_FLAG_CONFUSED);
     unit->ClearUnitState(UNIT_STATE_CONFUSED | UNIT_STATE_CONFUSED_MOVE);
     if (unit->GetVictim())
         unit->SetTarget(unit->GetVictim()->GetGUID());

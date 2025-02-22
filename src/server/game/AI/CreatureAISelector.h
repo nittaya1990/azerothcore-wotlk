@@ -18,16 +18,20 @@
 #ifndef ACORE_CREATUREAISELECTOR_H
 #define ACORE_CREATUREAISELECTOR_H
 
+#include "Define.h"
+
 class CreatureAI;
 class Creature;
 class MovementGenerator;
+class Unit;
 class GameObjectAI;
 class GameObject;
 
 namespace FactorySelector
 {
-    CreatureAI* selectAI(Creature*);
-    MovementGenerator* selectMovementGenerator(Creature*);
-    GameObjectAI* SelectGameObjectAI(GameObject*);
+    AC_GAME_API CreatureAI* SelectAI(Creature* creature);
+    AC_GAME_API MovementGenerator* SelectMovementGenerator(Unit* unit);
+    AC_GAME_API GameObjectAI* SelectGameObjectAI(GameObject* go);
 }
+
 #endif

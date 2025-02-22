@@ -16,7 +16,7 @@
  */
 
 #include "Player.h"
-#include "ScriptMgr.h"
+#include "PlayerScript.h"
 
 enum ApprenticeAnglerQuestEnum
 {
@@ -26,7 +26,7 @@ enum ApprenticeAnglerQuestEnum
 class QuestApprenticeAnglerPlayerScript : public PlayerScript
 {
 public:
-    QuestApprenticeAnglerPlayerScript() : PlayerScript("QuestApprenticeAnglerPlayerScript")
+    QuestApprenticeAnglerPlayerScript() : PlayerScript("QuestApprenticeAnglerPlayerScript", {PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST})
     {
     }
 
@@ -34,7 +34,7 @@ public:
     {
         if (quest->GetQuestId() == QUEST_APPRENTICE_ANGLER)
         {
-            uint32 level = player->getLevel();
+            uint32 level = player->GetLevel();
             int32 moneyRew = 0;
             if (level <= 10)
                 moneyRew = 85;

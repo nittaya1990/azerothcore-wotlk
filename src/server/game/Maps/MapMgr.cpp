@@ -19,9 +19,9 @@
 #include "Chat.h"
 #include "DatabaseEnv.h"
 #include "GridDefines.h"
+#include "GridTerrainLoader.h"
 #include "Group.h"
 #include "InstanceSaveMgr.h"
-#include "InstanceScript.h"
 #include "LFGMgr.h"
 #include "Language.h"
 #include "Log.h"
@@ -71,12 +71,12 @@ Map* MapMgr::CreateBaseMap(uint32 id)
 {
     Map* map = FindBaseMap(id);
 
-    if (map == nullptr)
+    if (!map)
     {
         std::lock_guard<std::mutex> guard(Lock);
 
         map = FindBaseMap(id);
-        if (map == nullptr) // pussywizard: check again after acquiring mutex
+        if (!map) // pussywizard: check again after acquiring mutex
         {
             MapEntry const* entry = sMapStore.LookupEntry(id);
             ASSERT(entry);
@@ -84,13 +84,17 @@ Map* MapMgr::CreateBaseMap(uint32 id)
             if (entry->Instanceable())
                 map = new MapInstanced(id);
             else
-            {
                 map = new Map(id, 0, REGULAR_DIFFICULTY);
+
+            i_maps[id] = map;
+
+            if (!entry->Instanceable())
+            {
                 map->LoadRespawnTimes();
                 map->LoadCorpseData();
             }
 
-            i_maps[id] = map;
+            map->OnCreateMap();
         }
     }
 
@@ -157,7 +161,7 @@ Map::EnterState MapMgr::PlayerCannotEnter(uint32 mapid, Player* player, bool log
 
     char const* mapName = entry->name[player->GetSession()->GetSessionDbcLocale()];
 
-    if (!sScriptMgr->CanEnterMap(player, entry, instance, mapDiff, loginCheck))
+    if (!sScriptMgr->OnPlayerCanEnterMap(player, entry, instance, mapDiff, loginCheck))
         return Map::CANNOT_ENTER_UNSPECIFIED_REASON;
 
     Group* group = player->GetGroup();
@@ -167,8 +171,8 @@ Map::EnterState MapMgr::PlayerCannotEnter(uint32 mapid, Player* player, bool log
         if ((!group || !group->isRaidGroup()) && !sWorld->getBoolConfig(CONFIG_INSTANCE_IGNORE_RAID))
         {
             // probably there must be special opcode, because client has this string constant in GlobalStrings.lua
-            // TODO: this is not a good place to send the message
-            player->GetSession()->SendAreaTriggerMessage(player->GetSession()->GetAcoreString(LANG_INSTANCE_RAID_GROUP_ONLY), mapName);
+            /// @todo: this is not a good place to send the message
+            player->GetSession()->SendAreaTriggerMessage(LANG_INSTANCE_RAID_GROUP_ONLY, mapName);
             LOG_DEBUG("maps", "MAP: Player '{}' must be in a raid group to enter instance '{}'", player->GetName(), mapName);
             return Map::CANNOT_ENTER_NOT_IN_RAID;
         }
@@ -224,7 +228,7 @@ Map::EnterState MapMgr::PlayerCannotEnter(uint32 mapid, Player* player, bool log
     }
 
     // players are only allowed to enter 5 instances per hour
-    if (entry->IsDungeon() && (!group || !group->isLFGGroup() || !group->IsLfgRandomInstance()))
+    if (entry->IsNonRaidDungeon() && (!group || !group->isLFGGroup() || !group->IsLfgRandomInstance()))
     {
         uint32 instaceIdToCheck = 0;
         if (InstanceSave* save = sInstanceSaveMgr->PlayerGetInstanceSave(player->GetGUID(), mapid, player->GetDifficulty(entry->IsRaid())))
@@ -300,11 +304,7 @@ void MapMgr::DoDelayedMovesAndRemoves()
 bool MapMgr::ExistMapAndVMap(uint32 mapid, float x, float y)
 {
     GridCoord p = Acore::ComputeGridCoord(x, y);
-
-    int gx = 63 - p.x_coord;
-    int gy = 63 - p.y_coord;
-
-    return Map::ExistMap(mapid, gx, gy) && Map::ExistVMap(mapid, gx, gy);
+    return GridTerrainLoader::ExistMap(mapid, p.x_coord, p.y_coord) && GridTerrainLoader::ExistVMap(mapid, p.x_coord, p.y_coord);
 }
 
 bool MapMgr::IsValidMAP(uint32 mapid, bool startUp)
@@ -320,7 +320,7 @@ bool MapMgr::IsValidMAP(uint32 mapid, bool startUp)
         return mEntry && (!mEntry->IsDungeon() || sObjectMgr->GetInstanceTemplate(mapid));
     }
 
-    // TODO: add check for battleground template
+    /// @todo: add check for battleground template
 }
 
 void MapMgr::UnloadAll()

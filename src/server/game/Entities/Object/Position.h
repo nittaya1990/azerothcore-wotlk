@@ -18,7 +18,6 @@
 #ifndef ACore_game_Position_h__
 #define ACore_game_Position_h__
 
-#include <cmath>
 #include "Common.h"
 #include "G3D/Vector3.h"
 
@@ -61,6 +60,11 @@ struct Position
     bool operator==(Position const& a) const;
 
     inline bool operator!=(Position const& a)
+    {
+        return !(operator==(a));
+    }
+
+    inline bool operator!=(Position const& a) const
     {
         return !(operator==(a));
     }
@@ -196,10 +200,10 @@ struct Position
 
     float GetRelativeAngle(const Position* pos) const
     {
-        return GetAngle(pos) - m_orientation;
+        return NormalizeOrientation(GetAngle(pos) - m_orientation);
     }
 
-    [[nodiscard]] float GetRelativeAngle(float x, float y) const { return GetAngle(x, y) - m_orientation; }
+    [[nodiscard]] float GetRelativeAngle(float x, float y) const { return NormalizeOrientation(GetAngle(x, y) - m_orientation); }
     [[nodiscard]] float ToAbsoluteAngle(float relAngle) const { return NormalizeOrientation(relAngle + m_orientation); }
 
     void GetSinCos(float x, float y, float& vsin, float& vcos) const;
@@ -317,6 +321,8 @@ public:
     }
 
     uint32 m_mapId;
+
+    std::string GetDebugInfo() const;
 };
 
 ByteBuffer& operator<<(ByteBuffer& buf, Position::PositionXYStreamer const& streamer);

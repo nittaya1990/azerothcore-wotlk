@@ -15,8 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef TRINITYSERVER_SPLINE_H
-#define TRINITYSERVER_SPLINE_H
+#ifndef AC_SPLINE_H
+#define AC_SPLINE_H
 
 #include "Errors.h"
 #include "MovementTypedefs.h"
@@ -42,7 +42,6 @@ namespace Movement
 
     protected:
         ControlArray points;
-        ControlArray pointsVisual;
 
         index_type index_lo{0};
         index_type index_hi{0};
@@ -112,10 +111,9 @@ namespace Movement
         [[nodiscard]] bool isCyclic() const { return cyclic;}
 
         // Xinef: DO NOT USE EXCEPT FOR SPLINE INITIALIZATION!!!!!!
-        [[nodiscard]] const ControlArray* allocateVisualPoints() const { return &pointsVisual; }
-        [[nodiscard]] const ControlArray& getPoints(bool visual) const { return visual ? pointsVisual : points;}
+        [[nodiscard]] const ControlArray& getPoints() const { return points;}
         [[nodiscard]] index_type getPointCount() const { return points.size();}
-        [[nodiscard]] const Vector3& getPoint(index_type i, bool visual) const { return visual ? pointsVisual[i] : points[i];}
+        [[nodiscard]] const Vector3& getPoint(index_type i) const { return points[i];}
 
         /** Initializes spline. Don't call other methods while spline not initialized. */
         void init_spline(const Vector3* controls, index_type count, EvaluationMode m);
@@ -207,9 +205,8 @@ namespace Movement
         void set_length(index_type i, length_type length) { lengths[i] = length;}
         void clear();
     };
-
 }
 
 #include "SplineImpl.h"
 
-#endif // TRINITYSERVER_SPLINE_H
+#endif // AC_SPLINE_H

@@ -4,7 +4,9 @@ on:
     branches:
       - 'master'
   pull_request:
-    types: ['labeled', 'labeled', 'opened', 'synchronize', 'reopened']
+    types:
+      - labeled
+      - synchronize
 
 concurrency:
   group: ${{ github.head_ref }} || concat(${{ github.ref }}, ${{ github.workflow }})
@@ -15,29 +17,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2019]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }}-MSVC16
+    name: ${{ matrix.os }}
     env:
-      BOOST_ROOT: C:\local\boost_1_74_0
-    if: github.repository == 'azerothcore/azerothcore-wotlk' && (github.ref == 'refs/heads/master' || contains(github.event.pull_request.labels.*.name, 'run-build') || github.event.label.name == 'run-build')
+      BOOST_ROOT: C:\local\boost_1_82_0
+    if: |
+      github.repository == 'azerothcore/azerothcore-wotlk'
+      && !github.event.pull_request.draft
+      && (github.ref == 'refs/heads/master' || contains(github.event.pull_request.labels.*.name, 'run-build') || github.event.label.name == 'run-build')
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.13
       - name: Configure OS
-        run: choco install --no-progress openssl boost-msvc-14.2
+        shell: bash
+        env:
+          CONTINUOUS_INTEGRATION: true
+        run: |
+          ./acore.sh install-deps
       - name: Build
         shell: bash
         run: |
-          mkdir -p build && cd build
-          cmake .. -DTOOLS=ON
-          cmake --build . --config Release --parallel 4
-      - name: Copy dll files
-        shell: bash
-        run: |
-          cp "/c/mysql/lib/libmysql.dll" "build/bin/Release/"
-          cp "/c/Program Files/OpenSSL-Win64/bin/libcrypto-1_1-x64.dll" "build/bin/Release/"
-          cp "/c/Program Files/OpenSSL-Win64/bin/libssl-1_1-x64.dll" "build/bin/Release/"
-      - uses: actions/upload-artifact@v2
-        with:
-          name: windows-2019-MSVC16-release
-          path: build/bin/Release
+          export CTOOLS_BUILD=all
+          ./acore.sh compiler build

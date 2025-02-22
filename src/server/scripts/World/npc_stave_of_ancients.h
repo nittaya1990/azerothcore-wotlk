@@ -18,7 +18,6 @@
 #ifndef NPC_STAVE_OF_ANCIENTS_H
 #define NPC_STAVE_OF_ANCIENTS_H
 
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 
 enum Common
@@ -138,7 +137,7 @@ struct NPCStaveQuestAI : public ScriptedAI
     ObjectGuid gossipPlayerGUID;
     ObjectGuid playerGUID;
     bool encounterStarted;
-    ThreatContainer::StorageType const& threatList = me->getThreatMgr().getThreatList();
+    ThreatContainer::StorageType const& threatList = me->GetThreatMgr().GetThreatList();
 
     std::map<int, int> entryKeys = {
         { ARTORIUS_NORMAL_ENTRY, 1 },

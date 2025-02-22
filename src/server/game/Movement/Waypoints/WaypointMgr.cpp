@@ -19,6 +19,8 @@
 #include "DatabaseEnv.h"
 #include "GridDefines.h"
 #include "Log.h"
+#include "QueryResult.h"
+#include "Timer.h"
 
 WaypointMgr::WaypointMgr()
 {
@@ -52,7 +54,7 @@ void WaypointMgr::Load()
 
     if (!result)
     {
-        LOG_ERROR("sql.sql", ">> Loaded 0 waypoints. DB table `waypoint_data` is empty!");
+        LOG_WARN("server.loading", ">> Loaded 0 waypoints. DB table `waypoint_data` is empty!");
         LOG_INFO("server.loading", " ");
         return;
     }
@@ -70,7 +72,9 @@ void WaypointMgr::Load()
         float x = fields[2].Get<float>();
         float y = fields[3].Get<float>();
         float z = fields[4].Get<float>();
-        float o = fields[5].Get<float>();
+        std::optional<float > o;
+        if (!fields[5].IsNull())
+            o = fields[5].Get<float>();
 
         Acore::NormalizeMapCoord(x);
         Acore::NormalizeMapCoord(y);
@@ -131,7 +135,9 @@ void WaypointMgr::ReloadPath(uint32 id)
         float x = fields[1].Get<float>();
         float y = fields[2].Get<float>();
         float z = fields[3].Get<float>();
-        float o = fields[4].Get<float>();
+        std::optional<float> o;
+        if (!fields[4].IsNull())
+            o = fields[4].Get<float>();
 
         Acore::NormalizeMapCoord(x);
         Acore::NormalizeMapCoord(y);

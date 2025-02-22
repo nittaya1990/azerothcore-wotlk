@@ -20,10 +20,21 @@
 
 #include "Define.h"
 #include "Realm.h"
+#include <boost/asio/steady_timer.hpp>
 #include <array>
 #include <map>
-#include <unordered_set>
+#include <memory> // NOTE: this import is NEEDED (even though some IDEs report it as unused)
 #include <vector>
+
+namespace Acore::Asio
+{
+    class IoContext;
+}
+
+namespace boost::system
+{
+    class error_code;
+}
 
 struct RealmBuildInfo
 {
@@ -35,11 +46,6 @@ struct RealmBuildInfo
     std::array<uint8, 20> WindowsHash;
     std::array<uint8, 20> MacHash;
 };
-
-namespace boost::system
-{
-    class error_code;
-}
 
 /// Storage object for the list of realms on the server
 class AC_SHARED_API RealmList
@@ -65,12 +71,12 @@ private:
     void UpdateRealms(boost::system::error_code const& error);
     void UpdateRealm(RealmHandle const& id, uint32 build, std::string const& name,
         boost::asio::ip::address&& address, boost::asio::ip::address&& localAddr, boost::asio::ip::address&& localSubmask,
-        uint16 port, uint8 icon, RealmFlags flag, uint8 timezone, AccountTypes allowedSecurityLevel, float population);
+        uint16 port, uint8 icon, RealmFlags flag, uint8 realmTimezone, AccountTypes allowedSecurityLevel, float population);
 
     std::vector<RealmBuildInfo> _builds;
     RealmMap _realms;
     uint32 _updateInterval{0};
-    std::unique_ptr<Acore::Asio::DeadlineTimer> _updateTimer;
+    std::unique_ptr<boost::asio::steady_timer> _updateTimer;
     std::unique_ptr<Acore::Asio::Resolver> _resolver;
 };
 

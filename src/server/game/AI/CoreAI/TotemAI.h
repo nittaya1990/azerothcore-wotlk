@@ -19,7 +19,6 @@
 #define ACORE_TOTEMAI_H
 
 #include "CreatureAI.h"
-#include "Timer.h"
 
 class Creature;
 class Totem;
@@ -31,12 +30,14 @@ public:
 
     void MoveInLineOfSight(Unit* who) override;
     void AttackStart(Unit* victim) override;
-    void EnterEvadeMode() override;
+
+    void EnterEvadeMode(EvadeReason /*why*/) override;
     void SpellHit(Unit* /*caster*/, SpellInfo const* /*spellInfo*/) override;
+
     void DoAction(int32 param) override;
 
     void UpdateAI(uint32 diff) override;
-    static int Permissible(Creature const* creature);
+    static int32 Permissible(Creature const* creature);
 
 private:
     ObjectGuid i_victimGuid;
@@ -48,7 +49,7 @@ public:
     KillMagnetEvent(Unit& self) : _self(self) { }
     bool Execute(uint64 /*e_time*/, uint32 /*p_time*/) override
     {
-        _self.setDeathState(JUST_DIED);
+        _self.setDeathState(DeathState::JustDied);
         return true;
     }
 

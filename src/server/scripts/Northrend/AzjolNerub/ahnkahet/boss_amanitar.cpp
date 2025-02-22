@@ -15,10 +15,11 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "SpellScript.h"
+#include "SpellScriptLoader.h"
 #include "ahnkahet.h"
 
 enum Spells
@@ -114,13 +115,13 @@ struct boss_amanitar : public BossAI
         mushroomsSummoned = false;
     }
 
-    void EnterCombat(Unit* /*attacker*/) override
+    void JustEngagedWith(Unit* /*attacker*/) override
     {
-        events.ScheduleEvent(EVENT_ROOTS, urand(5000, 9000));
-        events.ScheduleEvent(EVENT_BASH, urand(10000, 14000));
-        events.ScheduleEvent(EVENT_BOLT, urand(15000, 20000));
-        events.ScheduleEvent(EVENT_MINI, 1000);
-        events.ScheduleEvent(EVENT_RESPAWN, 40000, 60000);
+        events.ScheduleEvent(EVENT_ROOTS, 5s, 9s);
+        events.ScheduleEvent(EVENT_BASH, 10s, 14s);
+        events.ScheduleEvent(EVENT_BOLT, 15s, 20s);
+        events.ScheduleEvent(EVENT_MINI, 1s);
+        events.ScheduleEvent(EVENT_RESPAWN, 40s, 60s);
     }
 
     void JustDied(Unit* /*killer*/) override
@@ -140,10 +141,10 @@ struct boss_amanitar : public BossAI
         BossAI::SummonedCreatureDies(summon, killer);
     }
 
-    void EnterEvadeMode() override
+    void EnterEvadeMode(EvadeReason why) override
     {
         instance->DoRemoveAurasDueToSpellOnPlayers(SPELL_MINI);
-        BossAI::EnterEvadeMode();
+        BossAI::EnterEvadeMode(why);
     }
 
     void ExecuteEvent(uint32 eventId) override
@@ -158,7 +159,7 @@ struct boss_amanitar : public BossAI
                     _mushroomsDeque.pop_front();
                 }
 
-                events.RepeatEvent(urand(40000, 60000));
+                events.Repeat(40s, 60s);
                 break;
             }
             case EVENT_ROOTS:
@@ -168,13 +169,13 @@ struct boss_amanitar : public BossAI
                     DoCast(pTarget, SPELL_ENTANGLING_ROOTS, false);
                 }
 
-                events.RepeatEvent(urand(10000, 15000));
+                events.Repeat(10s, 15s);
                 break;
             }
             case EVENT_BASH:
             {
                 DoCastVictim(SPELL_BASH, false);
-                events.RepeatEvent(urand(15000, 20000));
+                events.Repeat(15s, 20s);
                 break;
             }
             case EVENT_BOLT:
@@ -184,13 +185,13 @@ struct boss_amanitar : public BossAI
                     DoCast(pTarget, SPELL_VENOM_BOLT_VOLLEY, false);
                 }
 
-                events.RepeatEvent(urand(15000, 20000));
+                events.Repeat(15s, 20s);
                 break;
             }
             case EVENT_REMOVE_MUSHROOM_POWER:
             {
                 DoCastAOE(SPELL_REMOVE_MUSHROOM_POWER, true);
-                events.RescheduleEvent(EVENT_MINI, 1000);
+                events.RescheduleEvent(EVENT_MINI, 1s);
                 break;
             }
             case EVENT_MINI:
@@ -204,11 +205,11 @@ struct boss_amanitar : public BossAI
                     }
                 }
 
-                if (SelectTarget(SelectTargetMethod::Random, 0, 0.0f, true, -SPELL_MINI))
+                if (SelectTarget(SelectTargetMethod::Random, 0, 0.0f, true, true, -SPELL_MINI))
                 {
                     DoCastSelf(SPELL_REMOVE_MUSHROOM_POWER, true);
                     DoCastAOE(SPELL_MINI);
-                    events.RescheduleEvent(EVENT_REMOVE_MUSHROOM_POWER, 29000);
+                    events.RescheduleEvent(EVENT_REMOVE_MUSHROOM_POWER, 29s);
                 }
                 else
                 {
@@ -234,18 +235,18 @@ struct npc_amanitar_mushrooms : public ScriptedAI
 {
     npc_amanitar_mushrooms(Creature* pCreature) : ScriptedAI(pCreature)
     {
-        SetCombatMovement(false);
+        me->SetCombatMovement(false);
 
         //TODO: this prolly needs to be done in database
-        pCreature->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
-        pCreature->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+        pCreature->RemoveUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
+        pCreature->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
         pCreature->SetRegeneratingHealth(false);
     }
 
     // Disabled events
-    void EnterCombat(Unit* /*who*/) override {}
+    void JustEngagedWith(Unit* /*who*/) override {}
     void AttackStart(Unit* /*victim*/) override {}
-    void EnterEvadeMode() override {}
+    void EnterEvadeMode(EvadeReason /*why*/) override {}
 
     void Reset() override
     {
@@ -261,11 +262,11 @@ struct npc_amanitar_mushrooms : public ScriptedAI
             DoCastSelf(SPELL_HEALTHY_MUSHROOM_VISUAL_AURA, true);
         }
 
-        events.ScheduleEvent(EVENT_GROW, 800);
+        events.ScheduleEvent(EVENT_GROW, 800ms);
 
         if (me->GetEntry() == NPC_POISONOUS_MUSHROOM)
         {
-            events.ScheduleEvent(EVENT_CHECK_PLAYER, 250);
+            events.ScheduleEvent(EVENT_CHECK_PLAYER, 250ms);
         }
     }
 
@@ -300,11 +301,11 @@ struct npc_amanitar_mushrooms : public ScriptedAI
                         DoCastSelf(SPELL_POISONOUS_MUSHROOM_VISUAL_AREA);
                         DoCastSelf(SPELL_POISONOUS_MUSHROOM_POISON_CLOUD);
                         DoCastSelf(SPELL_SHRINK);
-                        events.ScheduleEvent(EVENT_KILLSELF, 4000);
+                        events.ScheduleEvent(EVENT_KILLSELF, 4s);
                     }
                     else
                     {
-                        events.RepeatEvent(250);
+                        events.Repeat(250ms);
                     }
 
                     break;

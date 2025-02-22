@@ -23,11 +23,10 @@
  EndScriptData */
 
 #include "Chat.h"
+#include "CommandScript.h"
 #include "GameEventMgr.h"
 #include "GameTime.h"
 #include "Language.h"
-#include "Player.h"
-#include "ScriptMgr.h"
 #include "Timer.h"
 
 using namespace Acore::ChatCommands;
@@ -62,28 +61,22 @@ public:
         GameEventMgr::GameEventDataMap const& events = sGameEventMgr->GetEventMap();
         GameEventMgr::ActiveEvents const& activeEvents = sGameEventMgr->GetActiveEventList();
 
-        char const* active = handler->GetAcoreString(LANG_ACTIVE);
+        std::string active = handler->GetAcoreString(LANG_ACTIVE);
 
         for (uint16 eventId : activeEvents)
         {
             GameEventData const& eventData = events[eventId];
 
             if (handler->GetSession())
-            {
-                handler->PSendSysMessage(LANG_EVENT_ENTRY_LIST_CHAT, eventId, eventId, eventData.description.c_str(), active);
-            }
+                handler->PSendSysMessage(LANG_EVENT_ENTRY_LIST_CHAT, eventId, eventId, eventData.Description, active);
             else
-            {
-                handler->PSendSysMessage(LANG_EVENT_ENTRY_LIST_CONSOLE, eventId, eventData.description.c_str(), active);
-            }
+                handler->PSendSysMessage(LANG_EVENT_ENTRY_LIST_CONSOLE, eventId, eventData.Description, active);
 
             ++counter;
         }
 
         if (counter == 0)
-        {
             handler->SendSysMessage(LANG_NOEVENTFOUND);
-        }
 
         handler->SetSentErrorMessage(true);
 
@@ -96,36 +89,34 @@ public:
 
         if (std::size_t(eventId) >= events.size())
         {
-            handler->SendSysMessage(LANG_EVENT_NOT_EXIST);
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_EVENT_NOT_EXIST);
             return false;
         }
 
         GameEventData const& eventData = events[eventId];
         if (!eventData.isValid())
         {
-            handler->SendSysMessage(LANG_EVENT_NOT_EXIST);
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_EVENT_NOT_EXIST);
             return false;
         }
 
         GameEventMgr::ActiveEvents const& activeEvents = sGameEventMgr->GetActiveEventList();
         bool active = activeEvents.find(eventId) != activeEvents.end();
-        char const* activeStr = active ? handler->GetAcoreString(LANG_ACTIVE) : "";
+        std::string activeStr = active ? handler->GetAcoreString(LANG_ACTIVE) : "";
 
-        std::string startTimeStr = Acore::Time::TimeToTimestampStr(Seconds(eventData.start));
-        std::string endTimeStr = Acore::Time::TimeToTimestampStr(Seconds(eventData.end));
+        std::string startTimeStr = Acore::Time::TimeToTimestampStr(Seconds(eventData.Start));
+        std::string endTimeStr = Acore::Time::TimeToTimestampStr(Seconds(eventData.End));
 
         uint32 delay = sGameEventMgr->NextCheck(eventId);
         time_t nextTime = GameTime::GetGameTime().count() + delay;
-        std::string nextStr = nextTime >= eventData.start && nextTime < eventData.end ? Acore::Time::TimeToTimestampStr(Seconds(nextTime)) : "-";
+        std::string nextStr = nextTime >= eventData.Start && nextTime < eventData.End ? Acore::Time::TimeToTimestampStr(Seconds(nextTime)) : "-";
 
-        std::string occurenceStr = secsToTimeString(eventData.occurence * MINUTE, true);
-        std::string lengthStr = secsToTimeString(eventData.length * MINUTE, true);
+        std::string occurenceStr = secsToTimeString(eventData.Occurence * MINUTE, true);
+        std::string lengthStr = secsToTimeString(eventData.Length * MINUTE, true);
 
-        handler->PSendSysMessage(LANG_EVENT_INFO, uint16(eventId), eventData.description.c_str(), activeStr,
-            startTimeStr.c_str(), endTimeStr.c_str(), occurenceStr.c_str(), lengthStr.c_str(),
-            nextStr.c_str());
+        handler->PSendSysMessage(LANG_EVENT_INFO, uint16(eventId), eventData.Description, activeStr,
+            startTimeStr, endTimeStr, occurenceStr, lengthStr,
+            nextStr);
 
         return true;
     }
@@ -136,27 +127,25 @@ public:
 
         if (*eventId < 1 || *eventId >= events.size())
         {
-            handler->SendSysMessage(LANG_EVENT_NOT_EXIST);
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_EVENT_NOT_EXIST);
             return false;
         }
 
         GameEventData const& eventData = events[eventId];
         if (!eventData.isValid())
         {
-            handler->SendSysMessage(LANG_EVENT_NOT_EXIST);
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_EVENT_NOT_EXIST);
             return false;
         }
 
         GameEventMgr::ActiveEvents const& activeEvents = sGameEventMgr->GetActiveEventList();
         if (activeEvents.find(eventId) != activeEvents.end())
         {
-            handler->PSendSysMessage(LANG_EVENT_ALREADY_ACTIVE, uint16(eventId));
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_EVENT_ALREADY_ACTIVE, uint16(eventId), eventData.Description);
             return false;
         }
 
+        handler->PSendSysMessage(LANG_EVENT_STARTED, uint16(eventId), eventData.Description);
         sGameEventMgr->StartEvent(eventId, true);
         return true;
     }
@@ -167,16 +156,14 @@ public:
 
         if (*eventId < 1 || *eventId >= events.size())
         {
-            handler->SendSysMessage(LANG_EVENT_NOT_EXIST);
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_EVENT_NOT_EXIST);
             return false;
         }
 
         GameEventData const& eventData = events[eventId];
         if (!eventData.isValid())
         {
-            handler->SendSysMessage(LANG_EVENT_NOT_EXIST);
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_EVENT_NOT_EXIST);
             return false;
         }
 
@@ -184,11 +171,11 @@ public:
 
         if (activeEvents.find(eventId) == activeEvents.end())
         {
-            handler->PSendSysMessage(LANG_EVENT_NOT_ACTIVE, uint16(eventId));
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_EVENT_NOT_ACTIVE, uint16(eventId), eventData.Description);
             return false;
         }
 
+        handler->PSendSysMessage(LANG_EVENT_STOPPED, uint16(eventId), eventData.Description);
         sGameEventMgr->StopEvent(eventId, true);
         return true;
     }

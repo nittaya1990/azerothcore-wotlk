@@ -15,7 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "SpellInfo.h"
 #include "zulaman.h"
@@ -27,223 +27,185 @@ enum Spells
     SPELL_FRENZY                = 43139,
     SPELL_FLAMESHOCK            = 43303,
     SPELL_EARTHSHOCK            = 43305,
-    SPELL_TRANSFORM_SPLIT       = 43142,
-    SPELL_TRANSFORM_SPLIT2      = 43573,
-    SPELL_TRANSFORM_MERGE       = 43271,
     SPELL_SUMMON_LYNX           = 43143,
     SPELL_SUMMON_TOTEM          = 43302,
     SPELL_BERSERK               = 45078,
     SPELL_LYNX_FRENZY           = 43290, // Used by Spirit Lynx
-    SPELL_SHRED_ARMOR           = 43243  // Used by Spirit Lynx
+    SPELL_SHRED_ARMOR           = 43243, // Used by Spirit Lynx
+    SPELL_TRANSFORM_DUMMY       = 43615, // Used by Spirit Lynx
+
+    SPELL_TRANSFIGURE           = 44054,
+    SPELL_TRANSFORM_TO_LYNX_75  = 43145,
+    SPELL_TRANSFORM_TO_LYNX_50  = 43271,
+    SPELL_TRANSFORM_TO_LYNX_25  = 43272
+};
+
+enum UniqueEvents
+{
+    EVENT_BERSERK                = 1
 };
 
 enum Hal_CreatureIds
 {
-    NPC_SPIRIT_LYNX             = 24143,
-    NPC_TOTEM                   = 24224
+    NPC_HALAZZI_TROLL            = 24144, // dummy creature - used to update model, stats
+    NPC_TOTEM                    = 24224
 };
 
 enum PhaseHalazzi
 {
-    PHASE_NONE                  = 0,
-    PHASE_LYNX                  = 1,
-    PHASE_SPLIT                 = 2,
-    PHASE_HUMAN                 = 3,
-    PHASE_MERGE                 = 4,
-    PHASE_ENRAGE                = 5
+    PHASE_NONE                   = 0,
+    PHASE_LYNX                   = 1,
+    PHASE_HUMAN                  = 2,
+    PHASE_MERGE                  = 3,
+    PHASE_ENRAGE                 = 4
 };
 
 enum Yells
 {
-    SAY_AGGRO                   = 0,
-    SAY_SABER                   = 1,
-    SAY_SPLIT                   = 2,
-    SAY_MERGE                   = 3,
-    SAY_KILL                    = 4,
-    SAY_DEATH                   = 5,
-    SAY_BERSERK                 = 6
+    SAY_AGGRO                    = 0,
+    SAY_KILL                     = 1,
+    SAY_SABER                    = 2,
+    SAY_SPLIT                    = 3,
+    SAY_MERGE                    = 4,
+    SAY_DEATH                    = 5
 };
 
-class boss_halazzi : public CreatureScript
+enum Groups
 {
-public:
-    boss_halazzi() : CreatureScript("boss_halazzi") { }
+    GROUP_LYNX                   = 0,
+    GROUP_HUMAN                  = 1,
+    GROUP_MERGE                  = 3,
+    GROUP_SPLIT                  = 4
+};
 
-    struct boss_halazziAI : public ScriptedAI
+enum Actions
+{
+    ACTION_MERGE                 = 0
+};
+
+struct boss_halazzi : public BossAI
+{
+    boss_halazzi(Creature* creature) : BossAI(creature, DATA_HALAZZI)
     {
-        boss_halazziAI(Creature* creature) : ScriptedAI(creature), summons(me)
+        scheduler.SetValidator([this]
         {
-            instance = creature->GetInstanceScript();
-        }
+            return !me->HasUnitState(UNIT_STATE_CASTING);
+        });
+    }
 
-        InstanceScript* instance;
-        SummonList summons;
-        PhaseHalazzi Phase;
+    void Reset() override
+    {
+        me->UpdateEntry(NPC_HALAZZI);
+        BossAI::Reset();
+        _transformCount = 0;
+        _phase = PHASE_NONE;
+        SetInvincibility(true);
+    }
 
-        uint32 FrenzyTimer;
-        uint32 SaberlashTimer;
-        uint32 ShockTimer;
-        uint32 TotemTimer;
-        uint32 CheckTimer;
-        uint32 BerserkTimer;
-        uint32 TransformCount;
-
-        ObjectGuid LynxGUID;
-
-        void Reset() override
+    void JustEngagedWith(Unit* who) override
+    {
+        BossAI::JustEngagedWith(who);
+        Talk(SAY_AGGRO);
+        ScheduleUniqueTimedEvent(10min, [&]
         {
-            instance->SetData(DATA_HALAZZIEVENT, NOT_STARTED);
-            summons.DespawnAll();
+            DoCastSelf(SPELL_BERSERK, true);
+        }, EVENT_BERSERK);
+        EnterPhase(PHASE_LYNX);
+    }
 
-            LynxGUID.Clear();
-            TransformCount = 0;
-            BerserkTimer = 600000;
-            CheckTimer = 1000;
+    void DamageTaken(Unit* attacker, uint32& damage, DamageEffectType damagetype, SpellSchoolMask damageSchoolMask) override
+    {
+        BossAI::DamageTaken(attacker, damage, damagetype, damageSchoolMask);
 
-            DoCast(me, SPELL_DUAL_WIELD, true);
-
-            Phase = PHASE_NONE;
-            EnterPhase(PHASE_LYNX);
-        }
-
-        void EnterCombat(Unit* /*who*/) override
+        if (_phase == PHASE_LYNX)
         {
-            instance->SetData(DATA_HALAZZIEVENT, IN_PROGRESS);
-            Talk(SAY_AGGRO);
-            EnterPhase(PHASE_LYNX);
-        }
-
-        void JustSummoned(Creature* summon) override
-        {
-            summon->AI()->AttackStart(me->GetVictim());
-            if (summon->GetEntry() == NPC_SPIRIT_LYNX)
-                LynxGUID = summon->GetGUID();
-            summons.Summon(summon);
-        }
-
-        void DamageTaken(Unit*, uint32& damage, DamageEffectType, SpellSchoolMask) override
-        {
-            if (damage >= me->GetHealth() && Phase != PHASE_ENRAGE)
-                damage = 0;
-        }
-
-        void SpellHit(Unit*, SpellInfo const* spell) override
-        {
-            if (spell->Id == SPELL_TRANSFORM_SPLIT2)
+            uint32 _healthCheckPercentage = 25 * (3 - _transformCount);
+            if (me->HealthBelowPctDamaged(_healthCheckPercentage, damage))
                 EnterPhase(PHASE_HUMAN);
         }
-
-        void AttackStart(Unit* who) override
+        else if (_phase == PHASE_HUMAN)
         {
-            if (Phase != PHASE_MERGE)
-                ScriptedAI::AttackStart(who);
+            if (me->HealthBelowPctDamaged(20, damage))
+                EnterPhase(PHASE_MERGE);
         }
+    }
 
-        void EnterPhase(PhaseHalazzi NextPhase)
+    void SpellHit(Unit*, SpellInfo const* spell) override
+    {
+        if (spell->Id == SPELL_TRANSFORM_DUMMY)
+            me->UpdateEntry(NPC_HALAZZI_TROLL);
+    }
+
+    void JustSummoned(Creature* summon) override
+    {
+        BossAI::JustSummoned(summon);
+
+        if (summon->GetEntry() == NPC_TOTEM)
+            summon->Attack(me->GetVictim(), false);
+    }
+
+    void AttackStart(Unit* who) override
+    {
+        if (_phase != PHASE_MERGE)
+            BossAI::AttackStart(who);
+    }
+
+    void EnterPhase(PhaseHalazzi nextPhase)
+    {
+        _phase = nextPhase;
+
+        switch (nextPhase)
         {
-            switch (NextPhase)
+            case PHASE_LYNX:
             {
-                case PHASE_LYNX:
-                case PHASE_ENRAGE:
-                    if (Phase == PHASE_MERGE)
-                    {
-                        DoCast(me, SPELL_TRANSFORM_MERGE, true);
-                        me->Attack(me->GetVictim(), true);
-                        me->GetMotionMaster()->MoveChase(me->GetVictim());
-                    }
-                    if (Creature* Lynx = ObjectAccessor::GetCreature(*me, LynxGUID))
-                        Lynx->DisappearAndDie();
-                    me->SetMaxHealth(600000);
-                    me->SetHealth(600000 - 150000 * TransformCount);
-                    FrenzyTimer = 16000;
-                    SaberlashTimer = 20000;
-                    ShockTimer = 10000;
-                    TotemTimer = 12000;
-                    break;
-                case PHASE_SPLIT:
-                    Talk(SAY_SPLIT);
-                    DoCast(me, SPELL_TRANSFORM_SPLIT, true);
-                    break;
-                case PHASE_HUMAN:
-                    //DoCast(me, SPELL_SUMMON_LYNX, true);
-                    DoSpawnCreature(NPC_SPIRIT_LYNX, 5, 5, 0, 0, TEMPSUMMON_CORPSE_DESPAWN, 0);
-                    me->SetMaxHealth(400000);
-                    me->SetHealth(400000);
-                    ShockTimer = 10000;
-                    TotemTimer = 12000;
-                    break;
-                case PHASE_MERGE:
-                    if (Unit* pLynx = ObjectAccessor::GetUnit(*me, LynxGUID))
-                    {
-                        Talk(SAY_MERGE);
-                        pLynx->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
-                        pLynx->GetMotionMaster()->Clear();
-                        pLynx->GetMotionMaster()->MoveFollow(me, 0, 0);
-                        me->GetMotionMaster()->Clear();
-                        me->GetMotionMaster()->MoveFollow(pLynx, 0, 0);
-                        ++TransformCount;
-                    }
-                    break;
-                default:
-                    break;
-            }
-            Phase = NextPhase;
-        }
+                summons.DespawnAll();
 
-        void UpdateAI(uint32 diff) override
-        {
-            if (!UpdateVictim())
-                return;
-
-            if (BerserkTimer <= diff)
-            {
-                Talk(SAY_BERSERK);
-                DoCast(me, SPELL_BERSERK, true);
-                BerserkTimer = 60000;
-            }
-            else BerserkTimer -= diff;
-
-            if (Phase == PHASE_LYNX || Phase == PHASE_ENRAGE)
-            {
-                if (SaberlashTimer <= diff)
+                if (_transformCount)
                 {
-                    // A tank with more than 490 defense skills should receive no critical hit
-                    //DoCast(me, 41296, true);
+                    me->UpdateEntry(NPC_HALAZZI);
+                    switch (_transformCount)
+                    {
+                        case 1:
+                            DoCastSelf(SPELL_TRANSFORM_TO_LYNX_75, true);
+                            break;
+                        case 2:
+                            DoCastSelf(SPELL_TRANSFORM_TO_LYNX_50, true);
+                            break;
+                        case 3:
+                            DoCastSelf(SPELL_TRANSFORM_TO_LYNX_25, true);
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                me->ResumeChasingVictim();
+
+                scheduler.CancelGroup(GROUP_MERGE);
+                scheduler.Schedule(5s, 15s, GROUP_LYNX, [this](TaskContext context)
+                {
+                    Talk(SAY_SABER);
                     DoCastVictim(SPELL_SABER_LASH, true);
-                    //me->RemoveAurasDueToSpell(41296);
-                    SaberlashTimer = 30000;
-                }
-                else SaberlashTimer -= diff;
-
-                if (FrenzyTimer <= diff)
+                    context.Repeat();
+                }).Schedule(20s, 35s, GROUP_LYNX, [this](TaskContext context)
                 {
-                    DoCast(me, SPELL_FRENZY);
-                    FrenzyTimer = urand(10000, 15000);
-                }
-                else FrenzyTimer -= diff;
-
-                if (Phase == PHASE_LYNX)
-                {
-                    if (CheckTimer <= diff)
-                    {
-                        if (HealthBelowPct(25 * (3 - TransformCount)))
-                            EnterPhase(PHASE_SPLIT);
-                        CheckTimer = 1000;
-                    }
-                    else CheckTimer -= diff;
-                }
+                    DoCastSelf(SPELL_FRENZY);
+                    context.Repeat();
+                });
+                break;
             }
-
-            if (Phase == PHASE_HUMAN || Phase == PHASE_ENRAGE)
-            {
-                if (TotemTimer <= diff)
+            case PHASE_HUMAN:
+                Talk(SAY_SPLIT);
+                DoCastSelf(SPELL_TRANSFIGURE, true);
+                scheduler.Schedule(3s, GROUP_SPLIT, [this](TaskContext /*context*/)
                 {
-                    DoCast(me, SPELL_SUMMON_TOTEM);
-                    TotemTimer = 20000;
-                }
-                else TotemTimer -= diff;
+                    DoCastSelf(SPELL_SUMMON_LYNX, true);
+                });
+                _phase = PHASE_HUMAN;
 
-                if (ShockTimer <= diff)
+                scheduler.CancelGroup(GROUP_MERGE);
+                scheduler.CancelGroup(GROUP_LYNX);
+                scheduler.Schedule(10s, GROUP_HUMAN, [this](TaskContext context)
                 {
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0))
                     {
@@ -251,139 +213,80 @@ public:
                             DoCast(target, SPELL_EARTHSHOCK);
                         else
                             DoCast(target, SPELL_FLAMESHOCK);
-                        ShockTimer = urand(10000, 15000);
                     }
-                }
-                else ShockTimer -= diff;
-
-                if (Phase == PHASE_HUMAN)
+                    context.Repeat(10s, 15s);
+                }).Schedule(12s, GROUP_HUMAN, [this](TaskContext context)
                 {
-                    if (CheckTimer <= diff)
-                    {
-                        if (!HealthAbovePct(20) /*HealthBelowPct(10)*/)
-                            EnterPhase(PHASE_MERGE);
-                        else
-                        {
-                            Unit* Lynx = ObjectAccessor::GetUnit(*me, LynxGUID);
-                            if (Lynx && !Lynx->HealthAbovePct(20) /*Lynx->HealthBelowPct(10)*/)
-                                EnterPhase(PHASE_MERGE);
-                        }
-                        CheckTimer = 1000;
-                    }
-                    else CheckTimer -= diff;
-                }
-            }
-
-            if (Phase == PHASE_MERGE)
-            {
-                if (CheckTimer <= diff)
+                    DoCastSelf(SPELL_SUMMON_TOTEM);
+                    context.Repeat(20s);
+                });
+                break;
+            case PHASE_MERGE:
+                if (Creature* lynx = instance->GetCreature(DATA_SPIRIT_LYNX))
                 {
-                    Unit* Lynx = ObjectAccessor::GetUnit(*me, LynxGUID);
-                    if (Lynx)
+                    Talk(SAY_MERGE);
+                    scheduler.CancelGroup(GROUP_HUMAN);
+                    lynx->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+                    lynx->GetMotionMaster()->Clear();
+                    lynx->GetMotionMaster()->MoveFollow(me, 0, 0);
+                    me->GetMotionMaster()->Clear();
+                    me->GetMotionMaster()->MoveFollow(lynx, 0, 0);
+                    ++_transformCount;
+                    scheduler.Schedule(2s, GROUP_MERGE, [this, lynx](TaskContext context)
                     {
-                        Lynx->GetMotionMaster()->MoveFollow(me, 0, 0);
-                        me->GetMotionMaster()->MoveFollow(Lynx, 0, 0);
-                        if (me->IsWithinDistInMap(Lynx, 6.0f))
+                        if (lynx)
                         {
-                            if (TransformCount < 3)
+                            if (me->IsWithinDistInMap(lynx, 6.0f))
+                            {
                                 EnterPhase(PHASE_LYNX);
+
+                                // Enrage phase
+                                if (_transformCount == 3)
+                                {
+                                    _phase = PHASE_ENRAGE;
+                                    SetInvincibility(false);
+                                    scheduler.Schedule(12s, GROUP_LYNX, [this](TaskContext context)
+                                    {
+                                        DoCastSelf(SPELL_SUMMON_TOTEM);
+                                        context.Repeat(20s);
+                                    });
+                                }
+                            }
                             else
-                                EnterPhase(PHASE_ENRAGE);
+                                context.Repeat(2s);
                         }
-                    }
-                    CheckTimer = 1000;
+                    });
                 }
-                else CheckTimer -= diff;
-            }
-
-            DoMeleeAttackIfReady();
+                break;
+            default:
+                break;
         }
+    }
 
-        void KilledUnit(Unit* victim) override
-        {
-            if (victim->GetTypeId() != TYPEID_PLAYER)
-                return;
-
+    void KilledUnit(Unit* victim) override
+    {
+        BossAI::KilledUnit(victim);
+        if (victim->IsPlayer())
             Talk(SAY_KILL);
-        }
-
-        void JustDied(Unit* /*killer*/) override
-        {
-            instance->SetData(DATA_HALAZZIEVENT, DONE);
-            Talk(SAY_DEATH);
-        }
-    };
-
-    CreatureAI* GetAI(Creature* creature) const override
-    {
-        return GetZulAmanAI<boss_halazziAI>(creature);
     }
-};
 
-// Spirits Lynx AI
-class npc_halazzi_lynx : public CreatureScript
-{
-public:
-    npc_halazzi_lynx() : CreatureScript("npc_halazzi_lynx") { }
-
-    struct npc_halazzi_lynxAI : public ScriptedAI
+    void DoAction(int32 actionId) override
     {
-        npc_halazzi_lynxAI(Creature* creature) : ScriptedAI(creature) { }
-
-        uint32 FrenzyTimer;
-        uint32 shredder_timer;
-
-        void Reset() override
-        {
-            FrenzyTimer = urand(30000, 50000);  //frenzy every 30-50 seconds
-            shredder_timer = 4000;
-        }
-
-        void DamageTaken(Unit*, uint32& damage, DamageEffectType, SpellSchoolMask) override
-        {
-            if (damage >= me->GetHealth())
-                damage = 0;
-        }
-
-        void AttackStart(Unit* who) override
-        {
-            if (!me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE))
-                ScriptedAI::AttackStart(who);
-        }
-
-        void EnterCombat(Unit* /*who*/) override {/*DoZoneInCombat();*/ }
-
-        void UpdateAI(uint32 diff) override
-        {
-            if (!UpdateVictim())
-                return;
-
-            if (FrenzyTimer <= diff)
-            {
-                DoCast(me, SPELL_LYNX_FRENZY);
-                FrenzyTimer = urand(30000, 50000);  //frenzy every 30-50 seconds
-            }
-            else FrenzyTimer -= diff;
-
-            if (shredder_timer <= diff)
-            {
-                DoCastVictim(SPELL_SHRED_ARMOR);
-                shredder_timer = 4000;
-            }
-            else shredder_timer -= diff;
-
-            DoMeleeAttackIfReady();
-        }
-    };
-
-    CreatureAI* GetAI(Creature* creature) const override
-    {
-        return GetZulAmanAI<npc_halazzi_lynxAI>(creature);
+        if (actionId == ACTION_MERGE)
+            EnterPhase(PHASE_MERGE);
     }
+
+    void JustDied(Unit* killer) override
+    {
+        BossAI::JustDied(killer);
+        Talk(SAY_DEATH);
+    }
+private:
+    uint8 _transformCount;
+    PhaseHalazzi _phase;
 };
 
 void AddSC_boss_halazzi()
 {
-    new boss_halazzi();
-    new npc_halazzi_lynx();
+    RegisterZulAmanCreatureAI(boss_halazzi);
 }

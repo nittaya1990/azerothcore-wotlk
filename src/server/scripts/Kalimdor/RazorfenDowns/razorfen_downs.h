@@ -19,7 +19,8 @@
 #define DEF_RAZORFEN_DOWNS_H
 
 #include "CreatureAIImpl.h"
-#include "PassiveAI.h"
+
+#define DataHeader "RFD"
 
 #define RazorfenDownsScriptName "instance_razorfen_downs"
 

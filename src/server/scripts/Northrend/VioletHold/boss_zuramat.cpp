@@ -15,8 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
 #include "PassiveAI.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "violet_hold.h"
 
@@ -32,10 +32,8 @@ enum Yells
 
 enum eSpells
 {
-    SPELL_SHROUD_OF_DARKNESS_N                      = 54524,
-    SPELL_SHROUD_OF_DARKNESS_H                      = 59745,
-    SPELL_VOID_SHIFT_N                              = 54361,
-    SPELL_VOID_SHIFT_H                              = 59743,
+    SPELL_SHROUD_OF_DARKNESS                        = 54524,
+    SPELL_VOID_SHIFT                                = 54361,
     SPELL_SUMMON_VOID_SENTRY                        = 54369,
     SPELL_SUMMON_VOID_SENTRY_BALL                   = 58650,
 
@@ -44,8 +42,6 @@ enum eSpells
 };
 
 #define NPC_VOID_SENTRY_BALL                        29365
-#define SPELL_SHROUD_OF_DARKNESS                    DUNGEON_MODE(SPELL_SHROUD_OF_DARKNESS_N, SPELL_SHROUD_OF_DARKNESS_H)
-#define SPELL_VOID_SHIFT                            DUNGEON_MODE(SPELL_VOID_SHIFT_N, SPELL_VOID_SHIFT_H)
 
 enum eEvents
 {
@@ -81,14 +77,14 @@ public:
             summons.DespawnAll();
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
             Talk(SAY_AGGRO);
             DoZoneInCombat();
             events.Reset();
-            events.RescheduleEvent(EVENT_SPELL_SHROUD_OF_DARKNESS, urand(5000, 7000));
-            events.RescheduleEvent(EVENT_SPELL_VOID_SHIFT, urand(23000, 25000));
-            events.RescheduleEvent(EVENT_SPELL_SUMMON_VOID_SENTRY, 10000);
+            events.RescheduleEvent(EVENT_SPELL_SHROUD_OF_DARKNESS, 5s, 7s);
+            events.RescheduleEvent(EVENT_SPELL_VOID_SHIFT, 23s, 25s);
+            events.RescheduleEvent(EVENT_SPELL_SUMMON_VOID_SENTRY, 10s);
             if (pInstance)
                 pInstance->SetData(DATA_ACHIEV, 1);
         }
@@ -103,14 +99,14 @@ public:
             if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
-            switch(events.ExecuteEvent())
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
                 case EVENT_SPELL_SHROUD_OF_DARKNESS:
                     me->CastSpell(me, SPELL_SHROUD_OF_DARKNESS, false);
                     Talk(SAY_SHIELD);
-                    events.RepeatEvent(20000);
+                    events.Repeat(20s);
                     break;
                 case EVENT_SPELL_VOID_SHIFT:
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 60.0f, true))
@@ -118,11 +114,11 @@ public:
                         me->CastSpell(target, SPELL_VOID_SHIFT, false);
                         me->Whisper("Gaze... into the void.", LANG_UNIVERSAL, target->ToPlayer());
                     }
-                    events.RepeatEvent(urand(18000, 22000));
+                    events.Repeat(18s, 22s);
                     break;
                 case EVENT_SPELL_SUMMON_VOID_SENTRY:
                     me->CastSpell((Unit*)nullptr, SPELL_SUMMON_VOID_SENTRY, false);
-                    events.RepeatEvent(12000);
+                    events.Repeat(12s);
                     break;
             }
 
@@ -170,11 +166,11 @@ public:
 
         void MoveInLineOfSight(Unit* /*who*/) override {}
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
-            ScriptedAI::EnterEvadeMode();
+            ScriptedAI::EnterEvadeMode(why);
             events.Reset();
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
             if (pInstance)
                 pInstance->SetData(DATA_FAILED, 1);
         }
@@ -246,7 +242,7 @@ public:
                         if (s->IsAlive())
                             good = true;
                 if (!good)
-                    Unit::Kill(me, me);
+                    me->KillSelf();
             }
             else
                 checkTimer -= diff;

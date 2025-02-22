@@ -20,9 +20,8 @@
 
 #include "Battlefield.h"
 #include "Log.h"
-#include "ObjectAccessor.h"
 #include "World.h"
-#include "WorldPacket.h"
+#include "WorldStatePackets.h"
 
 class Group;
 class BattlefieldWG;
@@ -218,6 +217,8 @@ enum WintergraspNpcs
     NPC_QUEST_SOUTHERN_TOWER_KILL                   = 35074,
     NPC_QUEST_VEHICLE_PROTECTED                     = 31284,
     NPC_QUEST_PVP_KILL_VEHICLE                      = 31093,
+    NPC_QUEST_PVP_KILL_HORDE                        = 39019,
+    NPC_QUEST_PVP_KILL_ALLIANCE                     = 31086,
 };
 
 struct BfWGCoordGY
@@ -238,7 +239,7 @@ const uint32 WGQuest[2][6] =
     { 13185, 13183, 13223, 13539, 13178, 13180 },
 };
 // 7 in sql, 7 in header
-const BfWGCoordGY WGGraveYard[BATTLEFIELD_WG_GRAVEYARD_MAX] =
+const BfWGCoordGY WGGraveyard[BATTLEFIELD_WG_GRAVEYARD_MAX] =
 {
     { 5104.750f, 2300.940f, 368.579f, 0.733038f, 1329, BATTLEFIELD_WG_GY_WORKSHOP_NE, BATTLEFIELD_WG_GOSSIPTEXT_GY_NE, TEAM_NEUTRAL },
     { 5099.120f, 3466.036f, 368.484f, 5.317802f, 1330, BATTLEFIELD_WG_GY_WORKSHOP_NW, BATTLEFIELD_WG_GOSSIPTEXT_GY_NW, TEAM_NEUTRAL },
@@ -403,7 +404,7 @@ public:
 
     void SendInitWorldStatesTo(Player* player);
     void SendInitWorldStatesToAll() override;
-    void FillInitialWorldStates(WorldPacket& data) override;
+    void FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet) override;
 
     void HandleKill(Player* killer, Unit* victim) override;
     void OnUnitDeath(Unit* unit) override;
@@ -523,10 +524,14 @@ enum WintergraspWorldstates
     WORLDSTATE_WORKSHOP_SE = 3703,
     WORLDSTATE_WORKSHOP_SW = 3702,
     WORLDSTATE_WORKSHOP_K_W = 3698,
-    WORLDSTATE_WORKSHOP_K_E = 3699
+    WORLDSTATE_WORKSHOP_K_E = 3699,
+    WORLDSTATE_HORDE_KEEP_CAPTURED = 4022,
+    WORLDSTATE_HORDE_KEEP_DEFENDED = 4024,
+    WORLDSTATE_ALLIANCE_KEEP_CAPTURED = 4023,
+    WORLDSTATE_ALLIANCE_KEEP_DEFENDED = 4025,
 };
 
-// TODO: Handle this with creature_text ?
+/// @todo: Handle this with creature_text ?
 enum eWGText
 {
     BATTLEFIELD_WG_TEXT_START                    = 28,
@@ -1035,7 +1040,7 @@ const WintergraspTowerCannonData TowerCannon[WG_MAX_TOWER_CANNON] =
         2,
         {
             { 4448.138184f, 1974.998779f, 441.995911f, 1.967238f },
-            { 4448.713379f, 1955.148682f, 441.995178f, 0.380733f },
+            { 4486.3257f, 1954.6545f, 442.0783f, 0.349065840244293212f },
             { 0, 0, 0, 0 },
             { 0, 0, 0, 0 },
             { 0, 0, 0, 0 },
@@ -1204,7 +1209,7 @@ struct BfWGGameObjectBuilding
             case BATTLEFIELD_WG_OBJECTTYPE_DOOR_LAST:
                 m_WG->SetRelicInteractible(true);
                 if (GameObject* go = m_WG->GetRelic())
-                    go->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE);
+                    go->RemoveGameObjectFlag(GO_FLAG_NOT_SELECTABLE);
                 else
                     LOG_ERROR("bg.battlefield", "BattlefieldWG: Relic not found.");
                 break;
@@ -1468,6 +1473,17 @@ struct WGWorkshop
                     // Send warning message to all player to inform a faction attack to a workshop
                     // alliance / horde attacking a workshop
                     bf->SendWarning(teamControl ? WorkshopsData[workshopId].attackText : (WorkshopsData[workshopId].attackText + 2));
+
+                    // Updating worldstate, update icon to neutral
+                    state = BATTLEFIELD_WG_OBJECTSTATE_NEUTRAL_INTACT;
+                    bf->SendUpdateWorldState(WorkshopsData[workshopId].worldstate, state);
+
+                    // Found associate graveyard and update it
+                    if (workshopId < BATTLEFIELD_WG_WORKSHOP_KEEP_WEST)
+                        if (bf->GetGraveyardById(workshopId))
+                            bf->GetGraveyardById(workshopId)->GiveControlTo(team);
+
+                    teamControl = team;
                     break;
                 }
             case TEAM_ALLIANCE:

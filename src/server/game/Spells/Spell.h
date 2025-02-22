@@ -18,11 +18,13 @@
 #ifndef __SPELL_H
 #define __SPELL_H
 
+#include "ConditionMgr.h"
 #include "GridDefines.h"
-#include "ObjectMgr.h"
+#include "LootMgr.h"
 #include "PathGenerator.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
+#include "Unit.h"
 
 class Unit;
 class Player;
@@ -216,6 +218,7 @@ struct SpellValue
     uint8     AuraStackAmount;
     int32     AuraDuration;
     bool      ForcedCritResult;
+    uint32    MiscVal[MAX_SPELL_EFFECTS];
 };
 
 enum SpellState
@@ -544,14 +547,14 @@ public:
 
     UsedSpellMods m_appliedMods;
 
-    PathGenerator* m_pathFinder; // pussywizard: for precomputing path for charge
-
     int32 GetCastTime() const { return m_casttime; }
     bool IsAutoRepeat() const { return m_autoRepeat; }
     void SetAutoRepeat(bool rep) { m_autoRepeat = rep; }
     void ReSetTimer() { m_timer = m_casttime > 0 ? m_casttime : 0; }
+    int32 GetCastTimeRemaining() { return m_timer;}
     bool IsNextMeleeSwingSpell() const;
-    bool IsTriggered() const { return _triggeredCastFlags & TRIGGERED_FULL_MASK; };
+    bool IsTriggered() const { return HasTriggeredCastFlag(TRIGGERED_FULL_MASK); };
+    bool HasTriggeredCastFlag(TriggerCastFlags flag) const { return _triggeredCastFlags & flag; };
     bool IsChannelActive() const { return m_caster->GetUInt32Value(UNIT_CHANNEL_SPELL) != 0; }
     bool IsAutoActionResetSpell() const;
     bool IsIgnoringCooldowns() const;
@@ -589,6 +592,10 @@ public:
 
     [[nodiscard]] uint32 GetTriggeredByAuraTickNumber() const { return m_triggeredByAuraSpell.tickNumber; }
 
+    [[nodiscard]] TriggerCastFlags GetTriggeredCastFlags() const { return _triggeredCastFlags; }
+
+    [[nodiscard]] SpellSchoolMask GetSpellSchoolMask() const { return m_spellSchoolMask; }
+
  protected:
     bool HasGlobalCooldown() const;
     void TriggerGlobalCooldown();
@@ -605,6 +612,8 @@ public:
     Unit* m_originalCaster;                             // cached pointer for m_originalCaster, updated at Spell::UpdatePointers()
 
     Spell** m_selfContainer;                            // pointer to our spell container (if applicable)
+
+    std::string GetDebugInfo() const;
 
     //Spell data
     SpellSchoolMask m_spellSchoolMask;                  // Spell school (can be overwrite for some spells (wand shoot for example)
@@ -708,7 +717,7 @@ public:
     bool UpdateChanneledTargetList();
     bool IsValidDeadOrAliveTarget(Unit const* target) const;
     void HandleLaunchPhase();
-    void DoAllEffectOnLaunchTarget(TargetInfo& targetInfo, float* multiplier, bool firstTarget);
+    void DoAllEffectOnLaunchTarget(TargetInfo& targetInfo, float* multiplier);
 
     void PrepareTargetProcessing();
     void FinishTargetProcessing();
@@ -739,7 +748,7 @@ public:
     {
         SpellInfo const* triggeredSpell;
         SpellInfo const* triggeredByAura;
-        // uint8 triggeredByEffIdx          This might be needed at a later stage - No need known for now
+        uint8 triggeredByEffIdx;
         int32 chance;
     };
 
@@ -749,7 +758,7 @@ public:
     HitTriggerSpellList m_hitTriggerSpells;
 
     // effect helpers
-    void SummonGuardian(uint32 i, uint32 entry, SummonPropertiesEntry const* properties, uint32 numSummons);
+    void SummonGuardian(uint32 i, uint32 entry, SummonPropertiesEntry const* properties, uint32 numSummons, bool personalSpawn);
     void CalculateJumpSpeeds(uint8 i, float dist, float& speedxy, float& speedz);
 
     SpellCastResult CanOpenLock(uint32 effIndex, uint32 lockid, SkillType& skillid, int32& reqSkillValue, int32& skillValue);
@@ -768,19 +777,12 @@ public:
 
     bool m_skipCheck;
     uint8 m_auraScaleMask;
+    std::unique_ptr<PathGenerator> m_preGeneratedPath;
 
     // xinef:
     bool _spellTargetsSelected;
 
     ByteBuffer* m_effectExecuteData[MAX_SPELL_EFFECTS];
-
-#ifdef MAP_BASED_RAND_GEN
-    int32 irand(int32 min, int32 max)       { return int32 (m_caster->GetMap()->mtRand.randInt(max - min)) + min; }
-    uint32 urand(uint32 min, uint32 max)    { return m_caster->GetMap()->mtRand.randInt(max - min) + min; }
-    int32 rand32()                          { return m_caster->GetMap()->mtRand.randInt(); }
-    double rand_norm()                      { return m_caster->GetMap()->mtRand.randExc(); }
-    double rand_chance()                    { return m_caster->GetMap()->mtRand.randExc(100.0); }
-#endif
 };
 
 namespace Acore

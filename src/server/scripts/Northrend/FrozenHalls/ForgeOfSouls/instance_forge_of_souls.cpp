@@ -15,10 +15,17 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "InstanceMapScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "forge_of_souls.h"
+#include "Group.h"
+
+BossBoundaryData const boundaries =
+{
+    { DATA_BRONJAHM,    new CircleBoundary(Position(5297.3f, 2506.45f), 100.96)                                                                                   },
+    { DATA_DEVOURER,    new ParallelogramBoundary(Position(5663.56f, 2570.53f), Position(5724.39f, 2520.45f), Position(5570.36f, 2461.42f)) }
+};
 
 class instance_forge_of_souls : public InstanceMapScript
 {
@@ -32,10 +39,13 @@ public:
 
     struct instance_forge_of_souls_InstanceScript : public InstanceScript
     {
-        instance_forge_of_souls_InstanceScript(Map* map) : InstanceScript(map) {}
+        instance_forge_of_souls_InstanceScript(Map* map) : InstanceScript(map)
+        {
+            SetHeaders(DataHeader);
+            LoadBossBoundaries(boundaries);
+        }
 
         uint32 m_auiEncounter[MAX_ENCOUNTER];
-        TeamId teamIdInInstance;
         std::string str_data;
         ObjectGuid NPC_BronjahmGUID;
         ObjectGuid NPC_DevourerGUID;
@@ -48,7 +58,6 @@ public:
         void Initialize() override
         {
             memset(&m_auiEncounter, 0, sizeof(m_auiEncounter));
-            teamIdInInstance = TEAM_NEUTRAL;
         }
 
         bool IsEncounterInProgress() const override
@@ -59,8 +68,10 @@ public:
             return false;
         }
 
-        void OnPlayerEnter(Player* /*plr*/) override
+        void OnPlayerEnter(Player* player) override
         {
+            InstanceScript::OnPlayerEnter(player);
+
             // this will happen only after crash and loading the instance from db
             if (m_auiEncounter[0] == DONE && m_auiEncounter[1] == DONE && (!NPC_LeaderSecondGUID || !instance->GetCreature(NPC_LeaderSecondGUID)))
             {
@@ -71,14 +82,6 @@ public:
 
         void OnCreatureCreate(Creature* creature) override
         {
-            if (teamIdInInstance == TEAM_NEUTRAL)
-            {
-                Map::PlayerList const& players = instance->GetPlayers();
-                if (!players.IsEmpty())
-                    if (Player* player = players.begin()->GetSource())
-                        teamIdInInstance = player->GetTeamId();
-            }
-
             switch (creature->GetEntry())
             {
                 case NPC_BRONJAHM:
@@ -88,7 +91,7 @@ public:
                     NPC_DevourerGUID = creature->GetGUID();
                     break;
                 case NPC_SYLVANAS_PART1:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_JAINA_PART1);
                     NPC_LeaderFirstGUID = creature->GetGUID();
 
@@ -96,12 +99,12 @@ public:
                         creature->SetVisible(false);
                     break;
                 case NPC_SYLVANAS_PART2:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_JAINA_PART2);
                     NPC_LeaderSecondGUID = creature->GetGUID();
                     break;
                 case NPC_LORALEN:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_ELANDRA);
                     if (!NPC_GuardFirstGUID)
                     {
@@ -111,7 +114,7 @@ public:
                     }
                     break;
                 case NPC_KALIRA:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_KORELN);
                     if (!NPC_GuardSecondGUID)
                     {
@@ -133,14 +136,17 @@ public:
                         leader->GetMotionMaster()->MovePoint(1, boss->GetPositionX() + 10.0f * cos(angle), boss->GetPositionY() + 10.0f * std::sin(angle), boss->GetPositionZ());
                     }
 
-            for (int8 i = 0; outroPositions[i].entry[teamIdInInstance] != 0; ++i)
-                if (Creature* summon = instance->SummonCreature(outroPositions[i].entry[teamIdInInstance], outroPositions[i].startPosition))
-                    summon->GetMotionMaster()->MovePath(outroPositions[i].pathId, false);
+            if (GetTeamIdInInstance() < TEAM_NEUTRAL) // Shouldn't happen, but just in case.
+            {
+                for (int8 i = 0; outroPositions[i].entry[GetTeamIdInInstance()] != 0; ++i)
+                    if (Creature* summon = instance->SummonCreature(outroPositions[i].entry[GetTeamIdInInstance()], outroPositions[i].startPosition))
+                        summon->GetMotionMaster()->MovePath(outroPositions[i].pathId, false);
+            }
         }
 
         void SetData(uint32 type, uint32 data) override
         {
-            switch(type)
+            switch (type)
             {
                 case DATA_BRONJAHM:
                     m_auiEncounter[type] = data;
@@ -169,68 +175,37 @@ public:
 
         bool CheckAchievementCriteriaMeet(uint32 criteria_id, Player const*  /*source*/, Unit const*  /*target*/, uint32  /*miscvalue1*/) override
         {
-            switch(criteria_id)
+            switch (criteria_id)
             {
                 case 12752: // Soul Power
-                    if( Creature* c = instance->GetCreature(NPC_BronjahmGUID) )
+                    if (Creature* c = instance->GetCreature(NPC_BronjahmGUID))
                     {
                         std::list<Creature*> L;
                         uint8 count = 0;
                         c->GetCreaturesWithEntryInRange(L, 200.0f, 36535); // find all Corrupted Soul Fragment (36535)
                         for( std::list<Creature*>::const_iterator itr = L.begin(); itr != L.end(); ++itr )
-                            if( (*itr)->IsAlive() )
+                            if ((*itr)->IsAlive())
                                 ++count;
                         return (count >= 4);
                     }
                     break;
                 case 12976:
-                    if( Creature* c = instance->GetCreature(NPC_DevourerGUID) )
+                    if (Creature* c = instance->GetCreature(NPC_DevourerGUID))
                         return (bool)c->AI()->GetData(1);
                     break;
             }
             return false;
         }
 
-        std::string GetSaveData() override
+        void ReadSaveDataMore(std::istringstream& data) override
         {
-            OUT_SAVE_INST_DATA;
-
-            std::ostringstream saveStream;
-            saveStream << "F S " << m_auiEncounter[0] << ' ' << m_auiEncounter[1];
-            str_data = saveStream.str();
-
-            OUT_SAVE_INST_DATA_COMPLETE;
-            return str_data;
+            data >> m_auiEncounter[0];
+            data >> m_auiEncounter[1];
         }
 
-        void Load(const char* in) override
+        void WriteSaveDataMore(std::ostringstream& data) override
         {
-            if (!in)
-            {
-                OUT_LOAD_INST_DATA_FAIL;
-                return;
-            }
-
-            OUT_LOAD_INST_DATA(in);
-
-            char dataHead1, dataHead2;
-            uint32 data0, data1;
-
-            std::istringstream loadStream(in);
-            loadStream >> dataHead1 >> dataHead2 >> data0 >> data1;
-
-            if (dataHead1 == 'F' && dataHead2 == 'S')
-            {
-                m_auiEncounter[0] = data0;
-                m_auiEncounter[1] = data1;
-
-                for (uint8 i = 0; i < MAX_ENCOUNTER; ++i)
-                    if (m_auiEncounter[i] == IN_PROGRESS)
-                        m_auiEncounter[i] = NOT_STARTED;
-            }
-            else OUT_LOAD_INST_DATA_FAIL;
-
-            OUT_LOAD_INST_DATA_COMPLETE;
+            data << m_auiEncounter[0] << ' ' << m_auiEncounter[1];
         }
     };
 };

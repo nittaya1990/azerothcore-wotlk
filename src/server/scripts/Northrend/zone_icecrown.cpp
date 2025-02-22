@@ -15,28 +15,18 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* ScriptData
-SDName: Icecrown
-SD%Complete: 100
-SDComment: Quest support: 12807
-SDCategory: Icecrown
-EndScriptData */
-
-/* ContentData
-npc_arete
-EndContentData */
-
 #include "CombatAI.h"
+#include "CreatureScript.h"
 #include "MoveSplineInit.h"
 #include "PassiveAI.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "ScriptedEscortAI.h"
 #include "ScriptedGossip.h"
 #include "SmartScriptMgr.h"
 #include "SpellAuras.h"
 #include "SpellScript.h"
+#include "SpellScriptLoader.h"
 #include "Vehicle.h"
 
 // Ours
@@ -61,7 +51,7 @@ public:
 
         void MoveInLineOfSight(Unit* who) override
         {
-            if (who->GetTypeId() != TYPEID_PLAYER || me->GetDistance(who) > 8.0f || who->ToPlayer()->GetQuestStatus(QUEST_BLACK_KNIGHT_CURSE) != QUEST_STATUS_INCOMPLETE)
+            if (!who->IsPlayer() || me->GetDistance(who) > 8.0f || who->ToPlayer()->GetQuestStatus(QUEST_BLACK_KNIGHT_CURSE) != QUEST_STATUS_INCOMPLETE)
                 return;
 
             if (me->FindNearestCreature(NPC_CULT_ASSASSIN, 30.0f))
@@ -135,7 +125,7 @@ public:
             summons.DespawnAll();
             playerGUID.Clear();
             currentQuest = 0;
-            me->SetFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER);
+            me->SetNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
         }
 
         void JustSummoned(Creature* creature) override
@@ -148,7 +138,7 @@ public:
 
         void PrepareSummons()
         {
-            switch(currentQuest)
+            switch (currentQuest)
             {
                 case QUEST_BFV_FALLEN_HEROES:
                     me->SummonCreature(NPC_ELDRETH, 8245.5f, 3522.7f, 627.67f, 3.11f, TEMPSUMMON_MANUAL_DESPAWN, 30000);
@@ -178,8 +168,8 @@ public:
 
         void StartBattle(ObjectGuid guid, uint32 questId)
         {
-            events.ScheduleEvent(EVENT_VALHALAS_FIRST, 6000);
-            events.ScheduleEvent(EVENT_VALHALAS_CHECK_PLAYER, 30000);
+            events.ScheduleEvent(EVENT_VALHALAS_FIRST, 6s);
+            events.ScheduleEvent(EVENT_VALHALAS_CHECK_PLAYER, 30s);
             currentQuest = questId;
             playerGUID = guid;
         }
@@ -223,7 +213,7 @@ public:
                 playerGUID2 = playerGUID;
                 EnterEvadeMode();
                 if (quest == QUEST_BFV_FINAL)
-                    events.ScheduleEvent(EVENT_VALHALAS_THIRD, 7000);
+                    events.ScheduleEvent(EVENT_VALHALAS_THIRD, 7s);
             }
             else
             {
@@ -249,11 +239,11 @@ public:
                         switch (currentQuest)
                         {
                             case QUEST_BFV_FALLEN_HEROES:
-                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8000);
+                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8s);
                                 me->Yell("$N and comrades in arms have chosen to accept honorable combat within the sacred confines of Valhalas.", LANG_UNIVERSAL, ObjectAccessor::GetPlayer(*me, playerGUID));
                                 break;
                             case QUEST_BFV_DARK_MASTER:
-                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8000);
+                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8s);
                                 me->Yell("$N has accepted the challenge of Khit'rix the Dark Master. May the gods show mercy upon him for Khit'rix surely will not.", LANG_UNIVERSAL, ObjectAccessor::GetPlayer(*me, playerGUID));
                                 break;
                             case QUEST_BFV_SIGRID:
@@ -261,15 +251,15 @@ public:
                                 me->TextEmote("Circling Valhalas, Sigrid Iceborn approaches to seek her revenge!", nullptr, true);
                                 break;
                             case QUEST_BFV_CARNAGE:
-                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8000);
+                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8s);
                                 me->Yell("From the bowels of the Underhalls comes Carnage. Brave and foolish $N has accepted the challenge. $N and his group stand ready to face the monstrosity.", LANG_UNIVERSAL, ObjectAccessor::GetPlayer(*me, playerGUID));
                                 break;
                             case QUEST_BFV_THANE:
-                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8000);
+                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8s);
                                 me->Yell("Thane Banahogg returns to Valhalas for the first time in ages to prove that the vrykul are the only beings worthy to fight within its sacred ring. Will $N prove him wrong?", LANG_UNIVERSAL, ObjectAccessor::GetPlayer(*me, playerGUID));
                                 break;
                             case QUEST_BFV_FINAL:
-                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8000);
+                                events.ScheduleEvent(EVENT_VALHALAS_SECOND, 8s);
                                 me->Yell("From the depths of Icecrown Citadel, one of the Lich King's chosen comes to put an end to the existence of $N and his friends.", LANG_UNIVERSAL, ObjectAccessor::GetPlayer(*me, playerGUID));
                                 break;
                         }
@@ -307,7 +297,7 @@ public:
                 case EVENT_VALHALAS_THIRD:
                     {
                         me->Yell("In defeating him, he and his fighting companions have proven themselves worthy of battle in this most sacred place of vrykul honor.", LANG_UNIVERSAL, ObjectAccessor::GetPlayer(*me, playerGUID));
-                        events.ScheduleEvent(EVENT_VALHALAS_THIRD + 2, 7000);
+                        events.ScheduleEvent(EVENT_VALHALAS_THIRD + 2, 7s);
                         break;
                     }
                 case EVENT_VALHALAS_THIRD+2:
@@ -328,7 +318,7 @@ public:
                         if (fail)
                             EnterEvadeMode();
 
-                        events.RepeatEvent(5000);
+                        events.Repeat(5s);
                         break;
                     }
             }
@@ -340,7 +330,7 @@ public:
         npc_battle_at_valhalasAI* vAI = CAST_AI(npc_battle_at_valhalas::npc_battle_at_valhalasAI, creature->AI());
         vAI->ResetData();
 
-        creature->RemoveFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER);
+        creature->RemoveNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
         if (vAI)
             vAI->StartBattle(player->GetGUID(), quest->GetQuestId());
 
@@ -486,10 +476,10 @@ public:
             _landgrenSoulGUID.Clear();
 
             events.Reset();
-            events.RescheduleEvent(EVENT_START, 1000);
-            me->SetUInt32Value(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_NONE);
+            events.RescheduleEvent(EVENT_START, 1s);
+            me->ReplaceAllNpcFlags(UNIT_NPC_FLAG_NONE);
             me->SetWalk(true);
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+            me->SetImmuneToAll(true);
             me->setActive(true);
             me->SetReactState(REACT_PASSIVE);
         }
@@ -508,7 +498,7 @@ public:
 
                         float o = cr->GetAngle(me);
                         me->GetMotionMaster()->MovePoint(1, cr->GetPositionX() + cos(o) * 3, cr->GetPositionY() + std::sin(o) * 3, cr->GetPositionZ());
-                        events.RescheduleEvent(EVENT_SOUL_COAX, 5000);
+                        events.RescheduleEvent(EVENT_SOUL_COAX, 5s);
                     }
                     else
                         me->DespawnOrUnsummon(1);
@@ -516,7 +506,7 @@ public:
                 case EVENT_SOUL_COAX:
                     Talk(SAY_ARETE_1);
                     me->CastSpell(me, SPELL_SOUL_COAX, false);
-                    events.ScheduleEvent(EVENT_SUMMON_SOUL, 8000);
+                    events.ScheduleEvent(EVENT_SUMMON_SOUL, 8s);
                     break;
                 case EVENT_SUMMON_SOUL:
                     if (Creature* cr = ObjectAccessor::GetCreature(*me, _landgrenGUID))
@@ -526,7 +516,7 @@ public:
                         _landgrenSoulGUID = soul->GetGUID();
                         soul->SetVisible(false);
                     }
-                    events.ScheduleEvent(EVENT_SOUL_FLY, 3000);
+                    events.ScheduleEvent(EVENT_SOUL_FLY, 3s);
                     break;
                 case EVENT_SOUL_FLY:
                     if (Creature* soul = ObjectAccessor::GetCreature(*me, _landgrenSoulGUID))
@@ -539,7 +529,7 @@ public:
                         init.Launch();
                         soul->CastSpell(soul, 64462, true); // Drown
                     }
-                    events.ScheduleEvent(EVENT_SCENE_1, 6000);
+                    events.ScheduleEvent(EVENT_SCENE_1, 6s);
                     break;
                 case EVENT_SCENE_1:
                     if (Creature* soul = ObjectAccessor::GetCreature(*me, _landgrenSoulGUID))
@@ -548,43 +538,43 @@ public:
                         soul->CastSpell(soul, 64462, true); // Drown
                         soul->AI()->Talk(SAY_SOUL_0);
                     }
-                    events.ScheduleEvent(EVENT_SCENE_2, 5000);
+                    events.ScheduleEvent(EVENT_SCENE_2, 5s);
                     break;
                 case EVENT_SCENE_2:
                     Talk(SAY_ARETE_2);
-                    events.ScheduleEvent(EVENT_SCENE_3, 5000);
+                    events.ScheduleEvent(EVENT_SCENE_3, 5s);
                     break;
                 case EVENT_SCENE_3:
                     if (Creature* soul = ObjectAccessor::GetCreature(*me, _landgrenSoulGUID))
                         soul->AI()->Talk(SAY_SOUL_1);
-                    events.ScheduleEvent(EVENT_SCENE_4, 3000);
+                    events.ScheduleEvent(EVENT_SCENE_4, 3s);
                     break;
                 case EVENT_SCENE_4:
                     if (Creature* soul = ObjectAccessor::GetCreature(*me, _landgrenSoulGUID))
                         me->CastSpell(soul, SPELL_SOUL_WRACK, false);
                     Talk(SAY_ARETE_3);
-                    events.ScheduleEvent(EVENT_SCENE_5, 6000);
+                    events.ScheduleEvent(EVENT_SCENE_5, 6s);
                     break;
                 case EVENT_SCENE_5:
                     if (Creature* soul = ObjectAccessor::GetCreature(*me, _landgrenSoulGUID))
                         soul->AI()->Talk(SAY_SOUL_2);
                     me->InterruptNonMeleeSpells(false);
-                    events.ScheduleEvent(EVENT_SCENE_6, 4000);
+                    events.ScheduleEvent(EVENT_SCENE_6, 4s);
                     break;
                 case EVENT_SCENE_6:
                     Talk(SAY_ARETE_4);
-                    events.ScheduleEvent(EVENT_SCENE_7, 4000);
+                    events.ScheduleEvent(EVENT_SCENE_7, 4s);
                     break;
                 case EVENT_SCENE_7:
                     if (Creature* soul = ObjectAccessor::GetCreature(*me, _landgrenSoulGUID))
                         soul->AI()->Talk(SAY_SOUL_3);
-                    events.ScheduleEvent(EVENT_SCENE_8, 8000);
+                    events.ScheduleEvent(EVENT_SCENE_8, 8s);
                     break;
                 case EVENT_SCENE_8:
                     if (Creature* soul = ObjectAccessor::GetCreature(*me, _landgrenSoulGUID))
                         me->CastSpell(soul, SPELL_SOUL_WRACK, false);
                     Talk(SAY_ARETE_5);
-                    events.ScheduleEvent(EVENT_SCENE_9, 6000);
+                    events.ScheduleEvent(EVENT_SCENE_9, 6s);
                     break;
                 case EVENT_SCENE_9:
                     if (Creature* soul = ObjectAccessor::GetCreature(*me, _landgrenSoulGUID))
@@ -592,10 +582,10 @@ public:
                         soul->AI()->Talk(SAY_SOUL_4);
                         soul->DespawnOrUnsummon(2000);
                     }
-                    events.ScheduleEvent(EVENT_SCENE_10, 3000);
+                    events.ScheduleEvent(EVENT_SCENE_10, 3s);
                     break;
                 case EVENT_SCENE_10:
-                    me->SetUInt32Value(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER);
+                    me->ReplaceAllNpcFlags(UNIT_NPC_FLAG_QUESTGIVER);
                     Talk(SAY_ARETE_6);
                     me->DespawnOrUnsummon(60000);
                     break;
@@ -716,7 +706,7 @@ public:
         void SetData(uint32 type, uint32 data) override
         {
             if (type == 1 && data == 1)
-                events.ScheduleEvent(EVENT_SCENE_0 + 30, 10000);
+                events.ScheduleEvent(EVENT_SCENE_0 + 30, 10s);
         }
 
         void DoAction(int32 param) override
@@ -750,7 +740,7 @@ public:
             else if (summon->GetEntry() != NPC_INVOKER_BASALEPH)
             {
                 summon->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_READY2H);
-                summon->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+                summon->SetImmuneToAll(true);
                 summon->GetMotionMaster()->MovePoint(4, 6135.97f, 2753.84f, 573.92f);
             }
         }
@@ -782,11 +772,11 @@ public:
                     }
                 case 17:
                     SetEscortPaused(true);
-                    events.ScheduleEvent(EVENT_START_SCENE, 7000);
+                    events.ScheduleEvent(EVENT_START_SCENE, 7s);
                     break;
                 case 19:
                     SetEscortPaused(true);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 8, 5000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 8, 5s);
                     break;
             }
         }
@@ -835,78 +825,78 @@ public:
                     me->SummonCreature(NPC_CHOSEN_ZEALOT, 6161.26f, 2700.05f, 573.92f, 2.04f, TEMPSUMMON_TIMED_DESPAWN, 5 * MINUTE * IN_MILLISECONDS);
 
                     DoSummonAction(NPC_CHOSEN_ZEALOT, ACTION_SUMMON_MOVE_STRAIGHT, 27);
-                    events.ScheduleEvent(EVENT_SCENE_0, 30000);
+                    events.ScheduleEvent(EVENT_SCENE_0, 30s);
                     break;
                 case EVENT_SCENE_0:
                     DoSummonAction(NPC_CHOSEN_ZEALOT, ACTION_SUMMON_STAND_STATE, UNIT_STAND_STATE_KNEEL);
                     me->SummonGameObject(GO_FROZEN_HEART, 6132.38f, 2760.76f, 574.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 180);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 1, 10000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 1, 10s);
                     break;
                 case EVENT_SCENE_0+1:
                     DoSummonAction(NPC_CHOSEN_ZEALOT, ACTION_SUMMON_STAND_STATE, UNIT_STAND_STATE_STAND);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 2, 2000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 2, 2s);
                     break;
                 case EVENT_SCENE_0+2:
                     DoSummonAction(NPC_CHOSEN_ZEALOT, ACTION_SUMMON_MOVE_STRAIGHT, -27);
                     DoSummonAction(NPC_CHOSEN_ZEALOT, ACTION_SUMMON_DESPAWN, 20000);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 3, 2000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 3, 2s);
                     break;
                 case EVENT_SCENE_0+3:
                     Talk(3);
                     if (Creature* cr = me->SummonCreature(NPC_TIRION_LICH_KING, 6161.26f, 2700.05f, 573.92f, 2.04f, TEMPSUMMON_TIMED_DESPAWN, 5 * MINUTE * IN_MILLISECONDS))
                         cr->GetMotionMaster()->MovePoint(2, 6131.93f, 2756.84f, 573.92f);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 4, 4000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 4, 4s);
                     break;
                 case EVENT_SCENE_0+4:
                     Talk(4);
                     me->SetFacingTo(4.42f);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 5, 25000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 5, 25s);
                     break;
                 case EVENT_SCENE_0+5:
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_ORIENTATION, 11);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 6, 4000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 6, 4s);
                     break;
                 case EVENT_SCENE_0+6:
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_TALK, 0);
                     me->LoadEquipment(2, true);
                     SetEscortPaused(false);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 7, 6000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 7, 6s);
                     break;
                 case EVENT_SCENE_0+7:
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_TALK, 1);
                     break;
                 case EVENT_SCENE_0+8:
                     Talk(5);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 9, 5000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 9, 5s);
                     break;
                 case EVENT_SCENE_0+9:
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_TALK, 2);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 10, 11000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 10, 11s);
                     break;
                 case EVENT_SCENE_0+10:
                     Talk(6);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 11, 6000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 11, 6s);
                     break;
                 case EVENT_SCENE_0+11:
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_TALK, 3);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 12, 7000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 12, 7s);
                     break;
                 case EVENT_SCENE_0+12:
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_TALK, 4);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 13, 5000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 13, 5s);
                     break;
                 case EVENT_SCENE_0+13:
                     Talk(7);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 14, 14000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 14, 14s);
                     break;
                 case EVENT_SCENE_0+14:
                     Talk(8);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 15, 3000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 15, 3s);
                     break;
                 case EVENT_SCENE_0+15:
                     {
                         me->CastSpell(me, SPELL_TIRION_SMASH_HEART, true);
-                        events.ScheduleEvent(EVENT_SCENE_0 + 16, 1200);
+                        events.ScheduleEvent(EVENT_SCENE_0 + 16, 1200ms);
                         uint8 i = 0;
                         for (SummonList::iterator itr = summons.begin(); itr != summons.end(); ++itr, ++i)
                             if (Creature* summon = ObjectAccessor::GetCreature(*me, *itr))
@@ -924,18 +914,18 @@ public:
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_TALK, 5);
                     if (GameObject* go = me->FindNearestGameObject(GO_FROZEN_HEART, 20.0f))
                         go->Delete();
-                    events.ScheduleEvent(EVENT_SCENE_0 + 17, 2000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 17, 2s);
                     break;
                 case EVENT_SCENE_0+17:
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_STAND_STATE, UNIT_STAND_STATE_KNEEL);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 170, 3000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 170, 3s);
                     break;
                 case EVENT_SCENE_0+170:
                     DoSummonAction(NPC_DISGUISED_CRUSADER, ACTION_SUMMON_ORIENTATION, 500);
                     DoSummonAction(NPC_DISGUISED_CRUSADER, ACTION_SUMMON_EMOTE, EMOTE_STATE_READY2H);
                     if (Creature* cr = me->FindNearestCreature(NPC_DISGUISED_CRUSADER, 10.0f))
                         cr->AI()->Talk(0);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 18, 1000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 18, 1s);
                     break;
                 case EVENT_SCENE_0+18:
                     {
@@ -962,19 +952,19 @@ public:
                             }
                         }
 
-                        events.ScheduleEvent(EVENT_SCENE_0 + 19, 3000);
+                        events.ScheduleEvent(EVENT_SCENE_0 + 19, 3s);
                         break;
                     }
                 case EVENT_SCENE_0+19:
                     me->SummonCreatureGroup(1);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 20, 3700);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 20, 3700ms);
                     break;
                 case EVENT_SCENE_0+20:
                     {
                         for (SummonList::const_iterator itr = summons.begin(); itr != summons.end(); ++itr)
                             if (Creature* summon = ObjectAccessor::GetCreature(*me, *itr))
                             {
-                                summon->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+                                summon->SetImmuneToAll(false);
                                 if (summon->GetEntry() >= NPC_TIRION_EBON_KNIGHT && summon->GetEntry() <= NPC_TIRION_MOGRAINE)
                                 {
                                     if (summon->GetEntry() == NPC_TIRION_MOGRAINE)
@@ -1008,23 +998,23 @@ public:
                                     summon->GetMotionMaster()->MovePoint(6, 6138.36f + frand(-2.0f, 2.0f), 2749.25f + frand(-2.0f, 2.0f), 573.92f);
                             }
 
-                    events.ScheduleEvent(EVENT_SCENE_0 + 310, 4000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 310, 4s);
                     break;
                 case EVENT_SCENE_0+310:
                     DoSummonAction(NPC_TIRION_MOGRAINE, ACTION_SUMMON_TALK, 0);
                     DoSummonAction(NPC_TIRION_LICH_KING, ACTION_SUMMON_STAND_STATE, UNIT_STAND_STATE_STAND);
                     me->SummonGameObject(GO_ESCAPE_PORTAL, 6133.83f, 2757.24f, 573.914f, 1.97f, 0.0f, 0.0f, 0.0f, 0.0f, 60);
                     me->CastSpell(me, SPELL_TIRIONS_GAMBIT_CREDIT, true);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 31, 6000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 31, 6s);
                     DoSummonAction(NPC_DISGUISED_CRUSADER, ACTION_SUMMON_EMOTE, EMOTE_ONESHOT_NONE);
                     break;
                 case EVENT_SCENE_0+31:
                     DoSummonAction(NPC_TIRION_THASSARIAN, ACTION_SUMMON_TALK, 1);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 32, 7000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 32, 7s);
                     break;
                 case EVENT_SCENE_0+32:
                     DoSummonAction(NPC_TIRION_MOGRAINE, ACTION_SUMMON_TALK, 1);
-                    events.ScheduleEvent(EVENT_SCENE_0 + 33, 7000);
+                    events.ScheduleEvent(EVENT_SCENE_0 + 33, 7s);
                     break;
                 case EVENT_SCENE_0+33:
                     for (SummonList::const_iterator itr = summons.begin(); itr != summons.end(); ++itr)
@@ -1073,203 +1063,164 @@ enum infraGreenBomberQuests
     SEAT_ENGINEERING            = 2
 };
 
-class spell_switch_infragreen_bomber_station : public SpellScriptLoader
+class spell_switch_infragreen_bomber_station : public SpellScript
 {
-public:
-    spell_switch_infragreen_bomber_station() : SpellScriptLoader("spell_switch_infragreen_bomber_station") { }
+    PrepareSpellScript(spell_switch_infragreen_bomber_station);
 
-    class spell_switch_infragreen_bomber_station_SpellScript : public SpellScript
+    uint8 GetSeatNumber(uint32 spellId)
     {
-        PrepareSpellScript(spell_switch_infragreen_bomber_station_SpellScript)
+        if (spellId == SPELL_ENGINEERING)
+            return 2;
+        else if (spellId == SPELL_ANTI_AIR_TURRET)
+            return 1;
+        else
+            return 0;
+    }
 
-        uint8 GetSeatNumber(uint32 spellId)
-        {
-            if (spellId == SPELL_ENGINEERING)
-                return 2;
-            else if (spellId == SPELL_ANTI_AIR_TURRET)
-                return 1;
-            else
-                return 0;
-        }
-
-        void HandleDummy(SpellEffIndex effIndex)
-        {
-            PreventHitDefaultEffect(effIndex);
-            Vehicle* kit = GetCaster()->GetVehicle();
-            Unit* charmer = GetCaster()->GetCharmer(); // Player controlling station
-            if (!kit || !charmer)
-                return;
-
-            uint8 seatNumber = GetSeatNumber(GetSpellInfo()->Id);
-            SeatMap::iterator itr = kit->GetSeatIteratorForPassenger(GetCaster());
-            if (itr == kit->Seats.end())
-                return;
-
-            // Xinef: Same seat, no change required
-            if (seatNumber == itr->first)
-                return;
-
-            if (Unit* station = kit->GetPassenger(seatNumber))
-                station->HandleSpellClick(charmer, 0);
-        }
-
-        void Register() override
-        {
-            OnEffectHitTarget += SpellEffectFn(spell_switch_infragreen_bomber_station_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void HandleDummy(SpellEffIndex effIndex)
     {
-        return new spell_switch_infragreen_bomber_station_SpellScript();
+        PreventHitDefaultEffect(effIndex);
+        Vehicle* kit = GetCaster()->GetVehicle();
+        Unit* charmer = GetCaster()->GetCharmer(); // Player controlling station
+        if (!kit || !charmer)
+            return;
+
+        uint8 seatNumber = GetSeatNumber(GetSpellInfo()->Id);
+        SeatMap::iterator itr = kit->GetSeatIteratorForPassenger(GetCaster());
+        if (itr == kit->Seats.end())
+            return;
+
+        // Xinef: Same seat, no change required
+        if (seatNumber == itr->first)
+            return;
+
+        if (Unit* station = kit->GetPassenger(seatNumber))
+            station->HandleSpellClick(charmer, 0);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_switch_infragreen_bomber_station::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
     }
 };
 
-class spell_charge_shield_bomber : public SpellScriptLoader
+class spell_charge_shield_bomber : public SpellScript
 {
-public:
-    spell_charge_shield_bomber() : SpellScriptLoader("spell_charge_shield_bomber") { }
+    PrepareSpellScript(spell_charge_shield_bomber);
 
-    class spell_charge_shield_bomber_SpellScript : public SpellScript
+    bool Validate(SpellInfo const* /*spellInfo*/) override
     {
-        PrepareSpellScript(spell_charge_shield_bomber_SpellScript)
-
-        void HandleDummy(SpellEffIndex effIndex)
-        {
-            PreventHitDefaultEffect(effIndex);
-            Unit* ship = GetCaster()->GetVehicleBase();
-            if (!ship)
-                return;
-
-            ship->CastSpell(ship, SPELL_INFRA_GREEN_SHIELD, true);
-            Aura* aura = ship->GetAura(SPELL_INFRA_GREEN_SHIELD);
-            if (!aura)
-                return;
-
-            aura->ModStackAmount(GetEffectValue() - 1);
-        }
-
-        void Register() override
-        {
-            if (m_scriptSpellId == SPELL_CHARGE_SHIELD)
-                OnEffectHitTarget += SpellEffectFn(spell_charge_shield_bomber_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
-    {
-        return new spell_charge_shield_bomber_SpellScript();
+        return ValidateSpellInfo({ SPELL_INFRA_GREEN_SHIELD });
     }
 
-    class spell_charge_shield_bomber_AuraScript : public AuraScript
+    void HandleDummy(SpellEffIndex effIndex)
     {
-        PrepareAuraScript(spell_charge_shield_bomber_AuraScript);
+        PreventHitDefaultEffect(effIndex);
+        Unit* ship = GetCaster()->GetVehicleBase();
+        if (!ship)
+            return;
 
-        void CalculateAmount(AuraEffect const* /*aurEff*/, int32& amount, bool& /*canBeRecalculated*/)
-        {
-            // Set absorbtion amount to unlimited
-            amount = -1;
-        }
+        ship->CastSpell(ship, SPELL_INFRA_GREEN_SHIELD, true);
+        Aura* aura = ship->GetAura(SPELL_INFRA_GREEN_SHIELD);
+        if (!aura)
+            return;
 
-        void Absorb(AuraEffect* /*aurEff*/, DamageInfo& dmgInfo, uint32& absorbAmount)
-        {
-            uint32 absorbPct = GetStackAmount() / 2;
-            absorbAmount = CalculatePct(dmgInfo.GetDamage(), absorbPct);
-            ModStackAmount(-1);
-        }
+        aura->ModStackAmount(GetEffectValue() - 1);
+    }
 
-        void Register() override
-        {
-            if (m_scriptSpellId == SPELL_INFRA_GREEN_SHIELD)
-            {
-                DoEffectCalcAmount += AuraEffectCalcAmountFn(spell_charge_shield_bomber_AuraScript::CalculateAmount, EFFECT_0, SPELL_AURA_SCHOOL_ABSORB);
-                OnEffectAbsorb += AuraEffectAbsorbFn(spell_charge_shield_bomber_AuraScript::Absorb, EFFECT_0);
-            }
-        }
-    };
-
-    AuraScript* GetAuraScript() const override
+    void Register() override
     {
-        return new spell_charge_shield_bomber_AuraScript();
+        if (m_scriptSpellId == SPELL_CHARGE_SHIELD)
+        OnEffectHitTarget += SpellEffectFn(spell_charge_shield_bomber::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
     }
 };
 
-class spell_fight_fire_bomber : public SpellScriptLoader
+class spell_charge_shield_bomber_aura : public AuraScript
 {
-public:
-    spell_fight_fire_bomber() : SpellScriptLoader("spell_fight_fire_bomber") { }
+    PrepareAuraScript(spell_charge_shield_bomber_aura);
 
-    class spell_fight_fire_bomber_SpellScript : public SpellScript
+    void CalculateAmount(AuraEffect const* /*aurEff*/, int32& amount, bool& /*canBeRecalculated*/)
     {
-        PrepareSpellScript(spell_fight_fire_bomber_SpellScript)
+        // Set absorbtion amount to unlimited
+        amount = -1;
+    }
 
-        void HandleDummy(SpellEffIndex effIndex)
+    void Absorb(AuraEffect* /*aurEff*/, DamageInfo& dmgInfo, uint32& absorbAmount)
+    {
+        uint32 absorbPct = GetStackAmount() / 2;
+        absorbAmount = CalculatePct(dmgInfo.GetDamage(), absorbPct);
+        ModStackAmount(-1);
+    }
+
+    void Register() override
+    {
+        if (m_scriptSpellId == SPELL_INFRA_GREEN_SHIELD)
         {
-            PreventHitDefaultEffect(effIndex);
-            Vehicle* kit = GetCaster()->GetVehicle();
-            if (!kit)
-                return;
+            DoEffectCalcAmount += AuraEffectCalcAmountFn(spell_charge_shield_bomber_aura::CalculateAmount, EFFECT_0, SPELL_AURA_SCHOOL_ABSORB);
+            OnEffectAbsorb += AuraEffectAbsorbFn(spell_charge_shield_bomber_aura::Absorb, EFFECT_0);
+        }
+    }
+};
 
-            bool extinguished = false;
-            uint8 fireCount = 0;
-            for (uint8 seat = 3; seat <= 5; ++seat)
-                if (Unit* banner = kit->GetPassenger(seat))
-                    if (banner->HasAura(SPELL_COSMETIC_FIRE))
+class spell_fight_fire_bomber : public SpellScript
+{
+    PrepareSpellScript(spell_fight_fire_bomber);
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_COSMETIC_FIRE, SPELL_EXTINGUISH_FIRE, SPELL_BURNING });
+    }
+
+    void HandleDummy(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+        Vehicle* kit = GetCaster()->GetVehicle();
+        if (!kit)
+            return;
+
+        bool extinguished = false;
+        uint8 fireCount = 0;
+        for (uint8 seat = 3; seat <= 5; ++seat)
+            if (Unit* banner = kit->GetPassenger(seat))
+                if (banner->HasAura(SPELL_COSMETIC_FIRE))
+                {
+                    if (!extinguished)
                     {
-                        if (!extinguished)
+                        GetCaster()->CastSpell(banner, SPELL_EXTINGUISH_FIRE, true);
+                        extinguished = true;
+                        if (urand(0, 2))
                         {
-                            GetCaster()->CastSpell(banner, SPELL_EXTINGUISH_FIRE, true);
-                            extinguished = true;
-                            if (urand(0, 2))
-                            {
-                                banner->RemoveAurasDueToSpell(SPELL_COSMETIC_FIRE);
-                                continue;
-                            }
+                            banner->RemoveAurasDueToSpell(SPELL_COSMETIC_FIRE);
+                            continue;
                         }
-                        fireCount++;
                     }
+                    fireCount++;
+                }
 
-            if (fireCount == 0)
-                GetCaster()->RemoveAurasDueToSpell(SPELL_BURNING);
-        }
+        if (fireCount == 0)
+            GetCaster()->RemoveAurasDueToSpell(SPELL_BURNING);
+    }
 
-        void Register() override
-        {
-            OnEffectHitTarget += SpellEffectFn(spell_fight_fire_bomber_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void Register() override
     {
-        return new spell_fight_fire_bomber_SpellScript();
+        OnEffectHitTarget += SpellEffectFn(spell_fight_fire_bomber::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
     }
 };
 
-class spell_anti_air_rocket_bomber : public SpellScriptLoader
+class spell_anti_air_rocket_bomber : public SpellScript
 {
-public:
-    spell_anti_air_rocket_bomber() : SpellScriptLoader("spell_anti_air_rocket_bomber") { }
+    PrepareSpellScript(spell_anti_air_rocket_bomber);
 
-    class spell_anti_air_rocket_bomber_SpellScript : public SpellScript
+    void HandleDummy(SpellEffIndex effIndex)
     {
-        PrepareSpellScript(spell_anti_air_rocket_bomber_SpellScript)
+        PreventHitDefaultEffect(effIndex);
+        const WorldLocation* loc = GetExplTargetDest();
+        GetCaster()->CastSpell(loc->GetPositionX(), loc->GetPositionY(), loc->GetPositionZ(), GetSpellInfo()->Effects[effIndex].CalcValue(), true);
+    }
 
-        void HandleDummy(SpellEffIndex effIndex)
-        {
-            PreventHitDefaultEffect(effIndex);
-            const WorldLocation* loc = GetExplTargetDest();
-            GetCaster()->CastSpell(loc->GetPositionX(), loc->GetPositionY(), loc->GetPositionZ(), GetSpellInfo()->Effects[effIndex].CalcValue(), true);
-        }
-
-        void Register() override
-        {
-            OnEffectLaunch += SpellEffectFn(spell_anti_air_rocket_bomber_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void Register() override
     {
-        return new spell_anti_air_rocket_bomber_SpellScript();
+        OnEffectLaunch += SpellEffectFn(spell_anti_air_rocket_bomber::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
     }
 };
 
@@ -1292,19 +1243,26 @@ public:
             return nullptr;
         }
 
-        void IsSummonedBy(Unit* summoner) override
+        void IsSummonedBy(WorldObject* summoner) override
         {
             if (!summoner)
                 return;
 
-            summoner->CastSpell(summoner, SPELL_WAITING_FOR_A_BOMBER, true);
-            summoner->CastSpell(summoner, SPELL_FLIGHT_ORDERS, true);
+            if (!summoner->IsPlayer())
+                return;
+
+            Player* player = summoner->ToPlayer();
+            if (!player)
+                return;
+
+            player->CastSpell(player, SPELL_WAITING_FOR_A_BOMBER, true);
+            player->CastSpell(player, SPELL_FLIGHT_ORDERS, true);
             events.ScheduleEvent(EVENT_START_FLIGHT, 0);
             events.ScheduleEvent(EVENT_TAKE_PASSENGER, 3000);
             me->SetCanFly(true);
             me->AddUnitMovementFlag(MOVEMENTFLAG_FLYING);
             me->SetSpeed(MOVE_FLIGHT, 0.1f);
-            me->SetFaction(summoner->GetFaction());
+            me->SetFaction(player->GetFaction());
         }
 
         void DamageTaken(Unit* who, uint32&, DamageEffectType, SpellSchoolMask) override
@@ -1375,8 +1333,8 @@ public:
                         }
 
                         me->GetMotionMaster()->MoveSplinePath(&pathPoints);
-                        events.ScheduleEvent(EVENT_CHECK_PATH_REGEN_HEALTH_BURN_DAMAGE, 60000);
-                        events.ScheduleEvent(EVENT_SYNCHRONIZE_SHIELDS, 5000);
+                        events.ScheduleEvent(EVENT_CHECK_PATH_REGEN_HEALTH_BURN_DAMAGE, 1min);
+                        events.ScheduleEvent(EVENT_SYNCHRONIZE_SHIELDS, 5s);
                         break;
                     }
                 case EVENT_CHECK_PATH_REGEN_HEALTH_BURN_DAMAGE:
@@ -1401,7 +1359,7 @@ public:
                         else // Heal
                             me->ModifyHealth(2000);
 
-                        events.ScheduleEvent(EVENT_CHECK_PATH_REGEN_HEALTH_BURN_DAMAGE, 4000);
+                        events.ScheduleEvent(EVENT_CHECK_PATH_REGEN_HEALTH_BURN_DAMAGE, 4s);
                         break;
                     }
                 case EVENT_SYNCHRONIZE_SHIELDS:
@@ -1425,7 +1383,7 @@ public:
                         if (!playerPresent)
                             me->DespawnOrUnsummon(1);
                     }
-                    events.ScheduleEvent(EVENT_SYNCHRONIZE_SHIELDS, 1000);
+                    events.ScheduleEvent(EVENT_SYNCHRONIZE_SHIELDS, 1s);
                     break;
                 case EVENT_SPREAD_FIRE:
                     break;
@@ -1442,33 +1400,64 @@ public:
     }
 };
 
-class spell_onslaught_or_call_bone_gryphon : public SpellScriptLoader
+class spell_onslaught_or_call_bone_gryphon : public SpellScript
 {
-public:
-    spell_onslaught_or_call_bone_gryphon() : SpellScriptLoader("spell_onslaught_or_call_bone_gryphon") { }
+    PrepareSpellScript(spell_onslaught_or_call_bone_gryphon);
 
-    class spell_onslaught_or_call_bone_gryphon_SpellScript : public SpellScript
+    void ChangeSummonPos(SpellEffIndex /*effIndex*/)
     {
-        PrepareSpellScript(spell_onslaught_or_call_bone_gryphon_SpellScript);
+        WorldLocation summonPos = *GetExplTargetDest();
+        Position offset = { 0.0f, 0.0f, 3.0f, 0.0f };
+        summonPos.RelocateOffset(offset);
+        SetExplTargetDest(summonPos);
+        GetHitDest()->RelocateOffset(offset);
+    }
 
-        void ChangeSummonPos(SpellEffIndex /*effIndex*/)
-        {
-            WorldLocation summonPos = *GetExplTargetDest();
-            Position offset = { 0.0f, 0.0f, 3.0f, 0.0f };
-            summonPos.RelocateOffset(offset);
-            SetExplTargetDest(summonPos);
-            GetHitDest()->RelocateOffset(offset);
-        }
-
-        void Register() override
-        {
-            OnEffectHit += SpellEffectFn(spell_onslaught_or_call_bone_gryphon_SpellScript::ChangeSummonPos, EFFECT_0, SPELL_EFFECT_SUMMON);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void Register() override
     {
-        return new spell_onslaught_or_call_bone_gryphon_SpellScript();
+        OnEffectHit += SpellEffectFn(spell_onslaught_or_call_bone_gryphon::ChangeSummonPos, EFFECT_0, SPELL_EFFECT_SUMMON);
+    }
+};
+
+enum OnslaughtGryphon
+{
+    SPELL_DELIVER_GRYPHON            = 54420,
+    SPELL_ONSLAUGHT_GRYPHON          = 49641,
+
+    NPC_CAPTURED_ONSLAUGHT_GRYPHON   = 29415,
+
+    SEAT_PLAYER                      = 0
+};
+
+class spell_deliver_gryphon : public SpellScript
+{
+    PrepareSpellScript(spell_deliver_gryphon);
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_DELIVER_GRYPHON, SPELL_ONSLAUGHT_GRYPHON });
+    }
+
+    void HandleScriptEffect(SpellEffIndex /*effIndex*/)
+    {
+        if (Unit* caster = GetCaster())
+        {
+            if (Vehicle* gryphon = caster->GetVehicleKit())
+            {
+                if (Unit* player = gryphon->GetPassenger(SEAT_PLAYER))
+                {
+                    player->ExitVehicle();
+                    player->RemoveAurasDueToSpell(VEHICLE_SPELL_PARACHUTE);
+                    player->RemoveAurasDueToSpell(SPELL_ONSLAUGHT_GRYPHON);
+                    player->SummonCreature(NPC_CAPTURED_ONSLAUGHT_GRYPHON, 7434.7f, 4213.3f, 316.52f, 3.88f, TEMPSUMMON_TIMED_DESPAWN, 1 * MINUTE * IN_MILLISECONDS);
+                }
+            }
+        }
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_deliver_gryphon::HandleScriptEffect, EFFECT_1, SPELL_EFFECT_SCRIPT_EFFECT);
     }
 };
 
@@ -1495,7 +1484,7 @@ public:
     {
         npc_guardian_pavilionAI(Creature* creature) : ScriptedAI(creature)
         {
-            SetCombatMovement(false);
+            me->SetCombatMovement(false);
         }
 
         void MoveInLineOfSight(Unit* who) override
@@ -1504,10 +1493,10 @@ public:
             if (me->GetAreaId() != AREA_SUNREAVER_PAVILION && me->GetAreaId() != AREA_SILVER_COVENANT_PAVILION)
                 return;
 
-            if (!who || who->GetTypeId() != TYPEID_PLAYER || !me->IsHostileTo(who) || !me->isInBackInMap(who, 5.0f))
+            if (!who || !who->IsPlayer() || !me->IsHostileTo(who) || !me->isInBackInMap(who, 5.0f))
                 return;
 
-            if (who->HasAura(SPELL_TRESPASSER_H) || who->HasAura(SPELL_TRESPASSER_A))
+            if (who->HasAnyAuras(SPELL_TRESPASSER_H, SPELL_TRESPASSER_A))
                 return;
 
             if (who->ToPlayer()->GetTeamId() == TEAM_ALLIANCE)
@@ -1559,7 +1548,7 @@ public:
     {
         npc_tournament_training_dummyAI(Creature* creature) : ScriptedAI(creature)
         {
-            SetCombatMovement(false);
+            me->SetCombatMovement(false);
             me->ApplySpellImmune(0, IMMUNITY_EFFECT, SPELL_EFFECT_KNOCK_BACK, true);
         }
 
@@ -1583,12 +1572,12 @@ public:
             }
 
             events.Reset();
-            events.ScheduleEvent(EVENT_DUMMY_RECAST_DEFEND, 5000);
+            events.ScheduleEvent(EVENT_DUMMY_RECAST_DEFEND, 5s);
         }
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
-            if (!_EnterEvadeMode())
+            if (!_EnterEvadeMode(why))
                 return;
 
             Reset();
@@ -1597,7 +1586,7 @@ public:
         void DamageTaken(Unit*, uint32& damage, DamageEffectType, SpellSchoolMask) override
         {
             damage = 0;
-            events.RescheduleEvent(EVENT_DUMMY_RESET, 10000);
+            events.RescheduleEvent(EVENT_DUMMY_RESET, 10s);
         }
 
         void SpellHit(Unit* caster, SpellInfo const* spell) override
@@ -1654,13 +1643,13 @@ public:
                             }
                     }
                     isVulnerable = false;
-                    events.ScheduleEvent(EVENT_DUMMY_RECAST_DEFEND, 5000);
+                    events.ScheduleEvent(EVENT_DUMMY_RECAST_DEFEND, 5s);
                     break;
                 case EVENT_DUMMY_RESET:
                     if (UpdateVictim())
                     {
-                        EnterEvadeMode();
-                        events.ScheduleEvent(EVENT_DUMMY_RESET, 10000);
+                        EnterEvadeMode(EVADE_REASON_OTHER);
+                        events.ScheduleEvent(EVENT_DUMMY_RESET, 10s);
                     }
                     break;
             }
@@ -1779,7 +1768,7 @@ public:
             PhaseCount = 0;
             Summons.DespawnAll();
 
-            SetCombatMovement(false);
+            me->SetCombatMovement(false);
         }
 
         EventMap events;
@@ -1800,10 +1789,10 @@ public:
             me->SetRegeneratingHealth(false);
             DoCast(SPELL_THREAT_PULSE);
             Talk(BANNER_SAY);
-            events.ScheduleEvent(EVENT_SPAWN, 3000);
+            events.ScheduleEvent(EVENT_SPAWN, 3s);
         }
 
-        void EnterCombat(Unit* /*who*/) override { }
+        void JustEngagedWith(Unit* /*who*/) override { }
 
         void MoveInLineOfSight(Unit* /*who*/) override { }
 
@@ -1861,14 +1850,14 @@ public:
                             guidMason[2] = Mason3->GetGUID();
                             Mason3->GetMotionMaster()->MovePoint(0, Mason3Pos[1]);
                         }
-                        events.ScheduleEvent(EVENT_INTRO_1, 15000);
+                        events.ScheduleEvent(EVENT_INTRO_1, 15s);
                     }
                     break;
                 case EVENT_INTRO_1:
                     {
                         if (Creature* Dalfors = ObjectAccessor::GetCreature(*me, guidDalfors))
                             Dalfors->AI()->Talk(DALFORS_SAY_PRE_1);
-                        events.ScheduleEvent(EVENT_INTRO_2, 5000);
+                        events.ScheduleEvent(EVENT_INTRO_2, 5s);
                     }
                     break;
                 case EVENT_INTRO_2:
@@ -1878,7 +1867,7 @@ public:
                             Dalfors->SetFacingTo(6.215f);
                             Dalfors->AI()->Talk(DALFORS_SAY_PRE_2);
                         }
-                        events.ScheduleEvent(EVENT_INTRO_3, 5000);
+                        events.ScheduleEvent(EVENT_INTRO_3, 5s);
                     }
                     break;
                 case EVENT_INTRO_3:
@@ -1918,8 +1907,8 @@ public:
                             Mason3->GetMotionMaster()->MovePoint(0, Mason3Pos[2]);
                             Mason3->SetHomePosition(Mason3Pos[2]);
                         }
-                        events.ScheduleEvent(EVENT_START_FIGHT, 5000);
-                        events.ScheduleEvent(EVENT_MASON_ACTION, 15000);
+                        events.ScheduleEvent(EVENT_START_FIGHT, 5s);
+                        events.ScheduleEvent(EVENT_MASON_ACTION, 15s);
                     }
                     break;
                 case EVENT_MASON_ACTION:
@@ -1947,7 +1936,7 @@ public:
                             LK->AI()->Talk(LK_TALK_1);
                         if (Creature* Dalfors = ObjectAccessor::GetCreature(*me, guidDalfors))
                             Dalfors->AI()->Talk(DALFORS_SAY_START);
-                        events.ScheduleEvent(EVENT_WAVE_SPAWN, 1000);
+                        events.ScheduleEvent(EVENT_WAVE_SPAWN, 1s);
                     }
                     break;
                 case EVENT_WAVE_SPAWN:
@@ -1997,9 +1986,9 @@ public:
                         PhaseCount++;
 
                         if (PhaseCount < 8)
-                            events.ScheduleEvent(EVENT_WAVE_SPAWN, urand(10000, 20000));
+                            events.ScheduleEvent(EVENT_WAVE_SPAWN, 10s, 20s);
                         else
-                            events.ScheduleEvent(EVENT_HALOF, urand(10000, 20000));
+                            events.ScheduleEvent(EVENT_HALOF, 10s, 20s);
                     }
                     break;
                 case EVENT_HALOF:
@@ -2044,7 +2033,7 @@ public:
                         Summons.DespawnEntry(NPC_HALOF_THE_DEATHBRINGER);
                         if (Creature* Dalfors = ObjectAccessor::GetCreature(*me, guidDalfors))
                             Dalfors->AI()->Talk(DALFORS_YELL_FINISHED);
-                        events.ScheduleEvent(EVENT_ENDED, 10000);
+                        events.ScheduleEvent(EVENT_ENDED, 10s);
                     }
         }
     };
@@ -2087,7 +2076,7 @@ public:
 
         EventMap events;
 
-        void IsSummonedBy(Unit* summoner) override
+        void IsSummonedBy(WorldObject* summoner) override
         {
             if (!summoner)
                 return;
@@ -2132,7 +2121,7 @@ public:
                     break;
                 case SPELL_RIDE:
                     DoCastAOE(SPELL_PING_BUNNY);
-                    events.ScheduleEvent(EVENT_FLY_AWAY, 100);
+                    events.ScheduleEvent(EVENT_FLY_AWAY, 100ms);
                     break;
             }
         }
@@ -2153,12 +2142,13 @@ void AddSC_icecrown()
     new npc_lord_arete();
     new npc_boneguard_footman();
     new npc_tirions_gambit_tirion();
-    new spell_switch_infragreen_bomber_station();
-    new spell_charge_shield_bomber();
-    new spell_fight_fire_bomber();
-    new spell_anti_air_rocket_bomber();
+    RegisterSpellScript(spell_switch_infragreen_bomber_station);
+    RegisterSpellAndAuraScriptPair(spell_charge_shield_bomber, spell_charge_shield_bomber_aura);
+    RegisterSpellScript(spell_fight_fire_bomber);
+    RegisterSpellScript(spell_anti_air_rocket_bomber);
     new npc_infra_green_bomber_generic();
-    new spell_onslaught_or_call_bone_gryphon();
+    RegisterSpellScript(spell_onslaught_or_call_bone_gryphon);
+    RegisterSpellScript(spell_deliver_gryphon);
 
     // Theirs
     new npc_guardian_pavilion();

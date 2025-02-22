@@ -29,7 +29,6 @@
 #include "ScriptMgr.h"
 #include "Spell.h"
 #include "Vehicle.h"
-#include "World.h"
 #include "WorldModel.h"
 
 MotionTransport::MotionTransport() : Transport(), _transportInfo(nullptr), _isMoving(true), _pendingStop(false), _triggeredArrivalEvent(false), _triggeredDepartureEvent(false), _passengersLoaded(false), _delayedTeleport(false)
@@ -39,6 +38,8 @@ MotionTransport::MotionTransport() : Transport(), _transportInfo(nullptr), _isMo
 
 MotionTransport::~MotionTransport()
 {
+    HashMapHolder<MotionTransport>::Remove(this);
+
     ASSERT(_passengers.empty());
     UnloadStaticPassengers();
 }
@@ -84,7 +85,7 @@ bool MotionTransport::CreateMoTrans(ObjectGuid::LowType guidlow, uint32 entry, u
     if (GameObjectTemplateAddon const* addon = GetTemplateAddon())
     {
         SetUInt32Value(GAMEOBJECT_FACTION, addon->faction);
-        SetUInt32Value(GAMEOBJECT_FLAGS, addon->flags);
+        ReplaceAllGameObjectFlags((GameObjectFlags)addon->flags);
     }
 
     SetObjectScale(goinfo->size);
@@ -422,7 +423,7 @@ void MotionTransport::LoadStaticPassengers()
             // GameObjects on transport
             guidEnd = cellItr->second.gameobjects.end();
             for (CellGuidSet::const_iterator guidItr = cellItr->second.gameobjects.begin(); guidItr != guidEnd; ++guidItr)
-                CreateGOPassenger(*guidItr, sObjectMgr->GetGOData(*guidItr));
+                CreateGOPassenger(*guidItr, sObjectMgr->GetGameObjectData(*guidItr));
         }
     }
 }
@@ -441,7 +442,7 @@ void MotionTransport::UnloadNonStaticPassengers()
 {
     for (PassengerSet::iterator itr = _passengers.begin(); itr != _passengers.end(); )
     {
-        if ((*itr)->GetTypeId() == TYPEID_PLAYER)
+        if ((*itr)->IsPlayer())
         {
             ++itr;
             continue;
@@ -517,7 +518,7 @@ bool MotionTransport::TeleportTransport(uint32 newMapid, float x, float y, float
         // Teleport players, they need to know it
         for (PassengerSet::iterator itr = _passengers.begin(); itr != _passengers.end(); ++itr)
         {
-            if ((*itr)->GetTypeId() == TYPEID_PLAYER)
+            if ((*itr)->IsPlayer())
             {
                 float destX, destY, destZ, destO;
                 (*itr)->m_movementInfo.transport.pos.GetPosition(destX, destY, destZ, destO);
@@ -581,7 +582,22 @@ void MotionTransport::DelayedTeleportTransport()
                     float destX, destY, destZ, destO;
                     obj->m_movementInfo.transport.pos.GetPosition(destX, destY, destZ, destO);
                     TransportBase::CalculatePassengerPosition(destX, destY, destZ, &destO, x, y, z, o);
-                    if (!obj->ToPlayer()->TeleportTo(newMapId, destX, destY, destZ, destO, TELE_TO_NOT_LEAVE_TRANSPORT))
+
+                    Player* player = obj->ToPlayer();
+                    // Vehicle passengers are dropped in the middle of nowhere, so lets try to eject them, add to the transport and teleport
+                    // this needs to be revisited to properly restore vehicles with passengers after transport teleportation
+                    if (player->IsVehicle())
+                        if (Vehicle* vehicleKit = player->GetVehicleKit())
+                            for (SeatMap::iterator itr = vehicleKit->Seats.begin(); itr != vehicleKit->Seats.end(); ++itr)
+                                if (Player* passenger = ObjectAccessor::GetPlayer(*player, itr->second.Passenger.Guid))
+                                {
+                                    passenger->ExitVehicle();
+                                    AddPassenger(passenger, true);
+                                    if (!passenger->TeleportTo(newMapId, destX, destY, destZ, destO, TELE_TO_NOT_LEAVE_TRANSPORT))
+                                        _passengers.erase(passenger);
+                                }
+
+                    if (!player->TeleportTo(newMapId, destX, destY, destZ, destO, TELE_TO_NOT_LEAVE_TRANSPORT))
                         _passengers.erase(obj);
                 }
                 break;
@@ -727,7 +743,7 @@ bool StaticTransport::Create(ObjectGuid::LowType guidlow, uint32 name_id, Map* m
     if (GameObjectTemplateAddon const* addon = GetTemplateAddon())
     {
         SetUInt32Value(GAMEOBJECT_FACTION, addon->faction);
-        SetUInt32Value(GAMEOBJECT_FLAGS, addon->flags);
+        ReplaceAllGameObjectFlags((GameObjectFlags)addon->flags);
     }
 
     SetEntry(goinfo->entry);
@@ -1003,4 +1019,11 @@ void StaticTransport::RemovePassenger(WorldObject* passenger, bool withAll)
             passenger->m_movementInfo.transport.pos.Relocate(0.0f, 0.0f, 0.0f, 0.0f);
         }
     }
+}
+
+std::string MotionTransport::GetDebugInfo() const
+{
+    std::stringstream sstr;
+    sstr << GameObject::GetDebugInfo();
+    return sstr.str();
 }

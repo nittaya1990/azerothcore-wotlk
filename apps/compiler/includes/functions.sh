@@ -17,6 +17,8 @@ function comp_ccacheEnable() {
     export CCACHE_CPP2=${CCACHE_CPP2:-true} # optimization for clang
     export CCACHE_COMPRESS=${CCACHE_COMPRESS:-1}
     export CCACHE_COMPRESSLEVEL=${CCACHE_COMPRESSLEVEL:-9}
+    export CCACHE_COMPILERCHECK=${CCACHE_COMPILERCHECK:-content}
+    export CCACHE_LOGFILE=${CCACHE_LOGFILE:-"$CCACHE_DIR/cache.debug"}
     #export CCACHE_NODIRECT=true
 
     export CCUSTOMOPTIONS="$CCUSTOMOPTIONS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
@@ -65,56 +67,96 @@ function comp_configure() {
 
   comp_ccacheEnable
 
-  cmake $SRCPATH -DCMAKE_INSTALL_PREFIX=$BINPATH $DCONF -DSERVERS=$CSERVERS \
+  OSOPTIONS=""
+
+
+    echo "Platform: $OSTYPE"
+    case "$OSTYPE" in
+      darwin*)
+        OSOPTIONS=" -DMYSQL_ADD_INCLUDE_PATH=/usr/local/include -DMYSQL_LIBRARY=/usr/local/lib/libmysqlclient.dylib -DREADLINE_INCLUDE_DIR=/usr/local/opt/readline/include -DREADLINE_LIBRARY=/usr/local/opt/readline/lib/libreadline.dylib -DOPENSSL_INCLUDE_DIR=/usr/local/opt/openssl@3/include -DOPENSSL_SSL_LIBRARIES=/usr/local/opt/openssl@3/lib/libssl.dylib -DOPENSSL_CRYPTO_LIBRARIES=/usr/local/opt/openssl@3/lib/libcrypto.dylib "
+        ;;
+      msys*)
+        OSOPTIONS=" -DMYSQL_INCLUDE_DIR=C:\tools\mysql\current\include -DMYSQL_LIBRARY=C:\tools\mysql\current\lib\mysqlclient.lib "
+        ;;
+    esac
+
+  cmake $SRCPATH -DCMAKE_INSTALL_PREFIX=$BINPATH $DCONF \
+  -DAPPS_BUILD=$CAPPS_BUILD \
+  -DTOOLS_BUILD=$CTOOLS_BUILD \
   -DSCRIPTS=$CSCRIPTS \
-  -DUSE_CPP_20=$CUSE_CPP_20 \
+  -DMODULES=$CMODULES \
   -DBUILD_TESTING=$CBUILD_TESTING \
-  -DTOOLS=$CTOOLS \
   -DUSE_SCRIPTPCH=$CSCRIPTPCH \
   -DUSE_COREPCH=$CCOREPCH \
-  -DWITH_COREDEBUG=$CDEBUG  \
   -DCMAKE_BUILD_TYPE=$CTYPE \
   -DWITH_WARNINGS=$CWARNINGS \
   -DCMAKE_C_COMPILER=$CCOMPILERC \
   -DCMAKE_CXX_COMPILER=$CCOMPILERCXX \
-  "-DDISABLED_AC_MODULES=$CDISABLED_AC_MODULES" \
-  $CCUSTOMOPTIONS
+  $CBUILD_APPS_LIST $CBUILD_TOOLS_LIST $OSOPTIONS $CCUSTOMOPTIONS
 
   cd $CWD
 
   runHooks "ON_AFTER_CONFIG"
 }
 
-
 function comp_compile() {
   [ $MTHREADS == 0 ] && MTHREADS=$(grep -c ^processor /proc/cpuinfo) && MTHREADS=$(($MTHREADS + 2))
 
   echo "Using $MTHREADS threads"
 
-  CWD=$(pwd)
+  pushd "$BUILDPATH" >> /dev/null || exit 1
 
-  cd $BUILDPATH
+  comp_ccacheEnable
 
   comp_ccacheResetStats
 
-  time make -j $MTHREADS
-  make -j $MTHREADS install
+  time cmake --build . --config $CTYPE  -j $MTHREADS
 
   comp_ccacheShowStats
 
-  cd $CWD
+  echo "Platform: $OSTYPE"
+  case "$OSTYPE" in
+    msys*)
+      cmake --install . --config $CTYPE
 
-  if [[ $DOCKER = 1 ]]; then
-    echo "Generating confs..."
-    cp -n "env/dist/etc/worldserver.conf.dockerdist" "env/dist/etc/worldserver.conf"
-    cp -n "env/dist/etc/authserver.conf.dockerdist" "env/dist/etc/authserver.conf"
-  fi
+      popd >> /dev/null || exit 1
+
+      echo "Done"
+      ;;
+    linux*|darwin*)
+      local confDir=${CONFDIR:-"$AC_BINPATH_FULL/../etc"}
+
+      # create the folders before installing to
+      # set the current user and permissions
+      echo "Creating $AC_BINPATH_FULL..."
+      mkdir -p "$AC_BINPATH_FULL"
+      echo "Creating $confDir..."
+      mkdir -p "$confDir"
+
+      echo "Cmake install..."
+      sudo cmake --install . --config $CTYPE
+
+      popd >> /dev/null || exit 1
+
+      # set all aplications SUID bit
+      echo "Setting permissions on binary files"
+      find "$AC_BINPATH_FULL"  -mindepth 1 -maxdepth 1 -type f -exec sudo chown root:root -- {} +
+      find "$AC_BINPATH_FULL"  -mindepth 1 -maxdepth 1 -type f -exec sudo chmod u+s  -- {} +
+
+      if [[ -n "$DOCKER" ]]; then
+          [[ -f "$confDir/worldserver.conf.dist" ]] && \
+              cp -nv "$confDir/worldserver.conf.dist" "$confDir/worldserver.conf"
+          [[ -f "$confDir/authserver.conf.dist" ]] && \
+              cp -nv "$confDir/authserver.conf.dist" "$confDir/authserver.conf"
+          [[ -f "$confDir/dbimport.conf.dist" ]] && \
+              cp -nv "$confDir/dbimport.conf.dist" "$confDir/dbimport.conf"
+      fi
+
+      echo "Done"
+      ;;
+  esac
 
   runHooks "ON_AFTER_BUILD"
-
-  # set worldserver SUID bit
-  sudo chown root:root "$AC_BINPATH_FULL/worldserver"
-  sudo chmod u+s "$AC_BINPATH_FULL/worldserver"
 }
 
 function comp_build() {
@@ -123,6 +165,6 @@ function comp_build() {
 }
 
 function comp_all() {
-    comp_clean
-    comp_build
+  comp_clean
+  comp_build
 }

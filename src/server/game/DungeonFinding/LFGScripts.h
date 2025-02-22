@@ -19,27 +19,26 @@
  * Interaction between core and LFGScripts
  */
 
-#include "Common.h"
-#include "ScriptMgr.h"
-#include "SharedDefines.h"
+#include "GroupScript.h"
+#include "ObjectGuid.h"
+#include "PlayerScript.h"
 
 class Player;
 class Group;
 
 namespace lfg
 {
-
     class LFGPlayerScript : public PlayerScript
     {
     public:
         LFGPlayerScript();
 
         // Player Hooks
-        void OnLevelChanged(Player* player, uint8 oldLevel) override;
-        void OnLogout(Player* player) override;
-        void OnLogin(Player* player) override;
-        void OnBindToInstance(Player* player, Difficulty difficulty, uint32 mapId, bool permanent) override;
-        void OnMapChanged(Player* player) override;
+        void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override;
+        void OnPlayerLogout(Player* player) override;
+        void OnPlayerLogin(Player* player) override;
+        void OnPlayerBindToInstance(Player* player, Difficulty difficulty, uint32 mapId, bool permanent) override;
+        void OnPlayerMapChanged(Player* player) override;
     };
 
     class LFGGroupScript : public GroupScript
@@ -54,5 +53,7 @@ namespace lfg
         void OnChangeLeader(Group* group, ObjectGuid newLeaderGuid, ObjectGuid oldLeaderGuid) override;
         void OnInviteMember(Group* group, ObjectGuid guid) override;
     };
+
+    void AddSC_LFGScripts();
 
 } // namespace lfg

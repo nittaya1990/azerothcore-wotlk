@@ -18,9 +18,9 @@
 #ifndef GRUULS_LAIR_H_
 #define GRUULS_LAIR_H_
 
-#include "CreatureAI.h"
 #include "CreatureAIImpl.h"
-#include "SpellAuraEffects.h"
+
+#define DataHeader "GL"
 
 #define GruulsLairScriptName "instance_gruuls_lair"
 
@@ -54,5 +54,7 @@ inline AI* GetGruulsLairAI(T* obj)
 {
     return GetInstanceAI<AI>(obj, GruulsLairScriptName);
 }
+
+#define RegisterGruulsLairAI(ai_name) RegisterCreatureAIWithFactory(ai_name, GetGruulsLairAI)
 
 #endif // GRUULS_LAIR_H_

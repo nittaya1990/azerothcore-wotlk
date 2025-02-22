@@ -15,22 +15,22 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "Cell.h"
+#include "CellImpl.h"
+#include "CombatAI.h"
+#include "CreatureScript.h"
+#include "GridNotifiers.h"
+#include "PassiveAI.h"
+#include "ScriptedCreature.h"
+#include "SpellAuraEffects.h"
+#include "SpellScript.h"
+#include "SpellScriptLoader.h"
 /*
  * Ordered alphabetically using scriptname.
  * Scriptnames of files in this file should be prefixed with "npc_pet_dk_".
  */
 
-#include "Cell.h"
-#include "CellImpl.h"
-#include "CombatAI.h"
-#include "GridNotifiers.h"
-#include "PassiveAI.h"
-#include "ScriptMgr.h"
-#include "ScriptedCreature.h"
-#include "SpellAuraEffects.h"
-#include "SpellScript.h"
-
-// TODO: this import is not necessary for compilation and marked as unused by the IDE
+/// @todo: this import is not necessary for compilation and marked as unused by the IDE
 //  however, for some reasons removing it would cause a damn linking issue
 //  there is probably some underlying problem with imports which should properly addressed
 //  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
@@ -43,7 +43,10 @@ enum DeathKnightSpells
     SPELL_DK_DISMISS_GARGOYLE       = 50515,
     SPELL_DK_SANCTUARY              = 54661,
     SPELL_DK_NIGHT_OF_THE_DEAD      = 62137,
-    SPELL_DK_PET_SCALING            = 61017
+    SPELL_DK_PET_SCALING            = 61017,
+    // Risen Ally
+    SPELL_DK_RAISE_ALLY             = 46619,
+    SPELL_GHOUL_FRENZY              = 62218,
 };
 
 class npc_pet_dk_ebon_gargoyle : public CreatureScript
@@ -100,7 +103,7 @@ public:
         void MySelectNextTarget()
         {
             Unit* owner = me->GetOwner();
-            if (owner && owner->GetTypeId() == TYPEID_PLAYER && (!me->GetVictim() || me->GetVictim()->IsImmunedToSpell(sSpellMgr->GetSpellInfo(51963)) || !me->IsValidAttackTarget(me->GetVictim()) || !owner->CanSeeOrDetect(me->GetVictim())))
+            if (owner && owner->IsPlayer() && (!me->GetVictim() || me->GetVictim()->IsImmunedToSpell(sSpellMgr->GetSpellInfo(51963)) || !me->IsValidAttackTarget(me->GetVictim()) || !owner->CanSeeOrDetect(me->GetVictim())))
             {
                 Unit* selection = owner->ToPlayer()->GetSelectedUnit();
                 if (selection && selection != me->GetVictim() && me->IsValidAttackTarget(selection))
@@ -255,6 +258,38 @@ public:
     }
 };
 
+class npc_pet_dk_risen_ally : public CreatureScript
+{
+public:
+    npc_pet_dk_risen_ally() : CreatureScript("npc_pet_dk_risen_ally") { }
+
+    struct npc_pet_dk_risen_allyAI : public PossessedAI
+    {
+        npc_pet_dk_risen_allyAI(Creature* c) : PossessedAI(c) { }
+
+        void OnCharmed(bool apply) override
+        {
+            if (!apply)
+            {
+                if (Unit* owner = me->GetCharmerOrOwner())
+                {
+                    if (Player* player = owner->ToPlayer())
+                    {
+                        player->RemoveAurasDueToSpell(SPELL_DK_RAISE_ALLY); // Remove Raise Ally aura
+                        player->RemoveAurasDueToSpell(SPELL_GHOUL_FRENZY); // Remove Frenzy aura
+                        //player->ClearResurrectRequestData();
+                    }
+                }
+            }
+        }
+    };
+
+    CreatureAI* GetAI(Creature* pCreature) const override
+    {
+        return new npc_pet_dk_risen_allyAI (pCreature);
+    }
+};
+
 class npc_pet_dk_army_of_the_dead : public CreatureScript
 {
 public:
@@ -268,10 +303,6 @@ public:
         {
             CombatAI::InitializeAI();
             ((Minion*)me)->SetFollowAngle(rand_norm() * 2 * M_PI);
-
-            // Heroism / Bloodlust immunity
-            me->ApplySpellImmune(0, IMMUNITY_ID, 32182, true);
-            me->ApplySpellImmune(0, IMMUNITY_ID, 2825, true);
         }
     };
 
@@ -316,13 +347,13 @@ class spell_pet_dk_gargoyle_strike : public SpellScript
         int32 damage = 60;
         if (Unit* caster = GetCaster())
         {
-            if (caster->getLevel() >= 60)
+            if (caster->GetLevel() >= 60)
             {
-                damage += (caster->getLevel() - 60) * 4;
+                damage += (caster->GetLevel() - 60) * 4;
             }
         }
 
-        SetHitDamage(damage);
+        SetEffectValue(damage);
     }
 
     void Register() override
@@ -335,6 +366,7 @@ void AddSC_deathknight_pet_scripts()
 {
     new npc_pet_dk_ebon_gargoyle();
     new npc_pet_dk_ghoul();
+    new npc_pet_dk_risen_ally();
     new npc_pet_dk_army_of_the_dead();
     new npc_pet_dk_dancing_rune_weapon();
     RegisterSpellScript(spell_pet_dk_gargoyle_strike);

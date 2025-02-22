@@ -39,7 +39,7 @@ function inst_configureOS() {
             # TODO: implement different configurations by distro
             source "$AC_PATH_INSTALLER/includes/os_configs/$DISTRO.sh"
         ;;
-        bsd*)     echo "BSD is not supported yet" ;;
+        *bsd*)     echo "BSD is not supported yet" ;;
         msys*)    source "$AC_PATH_INSTALLER/includes/os_configs/windows.sh" ;;
         *)        echo "This platform is not supported" ;;
     esac
@@ -223,7 +223,7 @@ function inst_simple_restarter {
 
 function inst_download_client_data {
     # change the following version when needed
-    local VERSION=v13
+    local VERSION=v16
 
     echo "#######################"
     echo "Client data downloader"

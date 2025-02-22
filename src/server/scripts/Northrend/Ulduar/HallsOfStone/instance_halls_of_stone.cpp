@@ -15,7 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
+#include "InstanceMapScript.h"
 #include "ScriptedCreature.h"
 #include "halls_of_stone.h"
 
@@ -56,6 +57,7 @@ public:
 
         void Initialize() override
         {
+            SetHeaders(DataHeader);
             memset(&Encounter, 0, sizeof(Encounter));
 
             brannAchievement = false;
@@ -78,7 +80,7 @@ public:
 
         void OnGameObjectCreate(GameObject* go) override
         {
-            switch(go->GetEntry())
+            switch (go->GetEntry())
             {
                 case GO_KADDRAK:
                     goKaddrakGUID = go->GetGUID();
@@ -122,7 +124,7 @@ public:
 
         void OnCreatureCreate(Creature* creature) override
         {
-            switch(creature->GetEntry())
+            switch (creature->GetEntry())
             {
                 case NPC_SJONNIR:
                     SjonnirGUID = creature->GetGUID();
@@ -155,6 +157,8 @@ public:
                     return goMarnakGUID;
                 case GO_ABEDNEUM:
                     return goAbedneumGUID;
+                case GO_SKY_FLOOR:
+                    return goSkyRoomFloorGUID;
 
                 case NPC_SJONNIR:
                     return SjonnirGUID;
@@ -208,23 +212,91 @@ public:
                 if (GameObject* tribunalDoor = instance->GetGameObject(goTribunalDoorGUID))
                     tribunalDoor->SetGoState(GO_STATE_ACTIVE);
 
+            if (type == BOSS_TRIBUNAL_OF_AGES && data == SPECIAL)
+            {
+                if (GameObject* pSkyRoomFloor = instance->GetGameObject(goSkyRoomFloorGUID))
+                    pSkyRoomFloor->SetGoState(GO_STATE_READY);
+            }
+
             if (type == BOSS_TRIBUNAL_OF_AGES && data == DONE)
             {
-                if (GameObject* pA = instance->GetGameObject(goAbedneumGUID))
-                    pA->SetGoState(GO_STATE_ACTIVE);
-                if (GameObject* pF = instance->GetGameObject(goSkyRoomFloorGUID))
-                    pF->SetGoState(GO_STATE_ACTIVE);
+                GameObject* pAbedneum = instance->GetGameObject(goAbedneumGUID);
+                GameObject* pKaddrak = instance->GetGameObject(goKaddrakGUID);
+                GameObject* pMarnak = instance->GetGameObject(goMarnakGUID);
+
+                GameObject* pSkyRoomFloor = instance->GetGameObject(goSkyRoomFloorGUID);
+                bool skyRoomDown = false;
+
+                if (pAbedneum && pKaddrak && pMarnak && pSkyRoomFloor)
+                {
+                    if (pAbedneum->GetGoState() != GO_STATE_ACTIVE)
+                    {
+                        if (pKaddrak->GetGoState() != GO_STATE_ACTIVE && pMarnak->GetGoState() != GO_STATE_ACTIVE)
+                        {
+                            //Abedneum first talk
+                            pAbedneum->SetGoState(GO_STATE_ACTIVE);
+                        }
+                        else if (pMarnak->GetGoState() == GO_STATE_ACTIVE)
+                        {
+                            //Abedneum second talk
+                            pAbedneum->SetGoState(GO_STATE_ACTIVE);
+                            pMarnak->SetGoState(GO_STATE_READY);
+                            pSkyRoomFloor->SetGoState(GO_STATE_READY);
+                            skyRoomDown = true;
+                        }
+                        else
+                        {
+                            //Marnak talk
+                            if (pKaddrak->GetGoState() == GO_STATE_ACTIVE)
+                            {
+                                pMarnak->SetGoState(GO_STATE_ACTIVE);
+                                pKaddrak->SetGoState(GO_STATE_READY);
+                                pSkyRoomFloor->SetGoState(GO_STATE_READY);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        //Kaddrak talk
+                        if (pKaddrak->GetGoState() != GO_STATE_ACTIVE)
+                        {
+                            pAbedneum->SetGoState(GO_STATE_READY);
+                            pKaddrak->SetGoState(GO_STATE_ACTIVE);
+                            pSkyRoomFloor->SetGoState(GO_STATE_READY);
+                        }
+                    }
+
+                    if (!skyRoomDown)
+                        pSkyRoomFloor->SetGoState(GO_STATE_ACTIVE);
+                }
 
                 // Make sjonnir attackable
-                if (Creature* cr = instance->GetCreature(SjonnirGUID))
-                    cr->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+                if (Creature* cSjonnir = instance->GetCreature(SjonnirGUID))
+                    cSjonnir->RemoveUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
             }
+
             if (type == BOSS_TRIBUNAL_OF_AGES && data == NOT_STARTED)
             {
-                if (GameObject* pA = instance->GetGameObject(goAbedneumGUID))
-                    pA->SetGoState(GO_STATE_READY);
-                if (GameObject* pF = instance->GetGameObject(goSkyRoomFloorGUID))
-                    pF->SetGoState(GO_STATE_READY);
+                if (GameObject* pAbedneum = instance->GetGameObject(goAbedneumGUID))
+                    pAbedneum->SetGoState(GO_STATE_READY);
+                if (GameObject* pKaddrak = instance->GetGameObject(goKaddrakGUID))
+                    pKaddrak->SetGoState(GO_STATE_READY);
+                if (GameObject* pMarnak = instance->GetGameObject(goMarnakGUID))
+                    pMarnak->SetGoState(GO_STATE_READY);
+                if (GameObject* pSkyRoomFloor = instance->GetGameObject(goSkyRoomFloorGUID))
+                    pSkyRoomFloor->SetGoState(GO_STATE_READY);
+            }
+
+            if (type == BOSS_TRIBUNAL_OF_AGES && data == FAIL)
+            {
+                if (GameObject* pAbedneum = instance->GetGameObject(goAbedneumGUID))
+                    pAbedneum->SetGoState(GO_STATE_ACTIVE);
+                if (GameObject* pKaddrak = instance->GetGameObject(goKaddrakGUID))
+                    pKaddrak->SetGoState(GO_STATE_ACTIVE);
+                if (GameObject* pMarnak = instance->GetGameObject(goMarnakGUID))
+                    pMarnak->SetGoState(GO_STATE_ACTIVE);
+                if (GameObject* pSkyRoomFloor = instance->GetGameObject(goSkyRoomFloorGUID))
+                    pSkyRoomFloor->SetGoState(GO_STATE_READY);
             }
 
             if (type == DATA_BRANN_ACHIEVEMENT)
@@ -242,42 +314,22 @@ public:
                 SaveToDB();
         }
 
-        std::string GetSaveData() override
+        void ReadSaveDataMore(std::istringstream& data) override
         {
-            OUT_SAVE_INST_DATA;
-
-            std::ostringstream saveStream;
-            saveStream << "H O S " << Encounter[0] << ' ' << Encounter[1] << ' ' << Encounter[2] << ' ' << Encounter[3] << ' ' << Encounter[4];
-
-            OUT_SAVE_INST_DATA_COMPLETE;
-            return saveStream.str();
+            data >> Encounter[0];
+            data >> Encounter[1];
+            data >> Encounter[2];
+            data >> Encounter[3];
+            data >> Encounter[4];
         }
 
-        void Load(const char* strIn) override
+        void WriteSaveDataMore(std::ostringstream& data) override
         {
-            if (!strIn)
-            {
-                OUT_LOAD_INST_DATA_FAIL;
-                return;
-            }
-
-            OUT_LOAD_INST_DATA(strIn);
-
-            char dataHead1, dataHead2, dataHead3;
-
-            std::istringstream loadStream(strIn);
-            loadStream >> dataHead1 >> dataHead2 >> dataHead3;
-
-            if (dataHead1 == 'H' && dataHead2 == 'O' && dataHead3 == 'S')
-            {
-                for (uint8 i = 0; i < MAX_ENCOUNTER; ++i)
-                {
-                    loadStream >> Encounter[i];
-                    if( Encounter[i] == IN_PROGRESS )
-                        Encounter[i] = NOT_STARTED;
-                }
-            }
-            OUT_LOAD_INST_DATA_COMPLETE;
+            data << Encounter[0] << ' '
+                << Encounter[1] << ' '
+                << Encounter[2] << ' '
+                << Encounter[3] << ' '
+                << Encounter[4] << ' ';
         }
     };
 };

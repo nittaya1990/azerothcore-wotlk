@@ -52,7 +52,7 @@ protected:
     void AddPlayer(Player* player) override;
     void RemovePlayer(Player* /*player*/) override;
 
-    void FillInitialWorldStates(WorldPacket& data) override;
+    void FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet) override;
     void UpdateArenaWorldState();
 
     void HandleKillPlayer(Player* player, Player* killer) override;
@@ -63,4 +63,4 @@ private:
     void EndBattleground(TeamId winnerTeamId) override;
 };
 
-#endif // WARHEAD_ARENA_H
+#endif // ACORE_ARENA_H

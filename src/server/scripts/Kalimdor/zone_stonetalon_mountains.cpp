@@ -27,8 +27,8 @@ npc_braug_dimspirit
 npc_kaya_flathoof
 EndContentData */
 
+#include "CreatureScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "ScriptedEscortAI.h"
 #include "ScriptedGossip.h"
@@ -153,7 +153,7 @@ public:
 
             creature->AI()->Talk(SAY_START);
             creature->SetFaction(FACTION_ESCORTEE_N_NEUTRAL_PASSIVE);
-            creature->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);
+            creature->SetImmuneToPC(false);
         }
         return true;
     }

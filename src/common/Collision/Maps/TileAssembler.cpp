@@ -20,6 +20,7 @@
 #include "MapDefines.h"
 #include "MapTree.h"
 #include "VMapDefinitions.h"
+#include <boost/filesystem.hpp>
 #include <iomanip>
 #include <set>
 #include <sstream>
@@ -54,7 +55,7 @@ namespace VMAP
     TileAssembler::TileAssembler(const std::string& pSrcDirName, const std::string& pDestDirName)
         : iDestDir(pDestDirName), iSrcDir(pSrcDirName)
     {
-        //mkdir(iDestDir);
+        boost::filesystem::create_directory(iDestDir);
         //init();
     }
 
@@ -326,7 +327,7 @@ namespace VMAP
         float pos_x;
         float pos_y;
         float pos_z;
-        short type;
+        short material;
     };
 #pragma pack(pop)
     //=================================================================
@@ -381,6 +382,7 @@ namespace VMAP
         char ident[8];
         if (fread(ident, 1, 8, model_list) != 8 || memcmp(ident, VMAP::RAW_VMAP_MAGIC, 8) != 0)
         {
+            fclose(model_list);
             return;
         }
 
@@ -416,7 +418,7 @@ namespace VMAP
             std::string model_name(buff, name_length);
 
             WorldModel_Raw raw_model;
-            if ( !raw_model.Read((iSrcDir + "/" + model_name).c_str()) )
+            if (!raw_model.Read((iSrcDir + "/" + model_name).c_str()))
             {
                 continue;
             }
@@ -525,25 +527,35 @@ namespace VMAP
             READ_OR_RETURN_WITH_DELETE(vectorarray, nvectors * sizeof(float) * 3);
             for (uint32 i = 0; i < nvectors; ++i)
             {
-                vertexArray.push_back( Vector3(vectorarray + 3 * i) );
+                vertexArray.push_back( Vector3(vectorarray + 3 * i));
             }
 
             delete[] vectorarray;
         }
         // ----- liquid
-        liquid = 0;
-        if (liquidflags & 1)
+        liquid = nullptr;
+        if (liquidflags & 3)
         {
-            WMOLiquidHeader hlq;
             READ_OR_RETURN(&blockId, 4);
             CMP_OR_RETURN(blockId, "LIQU");
             READ_OR_RETURN(&blocksize, sizeof(int));
-            READ_OR_RETURN(&hlq, sizeof(WMOLiquidHeader));
-            liquid = new WmoLiquid(hlq.xtiles, hlq.ytiles, Vector3(hlq.pos_x, hlq.pos_y, hlq.pos_z), hlq.type);
-            uint32 size = hlq.xverts * hlq.yverts;
-            READ_OR_RETURN(liquid->GetHeightStorage(), size * sizeof(float));
-            size = hlq.xtiles * hlq.ytiles;
-            READ_OR_RETURN(liquid->GetFlagsStorage(), size);
+            uint32 liquidType;
+            READ_OR_RETURN(&liquidType, sizeof(uint32));
+            if (liquidflags & 1)
+            {
+                WMOLiquidHeader hlq;
+                READ_OR_RETURN(&hlq, sizeof(WMOLiquidHeader));
+                liquid = new WmoLiquid(hlq.xtiles, hlq.ytiles, Vector3(hlq.pos_x, hlq.pos_y, hlq.pos_z), liquidType);
+                uint32 size = hlq.xverts * hlq.yverts;
+                READ_OR_RETURN(liquid->GetHeightStorage(), size * sizeof(float));
+                size = hlq.xtiles * hlq.ytiles;
+                READ_OR_RETURN(liquid->GetFlagsStorage(), size);
+            }
+            else
+            {
+                liquid = new WmoLiquid(0, 0, Vector3::zero(), liquidType);
+                liquid->GetHeightStorage()[0] = bounds.high().z;
+            }
         }
 
         return true;

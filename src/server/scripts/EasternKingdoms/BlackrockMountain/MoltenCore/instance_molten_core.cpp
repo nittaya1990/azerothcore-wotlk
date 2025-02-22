@@ -15,9 +15,9 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "InstanceMapScript.h"
 #include "InstanceScript.h"
 #include "ObjectMgr.h"
-#include "ScriptMgr.h"
 #include "TemporarySummon.h"
 #include "molten_core.h"
 
@@ -62,6 +62,7 @@ public:
     {
         instance_molten_core_InstanceMapScript(Map* map) : InstanceScript(map)
         {
+            SetHeaders(DataHeader);
             SetBossNumber(MAX_ENCOUNTER);
             LoadMinionData(minionData);
         }
@@ -110,7 +111,7 @@ public:
                 case NPC_FLAMEWALKER_HEALER:
                 case NPC_FLAMEWALKER_ELITE:
                 {
-                    AddMinion(creature, true);
+                    AddMinion(creature);
                     break;
                 }
             }
@@ -122,7 +123,7 @@ public:
             {
                 case NPC_FIRESWORN:
                 {
-                    AddMinion(creature, false);
+                    RemoveMinion(creature);
                     break;
                 }
                 case NPC_FLAMEWALKER:
@@ -131,7 +132,7 @@ public:
                 case NPC_FLAMEWALKER_HEALER:
                 case NPC_FLAMEWALKER_ELITE:
                 {
-                    AddMinion(creature, false);
+                    RemoveMinion(creature);
                     break;
                 }
             }
@@ -163,7 +164,7 @@ public:
 
                         if (GetBossState(linkedBossObjData[i].bossId) == DONE)
                         {
-                            go->DespawnOrUnsummon();
+                            go->DespawnOrUnsummon(0ms, Seconds(WEEK));
                         }
                         else
                         {
@@ -190,7 +191,7 @@ public:
 
                         if (GetBossState(linkedBossObjData[i].bossId) == DONE)
                         {
-                            go->SetGoState(GO_STATE_ACTIVE);
+                            go->UseDoorOrButton(WEEK * IN_MILLISECONDS);
                         }
                         else
                         {
@@ -250,7 +251,11 @@ public:
 
             if (bossId == DATA_MAJORDOMO_EXECUTUS && state == DONE)
             {
-                DoRespawnGameObject(_cacheOfTheFirelordGUID, 7 * DAY);
+                if (GameObject* cache = instance->GetGameObject(_cacheOfTheFirelordGUID))
+                {
+                    cache->SetRespawnTime(7 * DAY);
+                    cache->SetLootRecipient(instance);
+                }
             }
             else if (bossId == DATA_GOLEMAGG)
             {
@@ -310,13 +315,13 @@ public:
             {
                 if (GameObject* circle = instance->GetGameObject(_circlesGUIDs[bossId]))
                 {
-                    circle->DespawnOrUnsummon();
+                    circle->DespawnOrUnsummon(0ms, Seconds(WEEK));
                     _circlesGUIDs[bossId].Clear();
                 }
 
                 if (GameObject* rune = instance->GetGameObject(_runesGUIDs[bossId]))
                 {
-                    rune->SetGoState(GO_STATE_ACTIVE);
+                    rune->UseDoorOrButton(WEEK * IN_MILLISECONDS);
                     _runesGUIDs[bossId].Clear();
                 }
 
@@ -398,59 +403,6 @@ public:
             }
 
             return true;
-        }
-
-        std::string GetSaveData() override
-        {
-            OUT_SAVE_INST_DATA;
-
-            std::ostringstream saveStream;
-            saveStream << "M C " << GetBossSaveData();
-
-            OUT_SAVE_INST_DATA_COMPLETE;
-            return saveStream.str();
-        }
-
-        void Load(char const* data) override
-        {
-            if (!data)
-            {
-                OUT_LOAD_INST_DATA_FAIL;
-                return;
-            }
-
-            OUT_LOAD_INST_DATA(data);
-
-            char dataHead1, dataHead2;
-
-            std::istringstream loadStream(data);
-            loadStream >> dataHead1 >> dataHead2;
-
-            if (dataHead1 == 'M' && dataHead2 == 'C')
-            {
-                for (uint8 i = 0; i < MAX_ENCOUNTER; ++i)
-                {
-                    uint32 tmpState;
-                    loadStream >> tmpState;
-                    if (tmpState == IN_PROGRESS || tmpState > TO_BE_DECIDED)
-                    {
-                        tmpState = NOT_STARTED;
-                    }
-
-                    SetBossState(i, static_cast<EncounterState>(tmpState));
-                }
-
-                if (CheckMajordomoExecutus())
-                {
-                    SummonMajordomoExecutus();
-                }
-            }
-            else
-            {
-                OUT_LOAD_INST_DATA_FAIL;
-            }
-
-            OUT_LOAD_INST_DATA_COMPLETE;
         }
 
     private:

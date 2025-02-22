@@ -18,6 +18,10 @@ message(STATUS "CMake version: ${CMAKE_VERSION}")
 # CMake policies (can not be handled elsewhere)
 cmake_policy(SET CMP0005 NEW)
 
+if (POLICY CMP0153)
+  cmake_policy(SET CMP0153 OLD)
+endif()
+
 # Set projectname (must be done AFTER setting configurationtypes)
 project(AzerothCore VERSION 3.0.0 LANGUAGES CXX C)
 
@@ -41,6 +45,8 @@ include(CheckCXXSourceRuns)
 include(CheckIncludeFiles)
 include(ConfigureScripts)
 include(ConfigureModules)
+include(ConfigureApplications)
+include(ConfigureTools)
 
 # some utils for cmake
 include(deps/acore/cmake-utils/utils.cmake)
@@ -69,7 +75,7 @@ FOREACH(subdir ${sub_DIRS})
         continue()
     endif()
 
-    STRING(REGEX REPLACE "^${CMAKE_SOURCE_DIR}/" "" subdir_rel ${subdir})
+    STRING(REPLACE "${CMAKE_SOURCE_DIR}/" "" subdir_rel ${subdir})
     if(EXISTS "${subdir}/CMakeLists.txt")
         add_subdirectory("${subdir_rel}")
     endif()
@@ -96,9 +102,6 @@ include(ConfigInstall)
 
 CU_RUN_HOOK("AFTER_LOAD_CMAKE_MODULES")
 
-# basic packagesearching and setup (further support will be needed, this is a preliminary release!)
-set(ACE_EXPECTED_VERSION 6.0.3)
-
 find_package(PCHSupport)
 find_package(MySQL REQUIRED)
 
@@ -121,14 +124,7 @@ include(src/cmake/showoptions.cmake)
 #
 
 add_subdirectory(deps)
-
-if (SERVERS OR TOOLS)
-    add_subdirectory(src/common)
-endif()
-
-if (TOOLS)
-    add_subdirectory(src/tools)
-endif()
+add_subdirectory(src/common)
 
 #
 # Loading application sources
@@ -139,12 +135,14 @@ CU_RUN_HOOK("BEFORE_SRC_LOAD")
 # add core sources
 add_subdirectory(src)
 
-# add modules sources
-add_subdirectory(modules)
+if (BUILD_APPLICATION_WORLDSERVER)
+  # add modules sources
+  add_subdirectory(modules)
+endif()
 
 CU_RUN_HOOK("AFTER_SRC_LOAD")
 
-if( BUILD_TESTING )
+if (BUILD_TESTING AND BUILD_APPLICATION_WORLDSERVER)
     # we use these flags to get code coverage
     set(UNIT_TEST_CXX_FLAGS "-fprofile-arcs -ftest-coverage -fno-inline")
 

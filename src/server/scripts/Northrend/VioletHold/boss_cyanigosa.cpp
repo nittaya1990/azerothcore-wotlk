@@ -15,7 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "SpellInfo.h"
 #include "violet_hold.h"
@@ -34,18 +34,11 @@ enum Yells
 enum eSpells
 {
     SPELL_ARCANE_VACUUM                             = 58694,
-    SPELL_BLIZZARD_N                                = 58693,
-    SPELL_BLIZZARD_H                                = 59369,
+    SPELL_BLIZZARD                                  = 58693,
     SPELL_MANA_DESTRUCTION                          = 59374,
-    SPELL_TAIL_SWEEP_N                              = 58690,
-    SPELL_TAIL_SWEEP_H                              = 59283,
-    SPELL_UNCONTROLLABLE_ENERGY_N                   = 58688,
-    SPELL_UNCONTROLLABLE_ENERGY_H                   = 59281,
+    SPELL_TAIL_SWEEP                                = 58690,
+    SPELL_UNCONTROLLABLE_ENERGY                     = 58688
 };
-
-#define SPELL_BLIZZARD                              DUNGEON_MODE(SPELL_BLIZZARD_N, SPELL_BLIZZARD_H)
-#define SPELL_TAIL_SWEEP                            DUNGEON_MODE(SPELL_TAIL_SWEEP_N, SPELL_TAIL_SWEEP_H)
-#define SPELL_UNCONTROLLABLE_ENERGY                 DUNGEON_MODE(SPELL_UNCONTROLLABLE_ENERGY_N, SPELL_UNCONTROLLABLE_ENERGY_H)
 
 enum eEvents
 {
@@ -82,24 +75,24 @@ public:
             events.Reset();
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
             DoZoneInCombat();
             Talk(SAY_AGGRO);
             events.Reset();
-            events.RescheduleEvent(EVENT_SPELL_ARCANE_VACUUM, 30000);
-            events.RescheduleEvent(EVENT_SPELL_BLIZZARD, urand(5000, 10000));
-            events.RescheduleEvent(EVENT_SPELL_TAIL_SWEEP, urand(15000, 20000));
-            events.RescheduleEvent(EVENT_SPELL_UNCONTROLLABLE_ENERGY, urand(5000, 8000));
+            events.RescheduleEvent(EVENT_SPELL_ARCANE_VACUUM, 30s);
+            events.RescheduleEvent(EVENT_SPELL_BLIZZARD, 5s, 10s);
+            events.RescheduleEvent(EVENT_SPELL_TAIL_SWEEP, 15s, 20s);
+            events.RescheduleEvent(EVENT_SPELL_UNCONTROLLABLE_ENERGY, 5s, 8s);
             if (IsHeroic())
-                events.RescheduleEvent(EVENT_SPELL_MANA_DESTRUCTION, 20000);
+                events.RescheduleEvent(EVENT_SPELL_MANA_DESTRUCTION, 20s);
         }
 
         void SpellHitTarget(Unit* target, SpellInfo const* spell) override
         {
             if (!target || !spell)
                 return;
-            switch(spell->Id)
+            switch (spell->Id)
             {
                 case SPELL_ARCANE_VACUUM:
                     target->NearTeleportTo(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ() + 10.0f, target->GetOrientation());
@@ -117,17 +110,17 @@ public:
             if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
-            switch(events.ExecuteEvent())
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
                 case EVENT_SPELL_ARCANE_VACUUM:
                     me->CastSpell((Unit*)nullptr, SPELL_ARCANE_VACUUM, false);
-                    DoResetThreat();
+                    DoResetThreatList();
                     me->SetControlled(true, UNIT_STATE_ROOT);
                     me->setAttackTimer(BASE_ATTACK, 3000);
-                    events.RepeatEvent(30000);
-                    events.ScheduleEvent(EVENT_UNROOT, 3000);
+                    events.Repeat(30s);
+                    events.ScheduleEvent(EVENT_UNROOT, 3s);
                     break;
                 case EVENT_UNROOT:
                     me->SetControlled(false, UNIT_STATE_ROOT);
@@ -136,20 +129,20 @@ public:
                 case EVENT_SPELL_BLIZZARD:
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 45.0f, true))
                         me->CastSpell(target, SPELL_BLIZZARD, false);
-                    events.RepeatEvent(15000);
+                    events.Repeat(15s);
                     break;
                 case EVENT_SPELL_MANA_DESTRUCTION:
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 50.0f, true))
                         me->CastSpell(target, SPELL_MANA_DESTRUCTION, false);
-                    events.RepeatEvent(20000);
+                    events.Repeat(20s);
                     break;
                 case EVENT_SPELL_TAIL_SWEEP:
                     me->CastSpell(me->GetVictim(), SPELL_TAIL_SWEEP, false);
-                    events.RepeatEvent(urand(15000, 20000));
+                    events.Repeat(15s, 20s);
                     break;
                 case EVENT_SPELL_UNCONTROLLABLE_ENERGY:
                     me->CastSpell(me->GetVictim(), SPELL_UNCONTROLLABLE_ENERGY, false);
-                    events.RepeatEvent(urand(20000, 25000));
+                    events.Repeat(20s, 25s);
                     break;
             }
 
@@ -179,12 +172,12 @@ public:
 
         void MoveInLineOfSight(Unit* /*who*/) override {}
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
             me->SetControlled(false, UNIT_STATE_ROOT);
-            ScriptedAI::EnterEvadeMode();
+            ScriptedAI::EnterEvadeMode(why);
             events.Reset();
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
             if (pInstance)
                 pInstance->SetData(DATA_FAILED, 1);
         }

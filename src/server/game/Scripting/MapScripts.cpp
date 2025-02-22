@@ -18,17 +18,14 @@
 #include "CellImpl.h"
 #include "GameTime.h"
 #include "GridNotifiers.h"
-#include "GridNotifiersImpl.h"
 #include "Map.h"
 #include "MapMgr.h"
-#include "MapRefMgr.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "Transport.h"
 #include "WaypointMgr.h"
-#include "World.h"
 
 /// Put scripts in the execution queue
 void Map::ScriptsStart(ScriptMapMap const& scripts, uint32 id, Object* source, Object* target)
@@ -41,7 +38,7 @@ void Map::ScriptsStart(ScriptMapMap const& scripts, uint32 id, Object* source, O
     // prepare static data
     ObjectGuid sourceGUID = source ? source->GetGUID() : ObjectGuid::Empty; //some script commands doesn't have source
     ObjectGuid targetGUID = target ? target->GetGUID() : ObjectGuid::Empty;
-    ObjectGuid ownerGUID  = (source && source->GetTypeId() == TYPEID_ITEM) ? ((Item*)source)->GetOwnerGUID() : ObjectGuid::Empty;
+    ObjectGuid ownerGUID  = (source && source->IsItem()) ? ((Item*)source)->GetOwnerGUID() : ObjectGuid::Empty;
 
     ///- Schedule script execution for all scripts in the script map
     ScriptMap const* s2 = &(s->second);
@@ -76,7 +73,7 @@ void Map::ScriptCommandStart(ScriptInfo const& script, uint32 delay, Object* sou
     // prepare static data
     ObjectGuid sourceGUID = source ? source->GetGUID() : ObjectGuid::Empty;
     ObjectGuid targetGUID = target ? target->GetGUID() : ObjectGuid::Empty;
-    ObjectGuid ownerGUID  = (source && source->GetTypeId() == TYPEID_ITEM) ? ((Item*)source)->GetOwnerGUID() : ObjectGuid::Empty;
+    ObjectGuid ownerGUID  = (source && source->IsItem()) ? ((Item*)source)->GetOwnerGUID() : ObjectGuid::Empty;
 
     ScriptAction sa;
     sa.sourceGUID = sourceGUID;
@@ -113,9 +110,9 @@ inline Player* Map::_GetScriptPlayerSourceOrTarget(Object* source, Object* targe
 
         if (!player)
             LOG_ERROR("maps.script", "{} neither source nor target object is player (source: TypeId: {}, Entry: {}, GUID: {}; target: TypeId: {}, Entry: {}, GUID: {}), skipping.",
-                           scriptInfo->GetDebugInfo().c_str(),
-                           source ? source->GetTypeId() : 0, source ? source->GetEntry() : 0, source ? source->GetGUID().ToString().c_str() : "",
-                           target ? target->GetTypeId() : 0, target ? target->GetEntry() : 0, target ? target->GetGUID().ToString().c_str() : "");
+                           scriptInfo->GetDebugInfo(),
+                           source ? source->GetTypeId() : 0, source ? source->GetEntry() : 0, source ? source->GetGUID().ToString() : "",
+                           target ? target->GetTypeId() : 0, target ? target->GetEntry() : 0, target ? target->GetGUID().ToString() : "");
     }
     return player;
 }
@@ -146,9 +143,9 @@ inline Creature* Map::_GetScriptCreatureSourceOrTarget(Object* source, Object* t
 
         if (!creature)
             LOG_ERROR("maps.script", "{} neither source nor target are creatures (source: TypeId: {}, Entry: {}, GUID: {}; target: TypeId: {}, Entry: {}, GUID: {}), skipping.",
-                           scriptInfo->GetDebugInfo().c_str(),
-                           source ? source->GetTypeId() : 0, source ? source->GetEntry() : 0, source ? source->GetGUID().ToString().c_str() : "",
-                           target ? target->GetTypeId() : 0, target ? target->GetEntry() : 0, target ? target->GetGUID().ToString().c_str() : "");
+                           scriptInfo->GetDebugInfo(),
+                           source ? source->GetTypeId() : 0, source ? source->GetEntry() : 0, source ? source->GetGUID().ToString() : "",
+                           target ? target->GetTypeId() : 0, target ? target->GetEntry() : 0, target ? target->GetGUID().ToString() : "");
     }
     return creature;
 }
@@ -158,7 +155,7 @@ inline Unit* Map::_GetScriptUnit(Object* obj, bool isSource, const ScriptInfo* s
     Unit* unit = nullptr;
     if (!obj)
         LOG_ERROR("maps.script", "{} {} object is nullptr.", scriptInfo->GetDebugInfo(), isSource ? "source" : "target");
-    else if (!obj->isType(TYPEMASK_UNIT))
+    else if (!obj->IsUnit())
         LOG_ERROR("maps.script", "{} {} object is not unit (TypeId: {}, Entry: {}, GUID: {}), skipping.",
                        scriptInfo->GetDebugInfo(), isSource ? "source" : "target", obj->GetTypeId(), obj->GetEntry(), obj->GetGUID().ToString());
     else
@@ -237,7 +234,7 @@ inline void Map::_ScriptProcessDoor(Object* source, Object* target, const Script
         LOG_ERROR("maps.script", "{} door guid is not specified.", scriptInfo->GetDebugInfo());
     else if (!source)
         LOG_ERROR("maps.script", "{} source object is nullptr.", scriptInfo->GetDebugInfo());
-    else if (!source->isType(TYPEMASK_UNIT))
+    else if (!source->IsUnit())
         LOG_ERROR("maps.script", "{} source object is not unit ({}), skipping.", scriptInfo->GetDebugInfo(), source->GetGUID().ToString());
     else
     {
@@ -511,7 +508,7 @@ void Map::ScriptsProcess()
                     Player* player = target->ToPlayer();
                     if (player)
                     {
-                        if (source->GetTypeId() != TYPEID_UNIT && source->GetTypeId() != TYPEID_GAMEOBJECT && source->GetTypeId() != TYPEID_PLAYER)
+                        if (!source->IsCreature() && !source->IsGameObject() && !source->IsPlayer())
                         {
                             LOG_ERROR("maps.script", "{} source is not unit, gameobject or player ({}), skipping.", step.script->GetDebugInfo(), source->GetGUID().ToString());
                             break;
@@ -523,7 +520,7 @@ void Map::ScriptsProcess()
                         player = source->ToPlayer();
                         if (player)
                         {
-                            if (target->GetTypeId() != TYPEID_UNIT && target->GetTypeId() != TYPEID_GAMEOBJECT && target->GetTypeId() != TYPEID_PLAYER)
+                            if (!target->IsCreature() && !target->IsGameObject() && !target->IsPlayer())
                             {
                                 LOG_ERROR("maps.script", "{} target is not unit, gameobject or player ({}), skipping.", step.script->GetDebugInfo(), target->GetGUID().ToString());
                                 break;
@@ -533,13 +530,13 @@ void Map::ScriptsProcess()
                         else
                         {
                             LOG_ERROR("maps.script", "{} neither source nor target is player (source: {}; target: {}), skipping.",
-                                           step.script->GetDebugInfo().c_str(), source->GetGUID().ToString().c_str(), target->GetGUID().ToString().c_str());
+                                           step.script->GetDebugInfo(), source->GetGUID().ToString(), target->GetGUID().ToString());
                             break;
                         }
                     }
 
                     // quest id and flags checked at script loading
-                    if ((worldObject->GetTypeId() != TYPEID_UNIT || ((Unit*)worldObject)->IsAlive()) &&
+                    if ((!worldObject->IsCreature() || ((Unit*)worldObject)->IsAlive()) &&
                             (step.script->QuestExplored.Distance == 0 || worldObject->IsWithinDistInMap(player, float(step.script->QuestExplored.Distance))))
                         player->GroupEventHappens(step.script->QuestExplored.QuestID, worldObject);
                     else
@@ -642,7 +639,7 @@ void Map::ScriptsProcess()
                         break;
                     }
 
-                    if (target->GetTypeId() != TYPEID_GAMEOBJECT)
+                    if (!target->IsGameObject())
                     {
                         LOG_ERROR("maps.script", "{} target object is not gameobject ({}), skipping.", step.script->GetDebugInfo(), target->GetGUID().ToString());
                         break;
@@ -664,7 +661,7 @@ void Map::ScriptsProcess()
 
             case SCRIPT_COMMAND_CAST_SPELL:
                 {
-                    // TODO: Allow gameobjects to be targets and casters
+                    /// @todo: Allow gameobjects to be targets and casters
                     if (!source && !target)
                     {
                         LOG_ERROR("maps.script", "{} source and target objects are nullptr.", step.script->GetDebugInfo());
@@ -698,13 +695,13 @@ void Map::ScriptsProcess()
                             break;
                     }
 
-                    if (!uSource || !uSource->isType(TYPEMASK_UNIT))
+                    if (!uSource || !uSource->IsUnit())
                     {
                         LOG_ERROR("maps.script", "{} no source unit found for spell {}", step.script->GetDebugInfo(), step.script->CastSpell.SpellID);
                         break;
                     }
 
-                    if (!uTarget || !uTarget->isType(TYPEMASK_UNIT))
+                    if (!uTarget || !uTarget->IsUnit())
                     {
                         LOG_ERROR("maps.script", "{} no target unit found for spell {}", step.script->GetDebugInfo(), step.script->CastSpell.SpellID);
                         break;
@@ -731,8 +728,10 @@ void Map::ScriptsProcess()
                             break;
                     }
 
-                    // Playsound.Flags bitmask: 0/2=without/with distance dependent
-                    if (step.script->Playsound.Flags & SF_PLAYSOUND_DISTANCE_SOUND)
+                    // Playsound.Flags bitmask: 0/2/4=without/with distance dependent/radius
+                    if (step.script->Playsound.Flags & SF_PLAYSOUND_DISTANCE_RADIUS)
+                        object->PlayRadiusSound(step.script->Playsound.SoundID, step.script->Playsound.Radius);
+                    else if (step.script->Playsound.Flags & SF_PLAYSOUND_DISTANCE_SOUND)
                         object->PlayDistanceSound(step.script->Playsound.SoundID, player);
                     else
                         object->PlayDirectSound(step.script->Playsound.SoundID, player);
@@ -825,7 +824,7 @@ void Map::ScriptsProcess()
                         LOG_ERROR("maps.script", "{} creature is already dead ({})", step.script->GetDebugInfo(), cSource->GetGUID().ToString());
                     else
                     {
-                        cSource->setDeathState(JUST_DIED);
+                        cSource->setDeathState(DeathState::JustDied);
                         if (step.script->Kill.RemoveCorpse == 1)
                             cSource->RemoveCorpse();
                     }

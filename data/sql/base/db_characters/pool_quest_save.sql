@@ -1,70 +1,87 @@
--- --------------------------------------------------------
--- Хост:                         127.0.0.1
--- Версия сервера:               10.6.4-MariaDB - mariadb.org binary distribution
--- Операционная система:         Win64
--- HeidiSQL Версия:              11.3.0.6295
--- --------------------------------------------------------
+-- MySQL dump 10.13  Distrib 8.0.34, for Win64 (x86_64)
+--
+-- Host: 127.0.0.1    Database: acore_characters
+-- ------------------------------------------------------
+-- Server version	8.0.34
 
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
-/*!40101 SET NAMES utf8 */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
 /*!50503 SET NAMES utf8mb4 */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
 /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
--- Дамп структуры для таблица acore_characters.pool_quest_save
+--
+-- Table structure for table `pool_quest_save`
+--
+
 DROP TABLE IF EXISTS `pool_quest_save`;
-CREATE TABLE IF NOT EXISTS `pool_quest_save` (
-  `pool_id` INT unsigned NOT NULL DEFAULT 0,
-  `quest_id` INT unsigned NOT NULL DEFAULT 0,
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `pool_quest_save` (
+  `pool_id` int unsigned NOT NULL DEFAULT '0',
+  `quest_id` int unsigned NOT NULL DEFAULT '0',
   PRIMARY KEY (`pool_id`,`quest_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- Дамп данных таблицы acore_characters.pool_quest_save: ~38 rows (приблизительно)
-DELETE FROM `pool_quest_save`;
+--
+-- Dumping data for table `pool_quest_save`
+--
+
+LOCK TABLES `pool_quest_save` WRITE;
 /*!40000 ALTER TABLE `pool_quest_save` DISABLE KEYS */;
-INSERT INTO `pool_quest_save` (`pool_id`, `quest_id`) VALUES
-	(348, 24629),
-	(349, 14104),
-	(350, 13905),
-	(351, 13916),
-	(352, 11377),
-	(353, 11669),
-	(354, 13423),
-	(356, 11363),
-	(357, 11385),
-	(358, 14080),
-	(359, 14076),
-	(360, 14136),
-	(361, 14092),
-	(362, 12759),
-	(363, 14107),
-	(380, 12736),
-	(381, 12741),
-	(382, 12762),
-	(384, 13192),
-	(385, 13154),
-	(386, 12587),
-	(5662, 13675),
-	(5663, 13762),
-	(5664, 13769),
-	(5665, 13773),
-	(5666, 13778),
-	(5667, 13784),
-	(5668, 13670),
-	(5669, 13603),
-	(5670, 13741),
-	(5671, 13746),
-	(5672, 13759),
-	(5673, 13752),
-	(5674, 13107),
-	(5675, 13114),
-	(5676, 13832),
-	(5677, 12961),
-	(5678, 24581);
+INSERT INTO `pool_quest_save` VALUES
+(348,24636),
+(349,14101),
+(350,13904),
+(351,13917),
+(352,11379),
+(353,11669),
+(354,13422),
+(356,11373),
+(357,11371),
+(358,14074),
+(359,14076),
+(360,14136),
+(361,14141),
+(362,12703),
+(363,14108),
+(380,12737),
+(381,12741),
+(382,12705),
+(384,13191),
+(385,13156),
+(386,12587),
+(5662,13675),
+(5663,13762),
+(5664,13770),
+(5665,13774),
+(5666,13778),
+(5667,13785),
+(5668,13670),
+(5669,13616),
+(5670,13741),
+(5671,13747),
+(5672,13759),
+(5673,13754),
+(5674,13107),
+(5675,13113),
+(5676,13833),
+(5677,12960),
+(5678,24580);
 /*!40000 ALTER TABLE `pool_quest_save` ENABLE KEYS */;
+UNLOCK TABLES;
 
-/*!40101 SET SQL_MODE=IFNULL(@OLD_SQL_MODE, '') */;
-/*!40014 SET FOREIGN_KEY_CHECKS=IFNULL(@OLD_FOREIGN_KEY_CHECKS, 1) */;
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
-/*!40111 SET SQL_NOTES=IFNULL(@OLD_SQL_NOTES, 1) */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Dump completed on 2024-12-17 22:33:12
+

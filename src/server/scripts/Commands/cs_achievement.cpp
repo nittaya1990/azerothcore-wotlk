@@ -22,11 +22,9 @@ Comment: All achievement related commands
 Category: commandscripts
 EndScriptData */
 
-#include "AchievementMgr.h"
 #include "Chat.h"
-#include "Language.h"
+#include "CommandScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 
 using namespace Acore::ChatCommands;
 
@@ -40,7 +38,7 @@ public:
         static ChatCommandTable achievementCommandTable =
         {
             { "add",      HandleAchievementAddCommand,      SEC_GAMEMASTER,    Console::No },
-            { "checkall", HandleAchievementCheckAllCommand, SEC_ADMINISTRATOR, Console::No }
+            { "checkall", HandleAchievementCheckAllCommand, SEC_ADMINISTRATOR, Console::Yes }
         };
         static ChatCommandTable commandTable =
         {
@@ -54,8 +52,7 @@ public:
         Player* target = handler->getSelectedPlayer();
         if (!target)
         {
-            handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
-            handler->SetSentErrorMessage(true);
+            handler->SendErrorMessage(LANG_NO_CHAR_SELECTED);
             return false;
         }
         target->CompletedAchievement(achievementEntry);
@@ -63,17 +60,32 @@ public:
         return true;
     }
 
-    static bool HandleAchievementCheckAllCommand(ChatHandler* handler)
+    static bool HandleAchievementCheckAllCommand(ChatHandler* handler, Optional<PlayerIdentifier> player)
     {
-        Player* target = handler->getSelectedPlayer();
-        if (!target)
+        if (!player)
         {
-            handler->SendSysMessage(LANG_NO_CHAR_SELECTED);
-            handler->SetSentErrorMessage(true);
+            player = PlayerIdentifier::FromTarget(handler);
+        }
+
+        if (!player)
+        {
+            handler->SendErrorMessage(LANG_PLAYER_NOT_FOUND);
             return false;
         }
 
-        target->CheckAllAchievementCriteria();
+        if (player->IsConnected())
+        {
+            if (Player* target = player->GetConnectedPlayer())
+                target->CheckAllAchievementCriteria();
+        }
+        else
+        {
+            auto* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
+            stmt->SetData(0, uint16(AT_LOGIN_CHECK_ACHIEVS));
+            stmt->SetData(1, player->GetGUID().GetCounter());
+            CharacterDatabase.Execute(stmt);
+        }
+
         return true;
     }
 };

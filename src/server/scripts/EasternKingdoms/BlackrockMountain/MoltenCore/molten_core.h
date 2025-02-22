@@ -19,7 +19,8 @@
 #define DEF_MOLTEN_CORE_H
 
 #include "CreatureAIImpl.h"
-#include "Object.h"
+
+#define DataHeader "MC"
 
 constexpr auto MCScriptName = "instance_molten_core";
 

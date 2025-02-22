@@ -25,19 +25,19 @@
 #include "ObjectAccessor.h"
 #include "Spell.h"
 #include "Util.h"
+#include "World.h"
 
 template<class T>
 RandomMovementGenerator<T>::~RandomMovementGenerator() { }
 
-template<>
-RandomMovementGenerator<Creature>::~RandomMovementGenerator()
-{
-    delete _pathGenerator;
-}
+template RandomMovementGenerator<Creature>::~RandomMovementGenerator();
 
 template<>
 void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
 {
+    if (!creature)
+        return;
+
     if (creature->_moveState != MAP_OBJECT_CELL_MOVE_NONE)
         return;
 
@@ -54,7 +54,7 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
         init.SetWalk(true);
         init.Launch();
         if (creature->GetFormation() && creature->GetFormation()->GetLeader() == creature)
-            creature->GetFormation()->LeaderMoveTo(_currDestPosition.GetPositionX(), _currDestPosition.GetPositionY(), _currDestPosition.GetPositionZ(), false);
+            creature->GetFormation()->LeaderMoveTo(_currDestPosition.GetPositionX(), _currDestPosition.GetPositionY(), _currDestPosition.GetPositionZ(), 0);
         return;
     }
 
@@ -134,6 +134,11 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
         }
         else // ground
         {
+            if (!_pathGenerator)
+                _pathGenerator = std::make_unique<PathGenerator>(creature);
+            else
+                _pathGenerator->Clear();
+
             bool result = _pathGenerator->CalculatePath(x, y, levelZ, false);
             if (result && !(_pathGenerator->GetPathType() & PATHFIND_NOPATH))
             {
@@ -165,7 +170,8 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
                         return;
                     }
 
-                    if (!map->isInLineOfSight((*itr).x, (*itr).y, (*itr).z + 2.f, (*itrNext).x, (*itrNext).y, (*itrNext).z + 2.f, creature->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS))
+                    if (!map->isInLineOfSight((*itr).x, (*itr).y, (*itr).z + 2.f, (*itrNext).x, (*itrNext).y, (*itrNext).z + 2.f, creature->GetPhaseMask(),
+                        LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
                     {
                         _validPointsVector[_currentPoint].erase(randomIter);
                         _preComputedPaths.erase(pathIdx);
@@ -224,7 +230,7 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
 
     //Call for creature group update
     if (creature->GetFormation() && creature->GetFormation()->GetLeader() == creature)
-        creature->GetFormation()->LeaderMoveTo(finalPoint.x, finalPoint.y, finalPoint.z, false);
+        creature->GetFormation()->LeaderMoveTo(finalPoint.x, finalPoint.y, finalPoint.z, 0);
 }
 
 template<>
@@ -251,8 +257,6 @@ void RandomMovementGenerator<Creature>::DoInitialize(Creature* creature)
         }
     }
 
-    if (!_pathGenerator)
-        _pathGenerator = new PathGenerator(creature);
     creature->AddUnitState(UNIT_STATE_ROAMING | UNIT_STATE_ROAMING_MOVE);
 }
 
@@ -280,7 +284,7 @@ bool RandomMovementGenerator<Creature>::DoUpdate(Creature* creature, const uint3
     }
 
     // xinef: if we got disable move flag, do not remove default generator - just prevent movement
-    if (creature->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_DISABLE_MOVE))
+    if (creature->HasUnitFlag(UNIT_FLAG_DISABLE_MOVE))
     {
         _nextMoveTime.Reset(0);  // Expire the timer
         creature->ClearUnitState(UNIT_STATE_ROAMING_MOVE);

@@ -15,20 +15,20 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-/*
- * Ordered alphabetically using scriptname.
- * Scriptnames of files in this file should be prefixed with "npc_pet_gen_".
- */
-
+#include "CreatureScript.h"
 #include "CreatureTextMgr.h"
 #include "Group.h"
 #include "PassiveAI.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "ScriptedGossip.h"
 #include "SpellAuras.h"
 #include "SpellScript.h"
+#include "SpellScriptLoader.h"
+/*
+ * Ordered alphabetically using scriptname.
+ * Scriptnames of files in this file should be prefixed with "npc_pet_gen_".
+ */
 
 enum soulTrader
 {
@@ -155,7 +155,7 @@ struct npc_pet_gen_argent_pony_bridle : public ScriptedAI
         memset(_banners, 0, sizeof(_banners));
     }
 
-    void EnterEvadeMode() override
+    void EnterEvadeMode(EvadeReason /*why*/) override
     {
         if (Unit* owner = me->GetCharmerOrOwner())
         {
@@ -172,7 +172,7 @@ struct npc_pet_gen_argent_pony_bridle : public ScriptedAI
         _init = true;
         uint32 duration = 0;
         uint32 aura = 0;
-        me->SetUInt32Value(UNIT_NPC_FLAGS, 0);
+        me->ReplaceAllNpcFlags(UNIT_NPC_FLAG_NONE);
 
         if (Unit* owner = me->GetCharmerOrOwner())
             if (Player* player = owner->ToPlayer())
@@ -182,7 +182,7 @@ struct npc_pet_gen_argent_pony_bridle : public ScriptedAI
 
                     aura = (player->GetTeamId(true) == TEAM_ALLIANCE ? SPELL_AURA_TIRED_S : SPELL_AURA_TIRED_G);
                     duration = player->GetSpellCooldownDelay(aura);
-                    me->SetUInt32Value(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+                    me->ReplaceAllNpcFlags(UNIT_NPC_FLAG_GOSSIP);
 
                     for (uint8 i = 0; i < 3; ++i)
                     {
@@ -231,7 +231,7 @@ struct npc_pet_gen_argent_pony_bridle : public ScriptedAI
         {
             _mountTimer = 0;
             if (_state == ARGENT_PONY_STATE_NONE)
-                me->SetUInt32Value(UNIT_NPC_FLAGS, 0);
+                me->ReplaceAllNpcFlags(UNIT_NPC_FLAG_NONE);
             else if (Unit* owner = me->GetCharmerOrOwner())
             {
                 if (owner->IsMounted() && !me->IsMounted())
@@ -294,20 +294,20 @@ struct npc_pet_gen_argent_pony_bridle : public ScriptedAI
         switch (action)
         {
             case GOSSIP_ACTION_TRADE:
-                creature->SetUInt32Value(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR);
+                creature->ReplaceAllNpcFlags(UNIT_NPC_FLAG_VENDOR);
                 player->GetSession()->SendListInventory(creature->GetGUID());
                 spellId = player->GetTeamId(true) ? SPELL_AURA_SHOP_G : SPELL_AURA_SHOP_S;
                 creature->AI()->DoAction(ARGENT_PONY_STATE_VENDOR);
                 break;
             case GOSSIP_ACTION_BANK:
-                creature->SetUInt32Value(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_BANKER);
+                creature->ReplaceAllNpcFlags(UNIT_NPC_FLAG_BANKER);
                 player->GetSession()->SendShowBank(player->GetGUID());
                 spellId = player->GetTeamId(true) ? SPELL_AURA_BANK_G : SPELL_AURA_BANK_S;
                 creature->AI()->DoAction(ARGENT_PONY_STATE_BANK);
                 break;
             case GOSSIP_ACTION_MAILBOX:
                 {
-                    creature->SetUInt32Value(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_MAILBOX);
+                    creature->ReplaceAllNpcFlags(UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_MAILBOX);
                     player->GetSession()->SendShowMailBox(creature->GetGUID());
                     spellId = player->GetTeamId(true) ? SPELL_AURA_POSTMAN_G : SPELL_AURA_POSTMAN_S;
                     creature->AI()->DoAction(ARGENT_PONY_STATE_MAILBOX);
@@ -528,7 +528,7 @@ struct npc_pet_gen_imp_in_a_bottle : public NullCreatureAI
 
         if (TempSummon* summon = me->ToTempSummon())
             if (Unit* owner = summon->GetSummonerUnit())
-                if (owner->GetTypeId() == TYPEID_PLAYER)
+                if (owner->IsPlayer())
                 {
                     _ownerGUID = owner->GetGUID();
                     if (owner->ToPlayer()->GetGroup())
@@ -597,7 +597,7 @@ struct npc_pet_gen_wind_rider_cub : public NullCreatureAI
             checkTimer2 = 0;
             if (Unit* owner = me->GetOwner())
             {
-                if (owner->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED) || owner->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED))
+                if (owner->HasIncreaseMountedFlightSpeedAura() || owner->HasIncreaseMountedSpeedAura())
                 {
                     isFlying = true;
                     me->SetCanFly(true);
@@ -640,7 +640,7 @@ struct npc_pet_gen_plump_turkey : public PassiveAI
     {
         if (type == EFFECT_MOTION_TYPE && id == 1)
         {
-            Unit::Kill(me, me);
+            me->KillSelf();
             me->AddAura(SPELL_TURKEY_STARTS_TO_BURN, me);
         }
     }
@@ -689,9 +689,7 @@ struct npc_pet_gen_toxic_wasteling : public PassiveAI
 
     void Reset() override { checkTimer = 3000; }
 
-    void EnterEvadeMode() override
-    {
-    }
+    void EnterEvadeMode(EvadeReason /*why*/) override {}
 
     void MovementInform(uint32 type, uint32 id) override
     {
@@ -720,16 +718,20 @@ struct npc_pet_gen_toxic_wasteling : public PassiveAI
     }
 };
 
+enum FetchBall
+{
+    SPELL_PET_TOY_FETCH_BALL_COME_HERE = 48649,
+    SPELL_PET_TOY_FETCH_BALL_HAS_BALL  = 48708
+};
+
 struct npc_pet_gen_fetch_ball : public NullCreatureAI
 {
-    npc_pet_gen_fetch_ball(Creature* c) : NullCreatureAI(c)
-    {
-    }
+    npc_pet_gen_fetch_ball(Creature* c) : NullCreatureAI(c) { }
 
     uint32 checkTimer;
     ObjectGuid targetGUID;
 
-    void IsSummonedBy(Unit* summoner) override
+    void IsSummonedBy(WorldObject* summoner) override
     {
         if (!summoner)
             return;
@@ -737,12 +739,12 @@ struct npc_pet_gen_fetch_ball : public NullCreatureAI
         me->SetOwnerGUID(summoner->GetGUID());
         checkTimer = 0;
         targetGUID.Clear();
-        me->CastSpell(me, 48649 /*SPELL_PET_TOY_FETCH_BALL_COME_HERE*/, true);
+        me->CastSpell(me, SPELL_PET_TOY_FETCH_BALL_COME_HERE, true);
     }
 
     void SpellHitTarget(Unit* target, SpellInfo const* spellInfo) override
     {
-        if (spellInfo->Id == 48649 /*SPELL_PET_TOY_FETCH_BALL_COME_HERE*/)
+        if (spellInfo->Id == SPELL_PET_TOY_FETCH_BALL_COME_HERE)
         {
             target->GetMotionMaster()->MovePoint(50, me->GetHomePosition());
             targetGUID = target->GetGUID();
@@ -759,8 +761,8 @@ struct npc_pet_gen_fetch_ball : public NullCreatureAI
                 if (me->GetDistance2d(target) < 2.0f)
                 {
                     target->AI()->EnterEvadeMode();
-                    target->CastSpell(target, 48708 /*SPELL_PET_TOY_FETCH_BALL_HAS_BALL*/, true);
-                    me->DespawnOrUnsummon(1);
+                    target->CastSpell(target, SPELL_PET_TOY_FETCH_BALL_HAS_BALL, true);
+                    me->DespawnOrUnsummon();
                 }
         }
     }
@@ -773,6 +775,49 @@ struct npc_pet_gen_moth : public NullCreatureAI
         me->AddUnitState(UNIT_STATE_NO_ENVIRONMENT_UPD);
         me->SetCanFly(true);
         me->SetDisableGravity(true);
+    }
+};
+
+// Darting Hatchling
+enum Darting
+{
+    SPELL_DARTING_ON_SPAWN      = 62586, // Applied on spawn via creature_template_addon
+    SPELL_DARTING_FEAR          = 62585, // Applied every 20s from SPELL_DARTING_ON_SPAWN
+};
+
+struct npc_pet_darting_hatchling : public NullCreatureAI
+{
+    npc_pet_darting_hatchling(Creature* c) : NullCreatureAI(c)
+    {
+        goFast = false;
+        checkTimer = 0;
+    }
+
+    bool goFast;
+    uint32 checkTimer;
+
+    void SpellHit(Unit* /*caster*/, SpellInfo const* spellInfo) override
+    {
+        if (spellInfo->Id == SPELL_DARTING_FEAR)
+        {
+            goFast = true;
+        }
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!goFast)
+        {
+            return;
+        }
+
+        checkTimer += diff;
+        if (checkTimer >= 2000)
+        {
+            me->RemoveAurasDueToSpell(SPELL_DARTING_FEAR);
+            checkTimer = 0;
+            goFast = false;
+        }
     }
 };
 
@@ -790,4 +835,5 @@ void AddSC_generic_pet_scripts()
     RegisterCreatureAI(npc_pet_gen_toxic_wasteling);
     RegisterCreatureAI(npc_pet_gen_fetch_ball);
     RegisterCreatureAI(npc_pet_gen_moth);
+    RegisterCreatureAI(npc_pet_darting_hatchling);
 }

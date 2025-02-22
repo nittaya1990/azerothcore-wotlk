@@ -18,9 +18,9 @@
 #ifndef DEF_ZULFARRACK_H
 #define DEF_ZULFARRACK_H
 
-#include "CellImpl.h"
 #include "CreatureAIImpl.h"
-#include "SpellScript.h"
+
+#define DataHeader "ZF"
 
 #define ZFScriptName "instance_zulfarrak"
 

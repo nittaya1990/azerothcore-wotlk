@@ -23,9 +23,7 @@
 #include <deque>
 #include <functional>
 #include <list>
-#include <memory>
 #include <set>
-#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -47,8 +45,8 @@ enum TypeMask
 {
     TYPEMASK_OBJECT         = 0x0001,
     TYPEMASK_ITEM           = 0x0002,
-    TYPEMASK_CONTAINER      = 0x0006,                       // TYPEMASK_ITEM | 0x0004
-    TYPEMASK_UNIT           = 0x0008,                       // creature
+    TYPEMASK_CONTAINER      = 0x0006,             // TYPEMASK_ITEM | 0x0004
+    TYPEMASK_UNIT           = 0x0008,             // creature
     TYPEMASK_PLAYER         = 0x0010,
     TYPEMASK_GAMEOBJECT     = 0x0020,
     TYPEMASK_DYNAMICOBJECT  = 0x0040,
@@ -183,20 +181,20 @@ class ObjectGuid
         {
             switch (high)
             {
-                case HighGuid::Item:         return TYPEID_ITEM;
-                //case HighGuid::Container:    return TYPEID_CONTAINER; HighGuid::Container == HighGuid::Item currently
-                case HighGuid::Unit:         return TYPEID_UNIT;
-                case HighGuid::Pet:          return TYPEID_UNIT;
-                case HighGuid::Player:       return TYPEID_PLAYER;
-                case HighGuid::GameObject:   return TYPEID_GAMEOBJECT;
+                case HighGuid::Item:          return TYPEID_ITEM;
+                //case HighGuid::Container:   return TYPEID_CONTAINER; HighGuid::Container == HighGuid::Item currently
+                case HighGuid::Unit:          return TYPEID_UNIT;
+                case HighGuid::Pet:           return TYPEID_UNIT;
+                case HighGuid::Player:        return TYPEID_PLAYER;
+                case HighGuid::GameObject:    return TYPEID_GAMEOBJECT;
                 case HighGuid::DynamicObject: return TYPEID_DYNAMICOBJECT;
-                case HighGuid::Corpse:       return TYPEID_CORPSE;
-                case HighGuid::Mo_Transport: return TYPEID_GAMEOBJECT;
-                case HighGuid::Vehicle:      return TYPEID_UNIT;
+                case HighGuid::Corpse:        return TYPEID_CORPSE;
+                case HighGuid::Mo_Transport:  return TYPEID_GAMEOBJECT;
+                case HighGuid::Vehicle:       return TYPEID_UNIT;
                 // unknown
                 case HighGuid::Instance:
                 case HighGuid::Group:
-                default:                    return TYPEID_OBJECT;
+                default:                      return TYPEID_OBJECT;
             }
         }
 
@@ -323,7 +321,7 @@ namespace std
     struct hash<ObjectGuid>
     {
         public:
-            size_t operator()(ObjectGuid const& key) const
+            std::size_t operator()(ObjectGuid const& key) const
             {
                 return std::hash<uint64>()(key.GetRawValue());
             }

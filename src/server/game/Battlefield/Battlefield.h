@@ -22,8 +22,6 @@
 #include "GameObject.h"
 #include "ObjectAccessor.h"
 #include "SharedDefines.h"
-#include "Utilities/Util.h"
-#include "WorldPacket.h"
 #include "ZoneScript.h"
 
 enum BattlefieldTypes
@@ -83,7 +81,7 @@ public:
 
     virtual ~BfCapturePoint() { }
 
-    virtual void FillInitialWorldStates(WorldPacket& /*data*/) {}
+    virtual void FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& /*packet*/) { }
 
     // Send world state update to all players present
     void SendUpdateWorldState(uint32 field, uint32 value);
@@ -104,7 +102,8 @@ public:
     virtual void ChangeTeam(TeamId /*oldTeam*/) {}
     virtual void SendChangePhase();
 
-    bool SetCapturePointData(GameObject* capturePoint);
+    //Added team to reset capturepoints on sliders after warTime
+    bool SetCapturePointData(GameObject* capturePoint, TeamId team);
     GameObject* GetCapturePointGo();
     GameObject* GetCapturePointGo(WorldObject* obj);
 
@@ -335,7 +334,7 @@ public:
 
     /// Send all worldstate data to all player in zone.
     virtual void SendInitWorldStatesToAll() = 0;
-    virtual void FillInitialWorldStates(WorldPacket& /*data*/) = 0;
+    virtual void FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& /*packet*/) = 0;
 
     /// Return if we can use mount in battlefield
     bool CanFlyIn() { return !m_isActive; }

@@ -42,6 +42,7 @@ SERVICE_STATUS serviceStatus;
 
 SERVICE_STATUS_HANDLE serviceStatusHandle = 0;
 
+// cppcheck-suppress syntaxError
 typedef WINADVAPI BOOL (WINAPI* CSD_T)(SC_HANDLE, DWORD, LPCVOID);
 
 bool WinServiceInstall()
@@ -51,7 +52,7 @@ bool WinServiceInstall()
     if (serviceControlMgr)
     {
         char path[_MAX_PATH + 10];
-        if (GetModuleFileName( 0, path, sizeof(path) / sizeof(path[0]) ) > 0)
+        if (GetModuleFileName( 0, path, sizeof(path) / sizeof(path[0])) > 0)
         {
             SC_HANDLE service;
             std::strcat(path, " --service");
@@ -169,7 +170,7 @@ void WINAPI ServiceControlHandler(DWORD controlCode)
             break;
 
         default:
-            if ( controlCode >= 128 && controlCode <= 255 )
+            if (controlCode >= 128 && controlCode <= 255)
                 // user defined control code
             {
                 break;
@@ -197,7 +198,7 @@ void WINAPI ServiceMain(DWORD argc, char* argv[])
 
     serviceStatusHandle = RegisterServiceCtrlHandler(serviceName, ServiceControlHandler);
 
-    if ( serviceStatusHandle )
+    if (serviceStatusHandle)
     {
         char path[_MAX_PATH + 1];
         unsigned int i, last_slash = 0;

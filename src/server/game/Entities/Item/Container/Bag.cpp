@@ -166,7 +166,7 @@ void Bag::StoreItem(uint8 slot, Item* pItem, bool /*update*/)
     }
 }
 
-void Bag::BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) const
+void Bag::BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target)
 {
     Item::BuildCreateUpdateBlockForPlayer(data, target);
 
@@ -238,4 +238,11 @@ Item* Bag::GetItemByPos(uint8 slot) const
         return m_bagslot[slot];
 
     return nullptr;
+}
+
+std::string Bag::GetDebugInfo() const
+{
+    std::stringstream sstr;
+    sstr << Item::GetDebugInfo();
+    return sstr.str();
 }

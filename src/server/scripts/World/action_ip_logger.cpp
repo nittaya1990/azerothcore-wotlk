@@ -15,10 +15,11 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "AccountScript.h"
 #include "Channel.h"
 #include "Group.h"
 #include "Guild.h"
-#include "ScriptMgr.h"
+#include "PlayerScript.h"
 
 enum IPLoggingTypes
 {
@@ -167,22 +168,30 @@ public:
 class CharacterActionIpLogger : public PlayerScript
 {
 public:
-    CharacterActionIpLogger() : PlayerScript("CharacterActionIpLogger") { }
+    CharacterActionIpLogger() :
+        PlayerScript("CharacterActionIpLogger",
+        {
+            PLAYERHOOK_ON_CREATE,
+            PLAYERHOOK_ON_LOGIN,
+            PLAYERHOOK_ON_LOGOUT
+        })
+    {
+    }
 
     // CHARACTER_CREATE = 7
-    void OnCreate(Player* player) override
+    void OnPlayerCreate(Player* player) override
     {
         CharacterIPLogAction(player, CHARACTER_CREATE);
     }
 
     // CHARACTER_LOGIN = 8
-    void OnLogin(Player* player) override
+    void OnPlayerLogin(Player* player) override
     {
         CharacterIPLogAction(player, CHARACTER_LOGIN);
     }
 
     // CHARACTER_LOGOUT = 9
-    void OnLogout(Player* player) override
+    void OnPlayerLogout(Player* player) override
     {
         CharacterIPLogAction(player, CHARACTER_LOGOUT);
     }
@@ -254,16 +263,23 @@ public:
 class CharacterDeleteActionIpLogger : public PlayerScript
 {
 public:
-    CharacterDeleteActionIpLogger() : PlayerScript("CharacterDeleteActionIpLogger") { }
+    CharacterDeleteActionIpLogger() :
+        PlayerScript("CharacterDeleteActionIpLogger",
+        {
+            PLAYERHOOK_ON_DELETE,
+            PLAYERHOOK_ON_FAILED_DELETE
+        })
+    {
+    }
 
     // CHARACTER_DELETE = 10
-    void OnDelete(ObjectGuid guid, uint32 accountId) override
+    void OnPlayerDelete(ObjectGuid guid, uint32 accountId) override
     {
         DeleteIPLogAction(guid, accountId, CHARACTER_DELETE);
     }
 
     // CHARACTER_FAILED_DELETE = 11
-    void OnFailedDelete(ObjectGuid guid, uint32 accountId) override
+    void OnPlayerFailedDelete(ObjectGuid guid, uint32 accountId) override
     {
         DeleteIPLogAction(guid, accountId, CHARACTER_FAILED_DELETE);
     }

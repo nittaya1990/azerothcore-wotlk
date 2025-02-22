@@ -35,7 +35,7 @@
 #include "Vehicle.h"
 #include "WorldPacket.h"
 
-// TODO: this import is not necessary for compilation and marked as unused by the IDE
+/// @todo: this import is not necessary for compilation and marked as unused by the IDE
 //  however, for some reasons removing it would cause a damn linking issue
 //  there is probably some underlying problem with imports which should properly addressed
 //  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
@@ -297,8 +297,8 @@ void AuraApplication::ClientUpdate(bool remove)
 
 uint8 Aura::BuildEffectMaskForOwner(SpellInfo const* spellProto, uint8 avalibleEffectMask, WorldObject* owner)
 {
-    ASSERT(spellProto);
-    ASSERT(owner);
+    ASSERT_NODEBUGINFO(spellProto);
+    ASSERT_NODEBUGINFO(owner);
     uint8 effMask = 0;
     switch (owner->GetTypeId())
     {
@@ -325,10 +325,10 @@ uint8 Aura::BuildEffectMaskForOwner(SpellInfo const* spellProto, uint8 avalibleE
 
 Aura* Aura::TryRefreshStackOrCreate(SpellInfo const* spellproto, uint8 tryEffMask, WorldObject* owner, Unit* caster, int32* baseAmount /*= nullptr*/, Item* castItem /*= nullptr*/, ObjectGuid casterGUID /*= ObjectGuid::Empty*/, bool* refresh /*= nullptr*/, bool periodicReset /*= false*/)
 {
-    ASSERT(spellproto);
-    ASSERT(owner);
-    ASSERT(caster || casterGUID);
-    ASSERT(tryEffMask <= MAX_EFFECT_MASK);
+    ASSERT_NODEBUGINFO(spellproto);
+    ASSERT_NODEBUGINFO(owner);
+    ASSERT_NODEBUGINFO(caster || casterGUID);
+    ASSERT_NODEBUGINFO(tryEffMask <= MAX_EFFECT_MASK);
     if (refresh)
         *refresh = false;
     uint8 effMask = Aura::BuildEffectMaskForOwner(spellproto, tryEffMask, owner);
@@ -351,10 +351,10 @@ Aura* Aura::TryRefreshStackOrCreate(SpellInfo const* spellproto, uint8 tryEffMas
 
 Aura* Aura::TryCreate(SpellInfo const* spellproto, uint8 tryEffMask, WorldObject* owner, Unit* caster, int32* baseAmount /*= nullptr*/, Item* castItem /*= nullptr*/, ObjectGuid casterGUID /*= ObjectGuid::Empty*/, ObjectGuid itemGUID /*= ObjectGuid::Empty*/)
 {
-    ASSERT(spellproto);
-    ASSERT(owner);
-    ASSERT(caster || casterGUID);
-    ASSERT(tryEffMask <= MAX_EFFECT_MASK);
+    ASSERT_NODEBUGINFO(spellproto);
+    ASSERT_NODEBUGINFO(owner);
+    ASSERT_NODEBUGINFO(caster || casterGUID);
+    ASSERT_NODEBUGINFO(tryEffMask <= MAX_EFFECT_MASK);
     uint8 effMask = Aura::BuildEffectMaskForOwner(spellproto, tryEffMask, owner);
     if (!effMask)
         return nullptr;
@@ -363,11 +363,11 @@ Aura* Aura::TryCreate(SpellInfo const* spellproto, uint8 tryEffMask, WorldObject
 
 Aura* Aura::Create(SpellInfo const* spellproto, uint8 effMask, WorldObject* owner, Unit* caster, int32* baseAmount, Item* castItem, ObjectGuid casterGUID, ObjectGuid itemGUID /*= ObjectGuid::Empty*/)
 {
-    ASSERT(effMask);
-    ASSERT(spellproto);
-    ASSERT(owner);
-    ASSERT(caster || casterGUID);
-    ASSERT(effMask <= MAX_EFFECT_MASK);
+    ASSERT_NODEBUGINFO(effMask);
+    ASSERT_NODEBUGINFO(spellproto);
+    ASSERT_NODEBUGINFO(owner);
+    ASSERT_NODEBUGINFO(caster || casterGUID);
+    ASSERT_NODEBUGINFO(effMask <= MAX_EFFECT_MASK);
     // try to get caster of aura
     if (casterGUID)
     {
@@ -380,7 +380,7 @@ Aura* Aura::Create(SpellInfo const* spellproto, uint8 effMask, WorldObject* owne
         casterGUID = caster->GetGUID();
 
     // check if aura can be owned by owner
-    if (owner->isType(TYPEMASK_UNIT))
+    if (owner->IsUnit())
         if (!owner->IsInWorld() || ((Unit*)owner)->IsDuringRemoveFromWorld())
             // owner not in world so don't allow to own not self casted single target auras
             if (casterGUID != owner->GetGUID() && spellproto->IsSingleTarget())
@@ -410,7 +410,7 @@ Aura::Aura(SpellInfo const* spellproto, WorldObject* owner, Unit* caster, Item* 
     m_spellInfo(spellproto), m_casterGuid(casterGUID ? casterGUID : caster->GetGUID()),
     m_castItemGuid(itemGUID ? itemGUID : castItem ? castItem->GetGUID() : ObjectGuid::Empty), m_castItemEntry(castItem ? castItem->GetEntry() : 0), m_applyTime(GameTime::GetGameTime().count()),
     m_owner(owner), m_timeCla(0), m_updateTargetMapInterval(0),
-    m_casterLevel(caster ? caster->getLevel() : m_spellInfo->SpellLevel), m_procCharges(0), m_stackAmount(1),
+    m_casterLevel(caster ? caster->GetLevel() : m_spellInfo->SpellLevel), m_procCharges(0), m_stackAmount(1),
     m_isRemoved(false), m_isSingleTarget(false), m_isUsingCharges(false), m_triggeredByAuraSpellInfo(nullptr)
 {
     if ((m_spellInfo->ManaPerSecond || m_spellInfo->ManaPerSecondPerLevel) && !m_spellInfo->HasAttribute(SPELL_ATTR2_NO_TARGET_PER_SECOND_COST))
@@ -486,7 +486,7 @@ AuraObjectType Aura::GetType() const
         return UNIT_AURA_TYPE;
     }
 
-    return (m_owner->GetTypeId() == TYPEID_DYNAMICOBJECT) ? DYNOBJ_AURA_TYPE : UNIT_AURA_TYPE;
+    return (m_owner->IsDynamicObject()) ? DYNOBJ_AURA_TYPE : UNIT_AURA_TYPE;
 }
 
 void Aura::_ApplyForTarget(Unit* target, Unit* caster, AuraApplication* auraApp)
@@ -520,7 +520,7 @@ void Aura::_UnapplyForTarget(Unit* target, Unit* caster, AuraApplication* auraAp
 
     ApplicationMap::iterator itr = m_applications.find(target->GetGUID());
 
-    // TODO: Figure out why this happens
+    /// @todo: Figure out why this happens
     if (itr == m_applications.end())
     {
         LOG_ERROR("spells.aura", "Aura::_UnapplyForTarget, target:{}, caster:{}, spell:{} was not found in owners application map!",
@@ -559,7 +559,7 @@ void Aura::_UnapplyForTarget(Unit* target, Unit* caster, AuraApplication* auraAp
         }
     }
 
-    if (caster && caster->GetTypeId() == TYPEID_PLAYER)
+    if (caster && caster->IsPlayer())
     {
         if (GetSpellInfo()->IsCooldownStartedOnEvent() && !m_castItemGuid)
         {
@@ -658,9 +658,7 @@ void Aura::UpdateTargetMap(Unit* caster, bool apply)
             if ((itr->second & (1 << effIndex)) && itr->first->IsImmunedToSpellEffect(GetSpellInfo(), effIndex))
                 itr->second &= ~(1 << effIndex);
         }
-        if (!itr->second
-                || itr->first->IsImmunedToSpell(GetSpellInfo())
-                || !CanBeAppliedOn(itr->first))
+        if (!itr->second || itr->first->IsImmunedToSpell(GetSpellInfo()) || !CanBeAppliedOn(itr->first))
             addUnit = false;
 
         if (addUnit)
@@ -671,21 +669,9 @@ void Aura::UpdateTargetMap(Unit* caster, bool apply)
                 if (itr->first->IsInFlight())
                     addUnit = false;
 
-                switch( GetId() )
-                {
-                    case 62821: // Ulduar, Hodir, Toasty Fire
-                    case 62807: // Ulduar, Hodir, Starlight
-                    case 51103: // Oculus, Mage-Lord Urom, Frostbomb
-                    case 69146:
-                    case 70823:
-                    case 70824:
-                    case 70825: // Icecrown Citadel, Lord Marrowgar, Coldflame
-                        {
-                            if( itr->first->HasAura(GetId()) )
-                                addUnit = false;
-                        }
-                        break;
-                }
+            // Allow only 1 persistent area aura to affect our targets if a custom flag is set.
+            if (itr->first->HasAura(GetId()) && GetSpellInfo()->HasAttribute(SPELL_ATTR0_CU_ONLY_ONE_AREA_AURA))
+                addUnit = false;
             }
             // unit auras can not stack with each other
             else // (GetType() == UNIT_AURA_TYPE)
@@ -824,7 +810,7 @@ void Aura::Update(uint32 diff, Unit* caster)
                 m_timeCla -= diff;
             else if (caster)
             {
-                if (int32 ManaPerSecond = m_spellInfo->ManaPerSecond + m_spellInfo->ManaPerSecondPerLevel * caster->getLevel())
+                if (int32 ManaPerSecond = m_spellInfo->ManaPerSecond + m_spellInfo->ManaPerSecondPerLevel * caster->GetLevel())
                 {
                     m_timeCla += 1000 - diff;
 
@@ -976,7 +962,7 @@ uint8 Aura::CalcMaxCharges(Unit* caster) const
 {
     uint32 maxProcCharges = m_spellInfo->ProcCharges;
     if (SpellProcEntry const* procEntry = sSpellMgr->GetSpellProcEntry(GetId()))
-        maxProcCharges = procEntry->charges;
+        maxProcCharges = procEntry->Charges;
 
     if (caster)
         if (Player* modOwner = caster->GetSpellModOwner())
@@ -1290,7 +1276,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
         for (SpellAreaForAreaMap::const_iterator itr = saBounds.first; itr != saBounds.second; ++itr)
         {
             // some auras remove at aura remove
-            if (!itr->second->IsFitToRequirements(target->ToPlayer(), zone, area))
+            if (!itr->second->IsFitToRequirements(target->ToPlayer(), zone, area) && !apply)
                 target->RemoveAurasDueToSpell(itr->second->spellId);
             // some auras applied at aura apply
             else if (itr->second->autocast)
@@ -1364,7 +1350,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                 switch (GetId())
                 {
                     case 32474: // Buffeting Winds of Susurrus
-                        if (target->GetTypeId() == TYPEID_PLAYER)
+                        if (target->IsPlayer())
                             target->ToPlayer()->ActivateTaxiPathTo(506, GetId());
                         break;
                     case 33572: // Gronn Lord's Grasp, becomes stoned
@@ -1376,7 +1362,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                             target->CastSpell(target, 50812, true);
                         break;
                     case 60970: // Heroic Fury (remove Intercept cooldown)
-                        if (target->GetTypeId() == TYPEID_PLAYER)
+                        if (target->IsPlayer())
                             target->ToPlayer()->RemoveSpellCooldown(20252, true);
                         break;
                 }
@@ -1396,7 +1382,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                     if (caster->HasAura(56370))
                         SetDuration(0);
                 }
-                // Todo: This should be moved to similar function in spell::hit
+                /// @todo: This should be moved to similar function in spell::hit
                 else if (GetSpellInfo()->SpellFamilyFlags[0] & 0x01000000)
                 {
                     // Polymorph Sound - Sheep && Penguin
@@ -1450,6 +1436,26 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                             else
                                 target->AddAura(74396, target);
                         }
+                        break;
+                    case 12494: // Frostbite, synchronise with Fingers of Frost
+                    {
+                        // Find Fingers of Frost
+                        if (AuraEffect* aurEff = caster->GetAuraEffect(SPELL_AURA_PROC_TRIGGER_SPELL, SPELLFAMILY_MAGE, 2947, EFFECT_0))
+                        {
+                            if (SpellInfo const* triggeringSpellInfo = GetTriggeredByAuraSpellInfo())
+                            {
+                                uint8 fbRank = sSpellMgr->GetSpellRank(triggeringSpellInfo->Id);
+                                uint8 fofRank = sSpellMgr->GetSpellRank(aurEff->GetId());
+                                uint8 chance = uint8(std::ceil(fofRank * fbRank * 16.6f));
+
+                                if (roll_chance_i(chance))
+                                {
+                                    caster->CastSpell(caster, aurEff->GetSpellInfo()->Effects[EFFECT_0].TriggerSpell, true);
+                                }
+                            }
+                        }
+                        break;
+                    }
                     default:
                         break;
                 }
@@ -1508,6 +1514,16 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                     if (target->HasAura(58039)) // Glyph of Blurred Speed
                         target->CastSpell(target, 61922, true); // Sprint (waterwalk)
                 break;
+            case SPELLFAMILY_SHAMAN:
+            {
+                // Ghost Wolf Speed (PvP 58 lvl set)
+                if (GetSpellInfo()->SpellFamilyFlags[0] & 0x00000800 && target->HasAura(22801) && target->GetLevel() <= 60)
+                {
+                    int32 bp0 = 15;
+                    target->CastCustomSpell(target, 47017, &bp0, 0, 0, true);
+                }
+                break;
+            }
             case SPELLFAMILY_DEATHKNIGHT:
                 if (!caster)
                     break;
@@ -1571,7 +1587,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                 break;
             case SPELLFAMILY_POTION:
                 // Alchemy: Mixology
-                if (caster && caster->HasAura(53042) && caster->GetTypeId() == TYPEID_PLAYER && !caster->ToPlayer()->GetSession()->PlayerLoading())
+                if (caster && caster->HasAura(53042) && caster->IsPlayer() && !caster->ToPlayer()->GetSession()->PlayerLoading())
                 {
                     if (sSpellMgr->GetSpellGroup(GetId()) == 1) /*Elixirs*/
                     {
@@ -1597,7 +1613,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
             case SPELLFAMILY_GENERIC:
                 if (!caster)
                     break;
-                switch(GetId())
+                switch (GetId())
                 {
                     case 61987: // Avenging Wrath
                         // Remove the immunity shield marker on Avenging Wrath removal if Forbearance is not present
@@ -1665,7 +1681,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
             case SPELLFAMILY_WARRIOR:
                 if (!caster)
                     break;
-                [[fallthrough]]; // TODO: Not sure whether the fallthrough was a mistake (forgetting a break) or intended. This should be double-checked.
+                [[fallthrough]]; /// @todo: Not sure whether the fallthrough was a mistake (forgetting a break) or intended. This should be double-checked.
             case SPELLFAMILY_WARLOCK:
                 if (!caster)
                     break;
@@ -1710,7 +1726,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                     if (Aura const* aura = caster->GetAuraOfRankedSpell(47535))
                     {
                         // check cooldown
-                        if (caster->GetTypeId() == TYPEID_PLAYER)
+                        if (caster->IsPlayer())
                         {
                             if (caster->ToPlayer()->HasSpellCooldown(aura->GetId()))
                             {
@@ -1770,9 +1786,10 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                 switch (GetId())
                 {
                     case 47788: // Guardian Spirit
+                    {
                         if (removeMode != AURA_REMOVE_BY_EXPIRE)
                             break;
-                        if (caster->GetTypeId() != TYPEID_PLAYER)
+                        if (!caster->IsPlayer())
                             break;
 
                         Player* player = caster->ToPlayer();
@@ -1791,6 +1808,15 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                             player->SendDirectMessage(&data);
                         }
                         break;
+                    }
+                    case 47585: // Dispersion (fixed bug invisible as a Shadow Priest)
+                    {
+                        if (target->IsMounted())
+                        {
+                            target->CastSpell(target, 53444, true);
+                        }
+                        break;
+                    }
                 }
                 break;
             case SPELLFAMILY_ROGUE:
@@ -1812,7 +1838,20 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                     }
                     break;
                 }
-
+            case SPELLFAMILY_SHAMAN:
+            {
+                // Ghost Wolf Speed (PvP 58 lvl set)
+                if (GetSpellInfo()->SpellFamilyFlags[0] & 0x00000800)
+                {
+                    target->RemoveAurasDueToSpell(47017);
+                }
+                // Lightning Shield vs The Earthshatterer 8/9 set bonus
+                if (GetSpellInfo()->SpellFamilyFlags[0] & 0x00000400)
+                {
+                    target->RemoveAurasDueToSpell(28820);
+                }
+                break;
+            }
             case SPELLFAMILY_DEATHKNIGHT:
                 // Blood of the North
                 // Reaping
@@ -1821,9 +1860,9 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                 {
                     if (!GetEffect(0) || GetEffect(0)->GetAuraType() != SPELL_AURA_PERIODIC_DUMMY)
                         break;
-                    if (target->GetTypeId() != TYPEID_PLAYER)
+                    if (!target->IsPlayer())
                         break;
-                    if (target->ToPlayer()->getClass() != CLASS_DEATH_KNIGHT)
+                    if (!target->ToPlayer()->IsClass(CLASS_DEATH_KNIGHT, CLASS_CONTEXT_ABILITY))
                         break;
 
                     // aura removed - remove death runes
@@ -1862,6 +1901,16 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                                 owner->CastSpell(owner, 34471, true, 0, GetEffect(0));
                             else
                                 owner->RemoveAurasDueToSpell(34471);
+                        }
+                    }
+                    break;
+                case 34026: // Kill Command
+                    // Dungeon Set 3
+                    if (caster->HasAura(37483))
+                    {
+                        if (apply)
+                        {
+                            caster->CastSpell(caster, 37482, true);
                         }
                     }
                     break;
@@ -1961,7 +2010,7 @@ bool Aura::IsAuraStronger(Aura const* newAura) const
                 return true;
 
             if (curValue == std::abs(newEffect->GetAmount()))
-                if(!IsPassive() && !IsPermanent() && GetDuration() < newAura->GetDuration())
+                if (!IsPassive() && !IsPermanent() && GetDuration() < newAura->GetDuration())
                     return true;
         }
     }
@@ -2124,7 +2173,7 @@ bool Aura::CanStackWith(Aura const* existingAura, bool remove) const
     }
 
     // spell of same spell rank chain
-    if (m_spellInfo->IsRankOf(existingSpellInfo))
+    if (m_spellInfo->IsRankOf(existingSpellInfo) && !(m_spellInfo->SpellFamilyName == SPELLFAMILY_HUNTER && m_spellInfo->SpellFamilyFlags[1] & 0x80000000))
     {
         // don't allow passive area auras to stack
         if (m_spellInfo->IsMultiSlotAura() && !IsArea())
@@ -2149,9 +2198,9 @@ bool Aura::IsProcOnCooldown() const
     return false;
 }
 
-void Aura::AddProcCooldown(uint32 /*msec*/)
+void Aura::AddProcCooldown(Milliseconds /*msec*/)
 {
-    //m_procCooldown = GameTime::GetGameTime().count() + msec;
+    //m_procCooldown = std:chrono::steady_clock::now() + msec;
 }
 
 void Aura::PrepareProcToTrigger(AuraApplication* aurApp, ProcEventInfo& eventInfo)
@@ -2172,7 +2221,7 @@ void Aura::PrepareProcToTrigger(AuraApplication* aurApp, ProcEventInfo& eventInf
     ASSERT(procEntry);
 
     // cooldowns should be added to the whole aura (see 51698 area aura)
-    AddProcCooldown(procEntry->cooldown);
+    AddProcCooldown(procEntry->Cooldown);
 }
 
 bool Aura::IsProcTriggeredOnEvent(AuraApplication* aurApp, ProcEventInfo& eventInfo) const
@@ -2190,7 +2239,7 @@ bool Aura::IsProcTriggeredOnEvent(AuraApplication* aurApp, ProcEventInfo& eventI
     if (IsProcOnCooldown())
         return false;
 
-    // TODO:
+    /// @todo:
     // something about triggered spells triggering, and add extra attack effect
 
     // do checks against db data
@@ -2208,16 +2257,16 @@ bool Aura::IsProcTriggeredOnEvent(AuraApplication* aurApp, ProcEventInfo& eventI
     if (!check)
         return false;
 
-    // TODO:
+    /// @todo:
     // do allow additional requirements for procs
     // this is needed because this is the last moment in which you can prevent aura charge drop on proc
     // and possibly a way to prevent default checks (if there're going to be any)
 
     // Check if current equipment meets aura requirements
     // do that only for passive spells
-    // TODO: this needs to be unified for all kinds of auras
+    /// @todo: this needs to be unified for all kinds of auras
     Unit* target = aurApp->GetTarget();
-    if (IsPassive() && target->GetTypeId() == TYPEID_PLAYER && GetSpellInfo()->EquippedItemClass != -1)
+    if (IsPassive() && target->IsPlayer() && GetSpellInfo()->EquippedItemClass != -1)
     {
         if (!GetSpellInfo()->HasAttribute(SPELL_ATTR3_NO_PROC_EQUIP_REQUIREMENT))
         {
@@ -2261,16 +2310,16 @@ bool Aura::IsProcTriggeredOnEvent(AuraApplication* aurApp, ProcEventInfo& eventI
 
 float Aura::CalcProcChance(SpellProcEntry const& procEntry, ProcEventInfo& eventInfo) const
 {
-    float chance = procEntry.chance;
+    float chance = procEntry.Chance;
     // calculate chances depending on unit with caster's data
     // so talents modifying chances and judgements will have properly calculated proc chance
     if (Unit* caster = GetCaster())
     {
         // calculate ppm chance if present and we're using weapon
-        if (eventInfo.GetDamageInfo() && procEntry.ratePerMinute != 0)
+        if (eventInfo.GetDamageInfo() && procEntry.ProcsPerMinute != 0)
         {
             uint32 WeaponSpeed = caster->GetAttackTime(eventInfo.GetDamageInfo()->GetAttackType());
-            chance = caster->GetPPMProcChance(WeaponSpeed, procEntry.ratePerMinute, GetSpellInfo());
+            chance = caster->GetPPMProcChance(WeaponSpeed, procEntry.ProcsPerMinute, GetSpellInfo());
         }
         // apply chance modifer aura, applies also to ppm chance (see improved judgement of light spell)
         if (Player* modOwner = caster->GetSpellModOwner())
@@ -2597,6 +2646,22 @@ bool Aura::CallScriptCheckProcHandlers(AuraApplication const* aurApp, ProcEventI
     return result;
 }
 
+bool Aura::CallScriptAfterCheckProcHandlers(AuraApplication const* aurApp, ProcEventInfo& eventInfo, bool isTriggeredAtSpellProcEvent)
+{
+    bool result = isTriggeredAtSpellProcEvent;
+    for (std::list<AuraScript*>::iterator scritr = m_loadedScripts.begin(); scritr != m_loadedScripts.end(); ++scritr)
+    {
+        (*scritr)->_PrepareScriptCall(AURA_SCRIPT_HOOK_AFTER_CHECK_PROC, aurApp);
+        std::list<AuraScript::AfterCheckProcHandler>::iterator hookItrEnd = (*scritr)->DoAfterCheckProc.end(), hookItr = (*scritr)->DoAfterCheckProc.begin();
+        for (; hookItr != hookItrEnd; ++hookItr)
+            result &= hookItr->Call(*scritr, eventInfo, isTriggeredAtSpellProcEvent);
+
+        (*scritr)->_FinishScriptCall();
+    }
+
+    return result;
+}
+
 bool Aura::CallScriptPrepareProcHandlers(AuraApplication const* aurApp, ProcEventInfo& eventInfo)
 {
     bool prepare = true;
@@ -2684,6 +2749,15 @@ void Aura::SetTriggeredByAuraSpellInfo(SpellInfo const* triggeredByAuraSpellInfo
     m_triggeredByAuraSpellInfo = triggeredByAuraSpellInfo;
 }
 
+std::string Aura::GetDebugInfo() const
+{
+    std::stringstream sstr;
+    sstr << std::boolalpha
+        << "Id: " << GetId() << " Caster: " << GetCasterGUID().ToString()
+        << "\nOwner: " << (GetOwner() ? GetOwner()->GetDebugInfo() : "NULL");
+    return sstr.str();
+}
+
 SpellInfo const* Aura::GetTriggeredByAuraSpellInfo() const
 {
     return m_triggeredByAuraSpellInfo;
@@ -2769,7 +2843,7 @@ void UnitAura::FillTargetMap(std::map<Unit*, uint8>& targets, Unit* caster)
                         }
                     case SPELL_EFFECT_APPLY_AREA_AURA_PET:
                         targetList.push_back(GetUnitOwner());
-                        [[fallthrough]]; // TODO: Not sure whether the fallthrough was a mistake (forgetting a break) or intended. This should be double-checked.
+                        [[fallthrough]]; /// @todo: Not sure whether the fallthrough was a mistake (forgetting a break) or intended. This should be double-checked.
                     case SPELL_EFFECT_APPLY_AREA_AURA_OWNER:
                         {
                             if (Unit* owner = GetUnitOwner()->GetCharmerOrOwner())
@@ -2819,9 +2893,10 @@ void DynObjAura::FillTargetMap(std::map<Unit*, uint8>& targets, Unit* /*caster*/
     {
         if (!HasEffect(effIndex))
             continue;
+
+        SpellInfo const* spellInfo = GetSpellInfo();
         UnitList targetList;
-        if (GetSpellInfo()->Effects[effIndex].TargetB.GetTarget() == TARGET_DEST_DYNOBJ_ALLY
-                || GetSpellInfo()->Effects[effIndex].TargetB.GetTarget() == TARGET_UNIT_DEST_AREA_ALLY)
+        if (spellInfo->Effects[effIndex].TargetB.GetTarget() == TARGET_DEST_DYNOBJ_ALLY || spellInfo->Effects[effIndex].TargetB.GetTarget() == TARGET_UNIT_DEST_AREA_ALLY)
         {
             Acore::AnyFriendlyUnitInObjectRangeCheck u_check(GetDynobjOwner(), dynObjOwnerCaster, radius);
             Acore::UnitListSearcher<Acore::AnyFriendlyUnitInObjectRangeCheck> searcher(GetDynobjOwner(), targetList, u_check);
@@ -2829,7 +2904,7 @@ void DynObjAura::FillTargetMap(std::map<Unit*, uint8>& targets, Unit* /*caster*/
         }
         // pussywizard: TARGET_DEST_DYNOBJ_NONE is supposed to search for both friendly and unfriendly targets, so for any unit
         // what about EffectImplicitTargetA?
-        else if (GetSpellInfo()->Effects[effIndex].TargetB.GetTarget() == TARGET_DEST_DYNOBJ_NONE)
+        else if (spellInfo->Effects[effIndex].TargetB.GetTarget() == TARGET_DEST_DYNOBJ_NONE)
         {
             Acore::AnyAttackableUnitExceptForOriginalCasterInObjectRangeCheck u_check(GetDynobjOwner(), dynObjOwnerCaster, radius);
             Acore::UnitListSearcher<Acore::AnyAttackableUnitExceptForOriginalCasterInObjectRangeCheck> searcher(GetDynobjOwner(), targetList, u_check);
@@ -2844,12 +2919,21 @@ void DynObjAura::FillTargetMap(std::map<Unit*, uint8>& targets, Unit* /*caster*/
 
         for (UnitList::iterator itr = targetList.begin(); itr != targetList.end(); ++itr)
         {
-            // xinef: check z level and los dependence
             Unit* target = *itr;
-            float zLevel = GetDynobjOwner()->GetPositionZ();
-            if (target->GetPositionZ() + 3.0f < zLevel || target->GetPositionZ() - 5.0f > zLevel)
-                if (!target->IsWithinLOSInMap(GetDynobjOwner()))
-                    continue;
+
+            Optional<float> collisionHeight = { };
+            Optional<float> combatReach = { };
+            if (Unit* dynObjCaster = GetDynobjOwner()->GetCaster())
+            {
+                collisionHeight = dynObjCaster->GetCollisionHeight();
+                combatReach = dynObjCaster->GetCombatReach();
+            }
+
+            if (!spellInfo->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) && !spellInfo->HasAttribute(SPELL_ATTR5_ALWAYS_AOE_LINE_OF_SIGHT) &&
+                !GetDynobjOwner()->IsWithinLOSInMap(target, VMAP::ModelIgnoreFlags::Nothing, LINEOFSIGHT_ALL_CHECKS, collisionHeight, combatReach))
+            {
+                continue;
+            }
 
             std::map<Unit*, uint8>::iterator existing = targets.find(*itr);
             if (existing != targets.end())

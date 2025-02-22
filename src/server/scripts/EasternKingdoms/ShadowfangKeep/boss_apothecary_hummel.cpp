@@ -15,17 +15,18 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
-#include "ScriptedCreature.h"
-#include "ScriptedGossip.h"
+#include "CreatureScript.h"
+#include "GridNotifiersImpl.h"
+#include "Group.h"
 #include "LFGMgr.h"
 #include "Player.h"
-#include "Group.h"
-#include "SpellScript.h"
+#include "ScriptedCreature.h"
+#include "ScriptedGossip.h"
 #include "SpellAuraEffects.h"
-#include "shadowfang_keep.h"
-#include "GridNotifiersImpl.h"
+#include "SpellScript.h"
+#include "SpellScriptLoader.h"
 #include "TaskScheduler.h"
+#include "shadowfang_keep.h"
 
 enum ApothecarySpells
 {
@@ -71,7 +72,8 @@ enum ApothecaryMisc
     NPC_VIAL_BUNNY          = 36530,
     NPC_CROWN_APOTHECARY    = 36885,
     PHASE_ALL               = 0,
-    PHASE_INTRO             = 1
+    PHASE_INTRO             = 1,
+    PHASE_COMBAT            = 2
 };
 
 Position const BaxterMovePos = { -221.4115f, 2206.825f, 79.93151f, 0.0f };
@@ -86,7 +88,7 @@ public:
     {
         boss_apothecary_hummelAI(Creature* creature) : BossAI(creature, DATA_APOTHECARY_HUMMEL), _deadCount(0), _isDead(false)
         {
-            _scheduler.SetValidator([this]
+            scheduler.SetValidator([this]
             {
                 return !me->HasUnitState(UNIT_STATE_CASTING);
             });
@@ -96,7 +98,7 @@ public:
         {
             if (menuId == GOSSIP_MENU_HUMMEL && gossipListId == GOSSIP_OPTION_START)
             {
-                me->RemoveFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+                me->RemoveNpcFlag(UNIT_NPC_FLAG_GOSSIP);
                 CloseGossipMenuFor(player);
                 DoAction(ACTION_START_EVENT);
             }
@@ -110,22 +112,15 @@ public:
             _phase = PHASE_ALL;
             me->SetFaction(FACTION_FRIENDLY);
             me->SummonCreatureGroup(1);
-            me->SetFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
-        }
-
-        void EnterEvadeMode() override
-        {
-            summons.DespawnAll();
-            _EnterEvadeMode();
+            me->SetNpcFlag(UNIT_NPC_FLAG_GOSSIP);
         }
 
         void DoAction(int32 action) override
         {
-            if (action == ACTION_START_EVENT && events.IsInPhase(PHASE_ALL))
+            if (action == ACTION_START_EVENT && _phase == PHASE_ALL)
             {
-                events.SetPhase(PHASE_INTRO);
                 _phase = PHASE_INTRO;
-                _scheduler.Schedule(1ms, [this](TaskContext /*context*/)
+                scheduler.Schedule(1ms, [this](TaskContext /*context*/)
                 {
                     Talk(SAY_INTRO_0);
                 })
@@ -139,7 +134,8 @@ public:
                 })
                 .Schedule(12s, [this](TaskContext context)
                 {
-                    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+                    me->SetImmuneToAll(false);
+                    _phase = PHASE_COMBAT;
                     DoZoneInCombat();
 
                     context.Schedule(6s, [this](TaskContext /*context*/) // Call Baxter
@@ -184,7 +180,7 @@ public:
                     }
                 });
 
-                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);
+                me->SetImmuneToPC(true);
                 me->SetFaction(FACTION_MONSTER);
                 summons.DoAction(ACTION_START_EVENT);
             }
@@ -202,7 +198,7 @@ public:
                         _isDead = true;
                         me->RemoveAurasDueToSpell(SPELL_ALLURING_PERFUME);
                         DoCastSelf(SPELL_PERMANENT_FEIGN_DEATH, true);
-                        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+                        me->SetUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
                         Talk(SAY_HUMMEL_DEATH);
                     }
                 }
@@ -229,9 +225,8 @@ public:
                 Talk(SAY_HUMMEL_DEATH);
             }
 
-            _scheduler.CancelAll();
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
-            instance->SetBossState(DATA_APOTHECARY_HUMMEL, DONE);
+            _JustDied();
+            me->RemoveUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
 
             Map::PlayerList const& players = me->GetMap()->GetPlayers();
             if (!players.IsEmpty())
@@ -253,7 +248,7 @@ public:
                 return;
             }
 
-            _scheduler.Update(diff, [this]
+            scheduler.Update(diff, [this]
             {
                 DoMeleeAttackIfReady();
             });
@@ -262,7 +257,6 @@ public:
     private:
         uint8 _deadCount;
         bool _isDead;
-        TaskScheduler _scheduler;
         uint8 _phase;
     };
 
@@ -292,13 +286,13 @@ struct npc_apothecary_genericAI : public ScriptedAI
     {
         if (action == ACTION_START_EVENT)
         {
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC);
+            me->SetImmuneToPC(true);
             me->SetFaction(FACTION_MONSTER);
             me->GetMotionMaster()->MovePoint(1, _movePos);
         }
         else if (action == ACTION_START_FIGHT)
         {
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+            me->SetImmuneToAll(false);
             DoZoneInCombat();
         }
     }

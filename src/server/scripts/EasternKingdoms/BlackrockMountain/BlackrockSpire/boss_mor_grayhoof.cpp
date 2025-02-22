@@ -15,7 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "TaskScheduler.h"
 #include "blackrock_spire.h"
@@ -122,13 +122,13 @@ struct boss_mor_grayhoof : public BossAI
 
                         // Sleep can target tank, we need to drop threat temporarily on the target.
                         _sleepTargetGUID = target->GetGUID();
-                        _sleepTargetThreat = me->getThreatMgr().getThreat(target);
-                        me->getThreatMgr().modifyThreatPercent(target, -100);
+                        _sleepTargetThreat = me->GetThreatMgr().GetThreat(target);
+                        me->GetThreatMgr().ModifyThreatByPercent(target, -100);
                         _scheduler.Schedule(10s, [this](TaskContext /*context*/)
                             {
                                 if (Unit* sleepTarget = ObjectAccessor::GetUnit(*me, _sleepTargetGUID))
                                 {
-                                    me->getThreatMgr().addThreat(sleepTarget, _sleepTargetThreat);
+                                    me->GetThreatMgr().AddThreat(sleepTarget, _sleepTargetThreat);
                                 }
                             });
                     }
@@ -189,9 +189,9 @@ struct boss_mor_grayhoof : public BossAI
         }
     }
 
-    void EnterCombat(Unit* /*who*/) override
+    void JustEngagedWith(Unit* /*who*/) override
     {
-        _EnterCombat();
+        _JustEngagedWith();
         Talk(SAY_AGGRO);
         _scheduler.Schedule(5s, 10s, PHASE_HUMAN, [this](TaskContext context)
             {

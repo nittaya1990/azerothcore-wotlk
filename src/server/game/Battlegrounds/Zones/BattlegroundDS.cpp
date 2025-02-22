@@ -16,15 +16,13 @@
  */
 
 #include "BattlegroundDS.h"
-#include "ArenaScore.h"
 #include "Creature.h"
 #include "GameObject.h"
-#include "Language.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "WorldPacket.h"
-#include "WorldSession.h"
+#include "WorldStatePackets.h"
 
 BattlegroundDS::BattlegroundDS()
 {
@@ -106,7 +104,7 @@ void BattlegroundDS::StartingEventOpenDoors()
         DoorOpen(i);
 
     for (uint32 i = BG_DS_OBJECT_BUFF_1; i <= BG_DS_OBJECT_BUFF_2; ++i)
-        SpawnBGObject(i, 60);
+        SpawnBGObject(i, 90);
 
     _events.ScheduleEvent(BG_DS_EVENT_WATERFALL_WARNING, BG_DS_WATERFALL_TIMER_MIN, BG_DS_WATERFALL_TIMER_MAX);
     //for (uint8 i = 0; i < BG_DS_PIPE_KNOCKBACK_TOTAL_COUNT; ++i)
@@ -176,10 +174,10 @@ bool BattlegroundDS::HandlePlayerUnderMap(Player* player)
     return true;
 }
 
-void BattlegroundDS::FillInitialWorldStates(WorldPacket& data)
+void BattlegroundDS::FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet)
 {
-    data << uint32(3610) << uint32(1);                                              // 9 show
-    Arena::FillInitialWorldStates(data);
+    packet.Worldstates.emplace_back(0xe1a, 1); // ARENA_WORLD_STATE_ALIVE_PLAYERS_SHOW
+    Arena::FillInitialWorldStates(packet);
 }
 
 bool BattlegroundDS::SetupBattleground()

@@ -195,7 +195,7 @@ enum SpellCustomAttributes
     SPELL_ATTR0_CU_NEEDS_AMMO_DATA               = 0x00080000,
     SPELL_ATTR0_CU_BINARY_SPELL                  = 0x00100000,
     SPELL_ATTR0_CU_NO_POSITIVE_TAKEN_BONUS       = 0x00200000,
-    SPELL_ATTR0_CU_SINGLE_AURA_STACK             = 0x00400000, // pussywizard
+    SPELL_ATTR0_CU_SINGLE_AURA_STACK             = 0x00400000,
     SPELL_ATTR0_CU_SCHOOLMASK_NORMAL_WITH_MAGIC  = 0x00800000,
     SPELL_ATTR0_CU_AURA_CANNOT_BE_SAVED          = 0x01000000,
     SPELL_ATTR0_CU_POSITIVE_EFF0                 = 0x02000000,
@@ -203,7 +203,9 @@ enum SpellCustomAttributes
     SPELL_ATTR0_CU_POSITIVE_EFF2                 = 0x08000000,
     SPELL_ATTR0_CU_FORCE_SEND_CATEGORY_COOLDOWNS = 0x10000000,
     SPELL_ATTR0_CU_FORCE_AURA_SAVING             = 0x20000800,
-    SPELL_ATTR0_CU_ENCOUNTER_REWARD              = 0x40000000, // pussywizard
+    SPELL_ATTR0_CU_ONLY_ONE_AREA_AURA            = 0x20000000,
+    SPELL_ATTR0_CU_ENCOUNTER_REWARD              = 0x40000000,
+    SPELL_ATTR0_CU_BYPASS_MECHANIC_IMMUNITY      = 0x80000000,
 
     SPELL_ATTR0_CU_NEGATIVE                      = SPELL_ATTR0_CU_NEGATIVE_EFF0 | SPELL_ATTR0_CU_NEGATIVE_EFF1 | SPELL_ATTR0_CU_NEGATIVE_EFF2,
     SPELL_ATTR0_CU_POSITIVE                      = SPELL_ATTR0_CU_POSITIVE_EFF0 | SPELL_ATTR0_CU_POSITIVE_EFF1 | SPELL_ATTR0_CU_POSITIVE_EFF2,
@@ -377,6 +379,7 @@ public:
     std::array<uint32, 2> SpellVisual;
     uint32 SpellIconID;
     uint32 ActiveIconID;
+    uint32 SpellPriority;
     std::array<char const*, 16> SpellName;
     std::array<char const*, 16> Rank;
     uint32 MaxTargetLevel;
@@ -404,6 +407,7 @@ public:
 
     uint32 GetCategory() const;
     bool HasEffect(SpellEffects effect) const;
+    bool HasEffectMechanic(Mechanics mechanic) const;
     bool HasAura(AuraType aura) const;
     bool HasAnyAura() const;
     bool HasAreaAuraEffect() const;
@@ -456,7 +460,7 @@ public:
     bool IsPositive() const;
     bool IsPositiveEffect(uint8 effIndex) const;
     bool IsChanneled() const;
-    [[nodiscard]] bool IsMoveAllowedChannel() const;
+    [[nodiscard]] bool IsActionAllowedChannel() const;
     bool NeedsComboPoints() const;
     bool IsBreakingStealth() const;
     bool IsRangedWeaponSpell() const;
@@ -473,7 +477,7 @@ public:
     bool IsAuraExclusiveBySpecificPerCasterWith(SpellInfo const* spellInfo) const;
 
     SpellCastResult CheckShapeshift(uint32 form) const;
-    SpellCastResult CheckLocation(uint32 map_id, uint32 zone_id, uint32 area_id, Player const* player = nullptr, bool strict = true) const;
+    SpellCastResult CheckLocation(uint32 map_id, uint32 zone_id, uint32 area_id, Player* player = nullptr, bool strict = true) const;
     SpellCastResult CheckTarget(Unit const* caster, WorldObject const* target, bool implicit = true) const;
     SpellCastResult CheckExplicitTarget(Unit const* caster, WorldObject const* target, Item const* itemTarget = nullptr) const;
     bool CheckTargetCreatureType(Unit const* target) const;

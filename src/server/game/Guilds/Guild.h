@@ -22,11 +22,8 @@
 #include "ObjectMgr.h"
 #include "Optional.h"
 #include "Player.h"
-#include "World.h"
-#include "WorldPacket.h"
 #include <set>
 #include <unordered_map>
-#include <unordered_set>
 
 class Item;
 
@@ -161,7 +158,7 @@ enum GuildEvents
     GE_RANK_DELETED                     = 11,
     GE_SIGNED_ON                        = 12,
     GE_SIGNED_OFF                       = 13,
-    GE_GUILDBANKBAGSLOTS_CHANGED        = 14,   /// TODO: Sent when items are moved in gbank - all players with bank open will send tab query
+    GE_GUILDBANKBAGSLOTS_CHANGED        = 14,   /// @todo: Sent when items are moved in gbank - all players with bank open will send tab query
     GE_BANK_TAB_PURCHASED               = 15,
     GE_BANK_TAB_UPDATED                 = 16,
     GE_BANK_MONEY_SET                   = 17,
@@ -306,7 +303,8 @@ public: // pussywizard: public class Member
             m_class(0),
             m_flags(GUILDMEMBER_STATUS_NONE),
             m_accountId(0),
-            m_rankId(rankId)
+            m_rankId(rankId),
+            receiveGuildBankUpdatePackets(false)
         {
         }
 
@@ -353,6 +351,10 @@ public: // pussywizard: public class Member
 
         inline Player* FindPlayer() const { return ObjectAccessor::FindConnectedPlayer(m_guid); }
 
+        void SubscribeToGuildBankUpdatePackets() { receiveGuildBankUpdatePackets = true; }
+        void UnsubscribeFromGuildBankUpdatePackets() { receiveGuildBankUpdatePackets = false; }
+        [[nodiscard]] bool ShouldReceiveBankPartialUpdatePackets() const { return receiveGuildBankUpdatePackets; }
+
     private:
         uint32 m_guildId;
         // Fields from characters table
@@ -371,6 +373,8 @@ public: // pussywizard: public class Member
         std::string m_officerNote;
 
         std::array<int32, GUILD_BANK_MAX_TABS + 1> m_bankWithdraw = {};
+
+        bool receiveGuildBankUpdatePackets;
     };
 
     // pussywizard: public GetMember
@@ -386,7 +390,7 @@ public: // pussywizard: public class Member
     }
     inline Member* GetMember(std::string_view name)
     {
-        for (auto & m_member : m_members)
+        for (auto& m_member : m_members)
             if (m_member.second.GetName() == name)
                 return &m_member.second;
 
@@ -718,10 +722,10 @@ public:
     void SendInfo(WorldSession* session) const;
     void SendEventLog(WorldSession* session) const;
     void SendBankLog(WorldSession* session, uint8 tabId) const;
-    void SendBankTabsInfo(WorldSession* session, bool showTabs = false) const;
+    void SendBankTabsInfo(WorldSession* session, bool showTabs = false);
     void SendBankTabData(WorldSession* session, uint8 tabId, bool sendAllSlots) const;
     void SendBankTabText(WorldSession* session, uint8 tabId) const;
-    void SendPermissions(WorldSession* session) const;
+    void SendPermissions(WorldSession* session);
     void SendMoneyInfo(WorldSession* session) const;
     void SendLoginInfo(WorldSession* session);
 

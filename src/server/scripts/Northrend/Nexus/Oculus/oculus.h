@@ -19,9 +19,9 @@
 #define DEF_OCULUS_H
 
 #include "CreatureAIImpl.h"
-#include "SpellAuraEffects.h"
-#include "SpellAuras.h"
 #include "SpellScript.h"
+
+#define DataHeader "OC"
 
 #define OculusScriptName "instance_oculus"
 

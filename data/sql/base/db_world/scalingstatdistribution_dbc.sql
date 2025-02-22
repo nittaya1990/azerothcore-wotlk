@@ -1,51 +1,68 @@
--- --------------------------------------------------------
--- Хост:                         127.0.0.1
--- Версия сервера:               10.6.4-MariaDB - mariadb.org binary distribution
--- Операционная система:         Win64
--- HeidiSQL Версия:              11.3.0.6295
--- --------------------------------------------------------
+-- MySQL dump 10.13  Distrib 8.0.34, for Win64 (x86_64)
+--
+-- Host: 127.0.0.1    Database: acore_world
+-- ------------------------------------------------------
+-- Server version	8.0.34
 
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
-/*!40101 SET NAMES utf8 */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
 /*!50503 SET NAMES utf8mb4 */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
 /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
--- Дамп структуры для таблица acore_world.scalingstatdistribution_dbc
-DROP TABLE IF EXISTS `scalingstatdistribution_dbc`;
-CREATE TABLE IF NOT EXISTS `scalingstatdistribution_dbc` (
-  `ID` INT NOT NULL DEFAULT 0,
-  `StatID_1` INT NOT NULL DEFAULT 0,
-  `StatID_2` INT NOT NULL DEFAULT 0,
-  `StatID_3` INT NOT NULL DEFAULT 0,
-  `StatID_4` INT NOT NULL DEFAULT 0,
-  `StatID_5` INT NOT NULL DEFAULT 0,
-  `StatID_6` INT NOT NULL DEFAULT 0,
-  `StatID_7` INT NOT NULL DEFAULT 0,
-  `StatID_8` INT NOT NULL DEFAULT 0,
-  `StatID_9` INT NOT NULL DEFAULT 0,
-  `StatID_10` INT NOT NULL DEFAULT 0,
-  `Bonus_1` INT NOT NULL DEFAULT 0,
-  `Bonus_2` INT NOT NULL DEFAULT 0,
-  `Bonus_3` INT NOT NULL DEFAULT 0,
-  `Bonus_4` INT NOT NULL DEFAULT 0,
-  `Bonus_5` INT NOT NULL DEFAULT 0,
-  `Bonus_6` INT NOT NULL DEFAULT 0,
-  `Bonus_7` INT NOT NULL DEFAULT 0,
-  `Bonus_8` INT NOT NULL DEFAULT 0,
-  `Bonus_9` INT NOT NULL DEFAULT 0,
-  `Bonus_10` INT NOT NULL DEFAULT 0,
-  `Maxlevel` INT NOT NULL DEFAULT 0,
-  PRIMARY KEY (`ID`)
-) ENGINE=MyISAM DEFAULT CHARSET=utf8mb4;
+--
+-- Table structure for table `scalingstatdistribution_dbc`
+--
 
--- Дамп данных таблицы acore_world.scalingstatdistribution_dbc: 0 rows
-DELETE FROM `scalingstatdistribution_dbc`;
+DROP TABLE IF EXISTS `scalingstatdistribution_dbc`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `scalingstatdistribution_dbc` (
+  `ID` int NOT NULL DEFAULT '0',
+  `StatID_1` int NOT NULL DEFAULT '0',
+  `StatID_2` int NOT NULL DEFAULT '0',
+  `StatID_3` int NOT NULL DEFAULT '0',
+  `StatID_4` int NOT NULL DEFAULT '0',
+  `StatID_5` int NOT NULL DEFAULT '0',
+  `StatID_6` int NOT NULL DEFAULT '0',
+  `StatID_7` int NOT NULL DEFAULT '0',
+  `StatID_8` int NOT NULL DEFAULT '0',
+  `StatID_9` int NOT NULL DEFAULT '0',
+  `StatID_10` int NOT NULL DEFAULT '0',
+  `Bonus_1` int NOT NULL DEFAULT '0',
+  `Bonus_2` int NOT NULL DEFAULT '0',
+  `Bonus_3` int NOT NULL DEFAULT '0',
+  `Bonus_4` int NOT NULL DEFAULT '0',
+  `Bonus_5` int NOT NULL DEFAULT '0',
+  `Bonus_6` int NOT NULL DEFAULT '0',
+  `Bonus_7` int NOT NULL DEFAULT '0',
+  `Bonus_8` int NOT NULL DEFAULT '0',
+  `Bonus_9` int NOT NULL DEFAULT '0',
+  `Bonus_10` int NOT NULL DEFAULT '0',
+  `Maxlevel` int NOT NULL DEFAULT '0',
+  PRIMARY KEY (`ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `scalingstatdistribution_dbc`
+--
+
+LOCK TABLES `scalingstatdistribution_dbc` WRITE;
 /*!40000 ALTER TABLE `scalingstatdistribution_dbc` DISABLE KEYS */;
 /*!40000 ALTER TABLE `scalingstatdistribution_dbc` ENABLE KEYS */;
+UNLOCK TABLES;
 
-/*!40101 SET SQL_MODE=IFNULL(@OLD_SQL_MODE, '') */;
-/*!40014 SET FOREIGN_KEY_CHECKS=IFNULL(@OLD_FOREIGN_KEY_CHECKS, 1) */;
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
-/*!40111 SET SQL_NOTES=IFNULL(@OLD_SQL_NOTES, 1) */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Dump completed on 2024-12-17 22:34:34
+

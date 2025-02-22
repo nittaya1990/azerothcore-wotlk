@@ -18,8 +18,7 @@
 #ifndef DEF_STRATHOLME_H
 #define DEF_STRATHOLME_H
 
-#include "SpellAuras.h"
-
+#define DataHeader "STR"
 #define StratholmeScriptName "instance_stratholme"
 
 enum DataTypes
@@ -30,6 +29,7 @@ enum DataTypes
     TYPE_ZIGGURAT3                      = 3,
     TYPE_BARON_FIGHT                    = 4,
     TYPE_MALLOW                         = 5,
+    TYPE_BARTHILAS_RUN                  = 6,
 
     DATA_BARON_RUN_NONE                 = 0,
     DATA_BARON_RUN_GATE                 = 1,
@@ -39,6 +39,7 @@ enum DataTypes
 
 enum CreatureIds
 {
+    NPC_BARTHILAS                       = 10435,
     NPC_BARON_RIVENDARE                 = 10440,
     NPC_BILE_SPEWER                     = 10416,
     NPC_VENOM_BELCHER                   = 10417,
@@ -57,6 +58,11 @@ enum CreatureIds
 
 enum GameobjectIds
 {
+    GO_CRUSADER_SQUARE_DOOR             = 175967,
+    GO_HOARD_DOOR                       = 175968,
+    GO_HALL_OF_HIGH_COMMAND             = 176194,
+    GO_GAUNTLET_DOOR_1                  = 175357,
+    GO_GAUNTLET_DOOR_2                  = 175356,
     GO_ZIGGURAT_DOORS1                  = 175380,  // baroness
     GO_ZIGGURAT_DOORS2                  = 175379,  // nerub'enkan
     GO_ZIGGURAT_DOORS3                  = 175381,  // maleki

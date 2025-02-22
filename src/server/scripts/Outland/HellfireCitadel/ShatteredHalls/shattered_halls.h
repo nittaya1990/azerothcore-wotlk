@@ -19,8 +19,6 @@
 #define DEF_SHATTERED_H
 
 #include "CreatureAIImpl.h"
-#include "PassiveAI.h"
-#include "SpellScript.h"
 
 #define ShatteredHallsLairScriptName "instance_shattered_halls"
 
@@ -29,20 +27,36 @@ enum DataTypes
     DATA_NETHEKURSE                 = 0,
     DATA_OMROGG                     = 1,
     DATA_KARGATH                    = 2,
-    ENCOUNTER_COUNT                 = 3,
+    DATA_PORUNG                     = 3,
+    ENCOUNTER_COUNT                 = 4,
 
     DATA_ENTERED_ROOM               = 10,
     DATA_PRISONER_1                 = 11,
     DATA_PRISONER_2                 = 12,
     DATA_PRISONER_3                 = 13,
-    DATA_EXECUTIONER                = 14
+    DATA_EXECUTIONER                = 14,
+    DATA_OMROGG_LEFT_HEAD           = 15,
+    DATA_OMROGG_RIGHT_HEAD          = 16,
+    DATA_WARCHIEF_PORTAL            = 17
 };
 
 enum CreatureIds
 {
     NPC_GRAND_WARLOCK_NETHEKURSE    = 16807,
-    NPC_WARCHIEF_KARGATH            = 16808,
     NPC_FEL_ORC_CONVERT             = 17083,
+    NPC_PORUNG                      = 20923,
+    NPC_BLOOD_GUARD                 = 17461,
+    NPC_SH_ZEALOT                   = 17462,
+    NPC_SH_ARCHER                   = 17427,
+    NPC_SH_SCOUT                    = 17693,
+
+    // Warchief Kargath
+    NPC_WARCHIEF_KARGATH            = 16808,
+    NPC_WARCHIEF_PORTAL             = 17611,
+
+    // O'MROGG
+    NPC_OMROGG_LEFT_HEAD            = 19523,
+    NPC_OMROGG_RIGHT_HEAD           = 19524,
 
     // Trial of the Naaru: Mercy
     NPC_SHATTERED_EXECUTIONER       = 17301,
@@ -52,6 +66,11 @@ enum CreatureIds
     NPC_KORAG_PROUDMANE             = 17295,
     NPC_CAPTAIN_BONESHATTER         = 17296,
     NPC_SCOUT_ORGARR                = 17297,
+
+    //Drisella
+    NPC_DRISELLA                    = 17294,
+    // Randy Whizzlesprocket
+    NPC_RANDY_WHIZZLESPROCKET       = 17288,
 };
 
 enum GameobjectIds
@@ -72,5 +91,7 @@ inline AI* GetShatteredHallsAI(T* obj)
 {
     return GetInstanceAI<AI>(obj, ShatteredHallsLairScriptName);
 }
+
+#define RegisterShatteredHallsCreatureAI(ai_name) RegisterCreatureAIWithFactory(ai_name, GetShatteredHallsAI)
 
 #endif

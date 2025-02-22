@@ -18,7 +18,8 @@
 #ifndef ACORE_WAYPOINTMANAGER_H
 #define ACORE_WAYPOINTMANAGER_H
 
-#include "Common.h"
+#include "Define.h"
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -35,7 +36,8 @@ enum WaypointMoveType
 struct WaypointData
 {
     uint32 id;
-    float x, y, z, orientation;
+    float x, y, z;
+    std::optional<float> orientation;
     uint32 delay;
     uint32 event_id;
     uint32 move_type;

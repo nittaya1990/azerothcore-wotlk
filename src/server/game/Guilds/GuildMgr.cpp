@@ -92,7 +92,7 @@ Guild* GuildMgr::GetGuildByLeader(ObjectGuid guid) const
 void GuildMgr::LoadGuilds()
 {
     // 1. Load all guilds
-    LOG_INFO("server.loading", "Loading guilds definitions...");
+    LOG_INFO("server.loading", "Loading Guilds Definitions...");
     {
         uint32 oldMSTime = getMSTime();
 
@@ -106,7 +106,7 @@ void GuildMgr::LoadGuilds()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 guild definitions. DB table `guild` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 guild definitions. DB table `guild` is empty.");
             LOG_INFO("server.loading", " ");
         }
         else
@@ -134,7 +134,7 @@ void GuildMgr::LoadGuilds()
     }
 
     // 2. Load all guild ranks
-    LOG_INFO("server.loading", "Loading guild ranks...");
+    LOG_INFO("server.loading", "Loading Guild Ranks...");
     {
         uint32 oldMSTime = getMSTime();
 
@@ -146,7 +146,7 @@ void GuildMgr::LoadGuilds()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 guild ranks. DB table `guild_rank` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 guild ranks. DB table `guild_rank` is empty.");
             LOG_INFO("server.loading", " ");
         }
         else
@@ -169,7 +169,7 @@ void GuildMgr::LoadGuilds()
     }
 
     // 3. Load all guild members
-    LOG_INFO("server.loading", "Loading guild members...");
+    LOG_INFO("server.loading", "Loading Guild Members...");
     {
         uint32 oldMSTime = getMSTime();
 
@@ -187,7 +187,7 @@ void GuildMgr::LoadGuilds()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 guild members. DB table `guild_member` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 guild members. DB table `guild_member` is empty.");
             LOG_INFO("server.loading", " ");
         }
         else
@@ -211,7 +211,7 @@ void GuildMgr::LoadGuilds()
     }
 
     // 4. Load all guild bank tab rights
-    LOG_INFO("server.loading", "Loading bank tab rights...");
+    LOG_INFO("server.loading", "Loading Bank Tab Rights...");
     {
         uint32 oldMSTime = getMSTime();
 
@@ -223,7 +223,7 @@ void GuildMgr::LoadGuilds()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 guild bank tab rights. DB table `guild_bank_right` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 guild bank tab rights. DB table `guild_bank_right` is empty.");
             LOG_INFO("server.loading", " ");
         }
         else
@@ -246,7 +246,7 @@ void GuildMgr::LoadGuilds()
     }
 
     // 5. Load all event logs
-    LOG_INFO("server.loading", "Loading guild event logs...");
+    LOG_INFO("server.loading", "Loading Guild Event Logs...");
     {
         uint32 oldMSTime = getMSTime();
 
@@ -257,7 +257,7 @@ void GuildMgr::LoadGuilds()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 guild event logs. DB table `guild_eventlog` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 guild event logs. DB table `guild_eventlog` is empty.");
             LOG_INFO("server.loading", " ");
         }
         else
@@ -280,7 +280,7 @@ void GuildMgr::LoadGuilds()
     }
 
     // 6. Load all bank event logs
-    LOG_INFO("server.loading", "Loading guild bank event logs...");
+    LOG_INFO("server.loading", "Loading Guild Bank Event Logs...");
     {
         uint32 oldMSTime = getMSTime();
 
@@ -292,7 +292,7 @@ void GuildMgr::LoadGuilds()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 guild bank event logs. DB table `guild_bank_eventlog` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 guild bank event logs. DB table `guild_bank_eventlog` is empty.");
             LOG_INFO("server.loading", " ");
         }
         else
@@ -315,7 +315,7 @@ void GuildMgr::LoadGuilds()
     }
 
     // 7. Load all guild bank tabs
-    LOG_INFO("server.loading", "Loading guild bank tabs...");
+    LOG_INFO("server.loading", "Loading Guild Bank Tabs...");
     {
         uint32 oldMSTime = getMSTime();
 
@@ -327,7 +327,7 @@ void GuildMgr::LoadGuilds()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 guild bank tabs. DB table `guild_bank_tab` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 guild bank tabs. DB table `guild_bank_tab` is empty.");
             LOG_INFO("server.loading", " ");
         }
         else
@@ -364,7 +364,7 @@ void GuildMgr::LoadGuilds()
 
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 guild bank tab items. DB table `guild_bank_item` or `item_instance` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 guild bank tab items. DB table `guild_bank_item` or `item_instance` is empty.");
             LOG_INFO("server.loading", " ");
         }
         else

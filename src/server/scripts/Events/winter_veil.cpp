@@ -15,12 +15,13 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
 #include "GameEventMgr.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "Spell.h"
 #include "SpellScript.h"
+#include "SpellScriptLoader.h"
 
 ///////////////////////////////
 // SPELLS
@@ -81,7 +82,7 @@ class spell_winter_wondervolt_trap : public SpellScript
         if (Player* target = GetHitPlayer())
         {
             // check presence
-            if (target->HasAuraType(SPELL_AURA_TRANSFORM))
+            if (target->HasTransformAura())
                 return;
 
             uint32 spellId = 0;

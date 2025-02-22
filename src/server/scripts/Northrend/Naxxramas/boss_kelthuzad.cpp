@@ -15,10 +15,11 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "SpellScript.h"
+#include "SpellScriptLoader.h"
 #include "naxxramas.h"
 
 enum Yells
@@ -221,7 +222,7 @@ public:
             BossAI::Reset();
             events.Reset();
             summons.DespawnAll();
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
+            me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
             me->SetReactState(REACT_AGGRESSIVE);
             if (GameObject* go = me->GetMap()->GetGameObject(pInstance->GetGuidData(DATA_KELTHUZAD_FLOOR)))
             {
@@ -230,7 +231,7 @@ public:
             }
             if (GameObject* go = me->GetMap()->GetGameObject(pInstance->GetGuidData(DATA_KELTHUZAD_GATE)))
             {
-                if(!_justSpawned) // Don't open the door if we just spawned and are still doing the conversation
+                if (!_justSpawned) // Don't open the door if we just spawned and are still doing the conversation
                 {
                     go->SetGoState(GO_STATE_ACTIVE);
                 }
@@ -254,15 +255,15 @@ public:
             }
         }
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
-            ScriptedAI::EnterEvadeMode();
+            me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
+            ScriptedAI::EnterEvadeMode(why);
         }
 
         void KilledUnit(Unit* who) override
         {
-            if (who->GetTypeId() != TYPEID_PLAYER)
+            if (!who->IsPlayer())
                 return;
 
             Talk(SAY_SLAY);
@@ -292,30 +293,30 @@ public:
 
         void MoveInLineOfSight(Unit* who) override
         {
-            if (!me->IsInCombat() && who->GetTypeId() == TYPEID_PLAYER && who->IsAlive() && me->GetDistance(who) <= 50.0f)
+            if (!me->IsInCombat() && who->IsPlayer() && who->IsAlive() && me->GetDistance(who) <= 50.0f)
                 AttackStart(who);
         }
 
-        void EnterCombat(Unit* who) override
+        void JustEngagedWith(Unit* who) override
         {
-            BossAI::EnterCombat(who);
+            BossAI::JustEngagedWith(who);
             Talk(SAY_SUMMON_MINIONS);
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
+            me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
             me->RemoveAllAttackers();
             me->SetTarget();
             me->SetReactState(REACT_PASSIVE);
             me->CastSpell(me, SPELL_KELTHUZAD_CHANNEL, false);
-            events.ScheduleEvent(EVENT_SPAWN_POOL, 5000);
-            events.ScheduleEvent(EVENT_SUMMON_SOLDIER, 6400);
-            events.ScheduleEvent(EVENT_SUMMON_UNSTOPPABLE_ABOMINATION, 10000);
-            events.ScheduleEvent(EVENT_SUMMON_SOUL_WEAVER, 12000);
-            events.ScheduleEvent(EVENT_PHASE_2, 228000);
-            events.ScheduleEvent(EVENT_ENRAGE, 900000);
+            events.ScheduleEvent(EVENT_SPAWN_POOL, 5s);
+            events.ScheduleEvent(EVENT_SUMMON_SOLDIER, 6400ms);
+            events.ScheduleEvent(EVENT_SUMMON_UNSTOPPABLE_ABOMINATION, 10s);
+            events.ScheduleEvent(EVENT_SUMMON_SOUL_WEAVER, 12s);
+            events.ScheduleEvent(EVENT_PHASE_2, 228s);
+            events.ScheduleEvent(EVENT_ENRAGE, 15min);
             if (pInstance)
             {
                 if (GameObject* go = me->GetMap()->GetGameObject(pInstance->GetGuidData(DATA_KELTHUZAD_FLOOR)))
                 {
-                    events.ScheduleEvent(EVENT_FLOOR_CHANGE, 15000);
+                    events.ScheduleEvent(EVENT_FLOOR_CHANGE, 15s);
                     go->SetGoState(GO_STATE_ACTIVE);
                 }
             }
@@ -357,7 +358,7 @@ public:
                     {
                         if (GameObject* go = me->GetMap()->GetGameObject(pInstance->GetGuidData(DATA_KELTHUZAD_FLOOR)))
                         {
-                            events.ScheduleEvent(EVENT_FLOOR_CHANGE, 15000);
+                            events.ScheduleEvent(EVENT_FLOOR_CHANGE, 15s);
                             go->SetGoState(GO_STATE_READY);
                             go->SetPhaseMask(2, true);
                         }
@@ -368,34 +369,34 @@ public:
                     break;
                 case EVENT_SUMMON_SOLDIER:
                     SummonHelper(NPC_SOLDIER_OF_THE_FROZEN_WASTES, 1);
-                    events.RepeatEvent(3100);
+                    events.Repeat(3100ms);
                     break;
                 case EVENT_SUMMON_UNSTOPPABLE_ABOMINATION:
                     SummonHelper(NPC_UNSTOPPABLE_ABOMINATION, 1);
-                    events.RepeatEvent(18500);
+                    events.Repeat(18s + 500ms);
                     break;
                 case EVENT_SUMMON_SOUL_WEAVER:
                     SummonHelper(NPC_SOUL_WEAVER, 1);
-                    events.RepeatEvent(30000);
+                    events.Repeat(30s);
                     break;
                 case EVENT_PHASE_2:
                     Talk(EMOTE_PHASE_TWO);
                     Talk(SAY_AGGRO);
                     events.Reset();
                     summons.DoAction(ACTION_SECOND_PHASE);
-                    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
+                    me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_DISABLE_MOVE);
                     me->GetMotionMaster()->MoveChase(me->GetVictim());
                     me->RemoveAura(SPELL_KELTHUZAD_CHANNEL);
                     me->SetReactState(REACT_AGGRESSIVE);
-                    events.ScheduleEvent(EVENT_FROST_BOLT_SINGLE, urand(2000, 10000));
-                    events.ScheduleEvent(EVENT_FROST_BOLT_MULTI, urand(15000, 30000));
-                    events.ScheduleEvent(EVENT_DETONATE_MANA, 30000);
-                    events.ScheduleEvent(EVENT_PHASE_3, 1000);
-                    events.ScheduleEvent(EVENT_SHADOW_FISSURE, 25000);
-                    events.ScheduleEvent(EVENT_FROST_BLAST, 45000);
+                    events.ScheduleEvent(EVENT_FROST_BOLT_SINGLE, 2s, 10s);
+                    events.ScheduleEvent(EVENT_FROST_BOLT_MULTI, 15s, 30s);
+                    events.ScheduleEvent(EVENT_DETONATE_MANA, 30s);
+                    events.ScheduleEvent(EVENT_PHASE_3, 1s);
+                    events.ScheduleEvent(EVENT_SHADOW_FISSURE, 25s);
+                    events.ScheduleEvent(EVENT_FROST_BLAST, 45s);
                     if (Is25ManRaid())
                     {
-                        events.ScheduleEvent(EVENT_CHAINS, 90000);
+                        events.ScheduleEvent(EVENT_CHAINS, 90s);
                     }
                     break;
                 case EVENT_ENRAGE:
@@ -403,18 +404,18 @@ public:
                     break;
                 case EVENT_FROST_BOLT_SINGLE:
                     me->CastSpell(me->GetVictim(), RAID_MODE(SPELL_FROST_BOLT_SINGLE_10, SPELL_FROST_BOLT_SINGLE_25), false);
-                    events.RepeatEvent(urand(2000, 10000));
+                    events.Repeat(2s, 10s);
                     break;
                 case EVENT_FROST_BOLT_MULTI:
                     me->CastSpell(me, RAID_MODE(SPELL_FROST_BOLT_MULTI_10, SPELL_FROST_BOLT_MULTI_25), false);
-                    events.RepeatEvent(urand(15000, 30000));
+                    events.Repeat(15s, 30s);
                     break;
                 case EVENT_SHADOW_FISSURE:
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 100.0f, true))
                     {
                         me->CastSpell(target, SPELL_SHADOW_FISURE, false);
                     }
-                    events.RepeatEvent(25000);
+                    events.Repeat(25s);
                     break;
                 case EVENT_FROST_BLAST:
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, RAID_MODE(1, 0), 0, true))
@@ -422,26 +423,26 @@ public:
                         me->CastSpell(target, SPELL_FROST_BLAST, false);
                     }
                     Talk(SAY_FROST_BLAST);
-                    events.RepeatEvent(45000);
+                    events.Repeat(45s);
                     break;
                 case EVENT_CHAINS:
                     for (uint8 i = 0; i < 3; ++i)
                     {
-                        if (Unit* target = SelectTarget(SelectTargetMethod::Random, 1, 200, true, -SPELL_CHAINS_OF_KELTHUZAD))
+                        if (Unit* target = SelectTarget(SelectTargetMethod::Random, 1, 200, true, true, -SPELL_CHAINS_OF_KELTHUZAD))
                         {
                             me->CastSpell(target, SPELL_CHAINS_OF_KELTHUZAD, true);
                         }
                     }
                     Talk(SAY_CHAIN);
-                    events.RepeatEvent(90000);
+                    events.Repeat(90s);
                     break;
                 case EVENT_DETONATE_MANA:
                     {
                         std::vector<Unit*> unitList;
-                        ThreatContainer::StorageType const& threatList = me->getThreatMgr().getThreatList();
+                        ThreatContainer::StorageType const& threatList = me->GetThreatMgr().GetThreatList();
                         for (auto itr : threatList)
                         {
-                            if (itr->getTarget()->GetTypeId() == TYPEID_PLAYER
+                            if (itr->getTarget()->IsPlayer()
                                     && itr->getTarget()->getPowerType() == POWER_MANA
                                     && itr->getTarget()->GetPower(POWER_MANA))
                                     {
@@ -455,15 +456,15 @@ public:
                             me->CastSpell(*itr, SPELL_DETONATE_MANA, false);
                             Talk(SAY_SPECIAL);
                         }
-                        events.RepeatEvent(30000);
+                        events.Repeat(30s);
                         break;
                     }
                 case EVENT_PHASE_3:
                     if (me->HealthBelowPct(45))
                     {
                         Talk(SAY_REQUEST_AID);
-                        events.DelayEvents(5500);
-                        events.ScheduleEvent(EVENT_P3_LICH_KING_SAY, 5000);
+                        events.DelayEvents(5500ms);
+                        events.ScheduleEvent(EVENT_P3_LICH_KING_SAY, 5s);
                         if (GameObject* go = me->GetMap()->GetGameObject(pInstance->GetGuidData(DATA_KELTHUZAD_PORTAL_1)))
                         {
                             go->SetGoState(GO_STATE_ACTIVE);
@@ -482,7 +483,7 @@ public:
                         }
                         break;
                     }
-                    events.RepeatEvent(1000);
+                    events.Repeat(1s);
                     break;
                 case EVENT_P3_LICH_KING_SAY:
                     if (pInstance)
@@ -505,7 +506,7 @@ public:
                     }
                     break;
             }
-            if (!me->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_DISABLE_MOVE))
+            if (!me->HasUnitFlag(UNIT_FLAG_DISABLE_MOVE))
                 DoMeleeAttackIfReady();
         }
     };
@@ -554,8 +555,8 @@ public:
             }
             if (param == ACTION_GUARDIANS_OFF)
             {
-                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
-                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+                me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+                me->SetUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
                 me->RemoveAllAuras();
                 EnterEvadeMode();
                 me->SetPosition(me->GetHomePosition());
@@ -564,7 +565,7 @@ public:
 
         void MoveInLineOfSight(Unit* who) override
         {
-            if (who->GetTypeId() != TYPEID_PLAYER && !who->IsPet())
+            if (!who->IsPlayer() && !who->IsPet())
                 return;
 
             ScriptedAI::MoveInLineOfSight(who);
@@ -601,23 +602,23 @@ public:
             }
         }
 
-        void EnterCombat(Unit*  /*who*/) override
+        void JustEngagedWith(Unit*  /*who*/) override
         {
             me->SetInCombatWithZone();
             if (me->GetEntry() == NPC_UNSTOPPABLE_ABOMINATION)
             {
-                events.ScheduleEvent(EVENT_MINION_FRENZY, 1000);
-                events.ScheduleEvent(EVENT_MINION_MORTAL_WOUND, 5000);
+                events.ScheduleEvent(EVENT_MINION_FRENZY, 1s);
+                events.ScheduleEvent(EVENT_MINION_MORTAL_WOUND, 5s);
             }
             else if (me->GetEntry() == NPC_GUARDIAN_OF_ICECROWN)
             {
-                events.ScheduleEvent(EVENT_MINION_BLOOD_TAP, 15000);
+                events.ScheduleEvent(EVENT_MINION_BLOOD_TAP, 15s);
             }
         }
 
         void KilledUnit(Unit* who) override
         {
-            if (who->GetTypeId() == TYPEID_PLAYER && me->GetInstanceScript())
+            if (who->IsPlayer() && me->GetInstanceScript())
             {
                 me->GetInstanceScript()->SetData(DATA_IMMORTAL_FAIL, 0);
             }
@@ -644,7 +645,7 @@ public:
             {
                 case EVENT_MINION_MORTAL_WOUND:
                     me->CastSpell(me->GetVictim(), SPELL_MORTAL_WOUND, false);
-                    events.RepeatEvent(15000);
+                    events.Repeat(15s);
                     break;
                 case EVENT_MINION_FRENZY:
                     if (me->HealthBelowPct(35))
@@ -652,11 +653,11 @@ public:
                         me->CastSpell(me, SPELL_FRENZY, true);
                         break;
                     }
-                    events.RepeatEvent(1000);
+                    events.Repeat(1s);
                     break;
                 case EVENT_MINION_BLOOD_TAP:
                     me->CastSpell(me->GetVictim(), SPELL_BLOOD_TAP, false);
-                    events.RepeatEvent(15000);
+                    events.Repeat(15s);
                     break;
             }
             DoMeleeAttackIfReady();
@@ -664,82 +665,65 @@ public:
     };
 };
 
-class spell_kelthuzad_frost_blast : public SpellScriptLoader
+class spell_kelthuzad_frost_blast : public SpellScript
 {
-public:
-    spell_kelthuzad_frost_blast() : SpellScriptLoader("spell_kelthuzad_frost_blast") { }
+    PrepareSpellScript(spell_kelthuzad_frost_blast);
 
-    class spell_kelthuzad_frost_blast_SpellScript : public SpellScript
+    bool Validate(SpellInfo const* /*spell*/) override
     {
-        PrepareSpellScript(spell_kelthuzad_frost_blast_SpellScript);
+        return ValidateSpellInfo({ SPELL_FROST_BLAST });
+    }
 
-        void FilterTargets(std::list<WorldObject*>& targets)
+    void FilterTargets(std::list<WorldObject*>& targets)
+    {
+        Unit* caster = GetCaster();
+        if (!caster || !caster->ToCreature())
+            return;
+
+        std::list<WorldObject*> tmplist;
+        for (auto& target : targets)
         {
-            Unit* caster = GetCaster();
-            if (!caster || !caster->ToCreature())
-                return;
-
-            std::list<WorldObject*> tmplist;
-            for (auto& target : targets)
+            if (!target->ToUnit()->HasAura(SPELL_FROST_BLAST))
             {
-                if (!target->ToUnit()->HasAura(SPELL_FROST_BLAST))
-                {
-                    tmplist.push_back(target);
-                }
-            }
-            targets.clear();
-            for (auto& itr : tmplist)
-            {
-                targets.push_back(itr);
+                tmplist.push_back(target);
             }
         }
-
-        void Register() override
+        targets.clear();
+        for (auto& itr : tmplist)
         {
-            OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_kelthuzad_frost_blast_SpellScript::FilterTargets, EFFECT_ALL, TARGET_UNIT_DEST_AREA_ENEMY);
+            targets.push_back(itr);
         }
-    };
+    }
 
-    SpellScript* GetSpellScript() const override
+    void Register() override
     {
-        return new spell_kelthuzad_frost_blast_SpellScript();
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_kelthuzad_frost_blast::FilterTargets, EFFECT_ALL, TARGET_UNIT_DEST_AREA_ENEMY);
     }
 };
 
-class spell_kelthuzad_detonate_mana : public SpellScriptLoader
+class spell_kelthuzad_detonate_mana_aura : public AuraScript
 {
-public:
-    spell_kelthuzad_detonate_mana() : SpellScriptLoader("spell_kelthuzad_detonate_mana") { }
+    PrepareAuraScript(spell_kelthuzad_detonate_mana_aura);
 
-    class spell_kelthuzad_detonate_mana_AuraScript : public AuraScript
+    bool Validate(SpellInfo const* /*spell*/) override
     {
-        PrepareAuraScript(spell_kelthuzad_detonate_mana_AuraScript);
+        return ValidateSpellInfo({ SPELL_MANA_DETONATION_DAMAGE });
+    }
 
-        bool Validate(SpellInfo const* /*spell*/) override
-        {
-            return ValidateSpellInfo({ SPELL_MANA_DETONATION_DAMAGE });
-        }
-
-        void HandleScript(AuraEffect const* aurEff)
-        {
-            PreventDefaultAction();
-            Unit* target = GetTarget();
-            if (auto mana = int32(target->GetMaxPower(POWER_MANA) / 10))
-            {
-                mana = target->ModifyPower(POWER_MANA, -mana);
-                target->CastCustomSpell(SPELL_MANA_DETONATION_DAMAGE, SPELLVALUE_BASE_POINT0, -mana * 10, target, true, nullptr, aurEff);
-            }
-        }
-
-        void Register() override
-        {
-            OnEffectPeriodic += AuraEffectPeriodicFn(spell_kelthuzad_detonate_mana_AuraScript::HandleScript, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
-        }
-    };
-
-    AuraScript* GetAuraScript() const override
+    void HandleScript(AuraEffect const* aurEff)
     {
-        return new spell_kelthuzad_detonate_mana_AuraScript();
+        PreventDefaultAction();
+        Unit* target = GetTarget();
+        if (auto mana = int32(target->GetMaxPower(POWER_MANA) / 10))
+        {
+            mana = target->ModifyPower(POWER_MANA, -mana);
+            target->CastCustomSpell(SPELL_MANA_DETONATION_DAMAGE, SPELLVALUE_BASE_POINT0, -mana * 10, target, true, nullptr, aurEff);
+        }
+    }
+
+    void Register() override
+    {
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_kelthuzad_detonate_mana_aura::HandleScript, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
     }
 };
 
@@ -747,6 +731,6 @@ void AddSC_boss_kelthuzad()
 {
     new boss_kelthuzad();
     new boss_kelthuzad_minion();
-    new spell_kelthuzad_frost_blast();
-    new spell_kelthuzad_detonate_mana();
+    RegisterSpellScript(spell_kelthuzad_frost_blast);
+    RegisterSpellScript(spell_kelthuzad_detonate_mana_aura);
 }

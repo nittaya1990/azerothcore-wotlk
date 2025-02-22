@@ -25,9 +25,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "Weather.h"
-#include "WorldPacket.h"
 #include "WorldSession.h"
-#include <memory>
 
 namespace WeatherMgr
 {
@@ -96,7 +94,7 @@ namespace WeatherMgr
 
         if (!result)
         {
-            LOG_ERROR("sql.sql", ">> Loaded 0 weather definitions. DB table `game_weather` is empty.");
+            LOG_WARN("server.loading", ">> Loaded 0 weather definitions. DB table `game_weather` is empty.");
             LOG_INFO("server.loading", " ");
             return;
         }
@@ -139,7 +137,7 @@ namespace WeatherMgr
             ++count;
         } while (result->NextRow());
 
-        LOG_INFO("server.loading", ">> Loaded {} weather definitions in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
+        LOG_INFO("server.loading", ">> Loaded {} Weather Definitions in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
         LOG_INFO("server.loading", " ");
     }
 

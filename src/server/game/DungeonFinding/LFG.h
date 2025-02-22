@@ -18,10 +18,7 @@
 #ifndef _LFG_H
 #define _LFG_H
 
-#include "Common.h"
-#include "ObjectDefines.h"
 #include "ObjectGuid.h"
-#include "SharedDefines.h"
 #include "WorldPacket.h"
 #include <array>
 #include <map>
@@ -484,7 +481,7 @@ namespace lfg
         [[nodiscard]] std::string toString() const // for debugging
         {
             std::ostringstream o;
-            o << guids[0].ToString().c_str() << "," << guids[1].ToString().c_str() << "," << guids[2].ToString().c_str() << "," << guids[3].ToString().c_str() << "," << guids[4].ToString().c_str() << ":" << (roles ? 1 : 0);
+            o << guids[0].ToString() << "," << guids[1].ToString() << "," << guids[2].ToString() << "," << guids[3].ToString() << "," << guids[4].ToString() << ":" << (roles ? 1 : 0);
             return o.str();
         }
     };

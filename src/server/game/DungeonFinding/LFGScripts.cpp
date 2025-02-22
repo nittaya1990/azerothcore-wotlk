@@ -29,17 +29,27 @@
 
 namespace lfg
 {
-    LFGPlayerScript::LFGPlayerScript() : PlayerScript("LFGPlayerScript") { }
+    LFGPlayerScript::LFGPlayerScript() :
+        PlayerScript("LFGPlayerScript",
+        {
+            PLAYERHOOK_ON_LEVEL_CHANGED,
+            PLAYERHOOK_ON_LOGOUT,
+            PLAYERHOOK_ON_LOGIN,
+            PLAYERHOOK_ON_BIND_TO_INSTANCE,
+            PLAYERHOOK_ON_MAP_CHANGED
+        })
+    {
+    }
 
-    void LFGPlayerScript::OnLevelChanged(Player* player, uint8 /*oldLevel*/)
+    void LFGPlayerScript::OnPlayerLevelChanged(Player* player, uint8 /*oldLevel*/)
     {
         if (!sLFGMgr->isOptionEnabled(LFG_OPTION_ENABLE_DUNGEON_FINDER | LFG_OPTION_ENABLE_RAID_BROWSER | LFG_OPTION_ENABLE_SEASONAL_BOSSES))
             return;
 
-        sLFGMgr->InitializeLockedDungeons(player);
+        sLFGMgr->InitializeLockedDungeons(player, player->GetGroup());
     }
 
-    void LFGPlayerScript::OnLogout(Player* player)
+    void LFGPlayerScript::OnPlayerLogout(Player* player)
     {
         if (!sLFGMgr->isOptionEnabled(LFG_OPTION_ENABLE_DUNGEON_FINDER | LFG_OPTION_ENABLE_RAID_BROWSER | LFG_OPTION_ENABLE_SEASONAL_BOSSES))
             return;
@@ -59,7 +69,7 @@ namespace lfg
         sLFGMgr->LfrSearchRemove(player);
     }
 
-    void LFGPlayerScript::OnLogin(Player* player)
+    void LFGPlayerScript::OnPlayerLogin(Player* player)
     {
         if (!sLFGMgr->isOptionEnabled(LFG_OPTION_ENABLE_DUNGEON_FINDER | LFG_OPTION_ENABLE_RAID_BROWSER | LFG_OPTION_ENABLE_SEASONAL_BOSSES))
             return;
@@ -68,7 +78,8 @@ namespace lfg
         ObjectGuid guid = player->GetGUID();
         ObjectGuid gguid = sLFGMgr->GetGroup(guid);
 
-        if (Group const* group = player->GetGroup())
+        Group const* group = player->GetGroup();
+        if (group)
         {
             ObjectGuid gguid2 = group->GetGUID();
             if (gguid != gguid2)
@@ -77,19 +88,19 @@ namespace lfg
             }
         }
 
-        sLFGMgr->InitializeLockedDungeons(player);
+        sLFGMgr->InitializeLockedDungeons(player, group);
         sLFGMgr->SetTeam(player->GetGUID(), player->GetTeamId());
-        // TODO - Restore LfgPlayerData and send proper status to player if it was in a group
+        /// @todo - Restore LfgPlayerData and send proper status to player if it was in a group
     }
 
-    void LFGPlayerScript::OnBindToInstance(Player* player, Difficulty difficulty, uint32 mapId, bool /*permanent*/)
+    void LFGPlayerScript::OnPlayerBindToInstance(Player* player, Difficulty difficulty, uint32 mapId, bool /*permanent*/)
     {
         MapEntry const* mapEntry = sMapStore.LookupEntry(mapId);
         if (mapEntry->IsDungeon() && difficulty > DUNGEON_DIFFICULTY_NORMAL)
-            sLFGMgr->InitializeLockedDungeons(player);
+            sLFGMgr->InitializeLockedDungeons(player, player->GetGroup());
     }
 
-    void LFGPlayerScript::OnMapChanged(Player* player)
+    void LFGPlayerScript::OnPlayerMapChanged(Player* player)
     {
         Map const* map = player->GetMap();
 
@@ -129,7 +140,15 @@ namespace lfg
         }
     }
 
-    LFGGroupScript::LFGGroupScript() : GroupScript("LFGGroupScript")
+    LFGGroupScript::LFGGroupScript() :
+        GroupScript("LFGGroupScript",
+        {
+            GROUPHOOK_ON_ADD_MEMBER,
+            GROUPHOOK_ON_REMOVE_MEMBER,
+            GROUPHOOK_ON_DISBAND,
+            GROUPHOOK_ON_CHANGE_LEADER,
+            GROUPHOOK_ON_INVITE_MEMBER
+        })
     {
     }
 
@@ -227,7 +246,8 @@ namespace lfg
         {
             // xinef: fixed dungeon deserter
             if (method != GROUP_REMOVEMETHOD_KICK_LFG && state != LFG_STATE_FINISHED_DUNGEON &&
-                    player->HasAura(LFG_SPELL_DUNGEON_COOLDOWN) && players >= LFG_GROUP_KICK_VOTES_NEEDED)
+                    player->HasAura(LFG_SPELL_DUNGEON_COOLDOWN) && players >= LFG_GROUP_KICK_VOTES_NEEDED &&
+                    sWorld->getBoolConfig(CONFIG_LFG_CAST_DESERTER))
             {
                 player->AddAura(LFG_SPELL_DUNGEON_DESERTER, player);
             }
@@ -296,4 +316,9 @@ namespace lfg
         }
     }
 
+    void AddSC_LFGScripts()
+    {
+        new LFGPlayerScript();
+        new LFGGroupScript();
+    }
 } // namespace lfg

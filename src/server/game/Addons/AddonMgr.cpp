@@ -16,11 +16,12 @@
  */
 
 #include "AddonMgr.h"
+#include "CryptoHash.h"
 #include "DatabaseEnv.h"
 #include "Log.h"
 #include "Timer.h"
+#include "QueryResult.h"
 #include <list>
-#include <openssl/md5.h>
 
 namespace AddonMgr
 {
@@ -42,7 +43,7 @@ namespace AddonMgr
         QueryResult result = CharacterDatabase.Query("SELECT name, crc FROM addons");
         if (!result)
         {
-            LOG_INFO("server.loading", ">> Loaded 0 known addons. DB table `addons` is empty!");
+            LOG_WARN("server.loading", ">> Loaded 0 known addons. DB table `addons` is empty!");
             LOG_INFO("server.loading", " ");
             return;
         }
@@ -56,7 +57,7 @@ namespace AddonMgr
             std::string name = fields[0].Get<std::string>();
             uint32 crc = fields[1].Get<uint32>();
 
-            m_knownAddons.push_back(SavedAddon(name, crc));
+            m_knownAddons.emplace_back(name, crc);
 
             ++count;
         } while (result->NextRow());
@@ -66,6 +67,7 @@ namespace AddonMgr
 
         oldMSTime = getMSTime();
         result = CharacterDatabase.Query("SELECT id, name, version, UNIX_TIMESTAMP(timestamp) FROM banned_addons");
+
         if (result)
         {
             uint32 count2 = 0;
@@ -75,17 +77,12 @@ namespace AddonMgr
             {
                 Field* fields = result->Fetch();
 
-                BannedAddon addon{};
-                addon.Id = fields[0].Get<uint32>() + offset;
-                addon.Timestamp = uint32(fields[3].Get<uint64>());
+                uint32 Id = fields[0].Get<uint32>() + offset;
+                std::array<uint8, 16> NameMD5 = Acore::Crypto::MD5::GetDigestOf(fields[1].Get<std::string>());
+                std::array<uint8, 16> VersionMD5 = Acore::Crypto::MD5::GetDigestOf(fields[2].Get<std::string>());
+                uint32 Timestamp = uint32(fields[3].Get<uint64>());
 
-                std::string name = fields[1].Get<std::string>();
-                std::string version = fields[2].Get<std::string>();
-
-                MD5(reinterpret_cast<uint8 const*>(name.c_str()), name.length(), addon.NameMD5);
-                MD5(reinterpret_cast<uint8 const*>(version.c_str()), version.length(), addon.VersionMD5);
-
-                m_bannedAddons.push_back(addon);
+                m_bannedAddons.emplace_back(Id, NameMD5, VersionMD5, Timestamp);
 
                 ++count2;
             } while (result->NextRow());
@@ -97,16 +94,14 @@ namespace AddonMgr
 
     void SaveAddon(AddonInfo const& addon)
     {
-        std::string name = addon.Name;
-
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_ADDON);
 
-        stmt->SetData(0, name);
+        stmt->SetData(0, addon.Name);
         stmt->SetData(1, addon.CRC);
 
         CharacterDatabase.Execute(stmt);
 
-        m_knownAddons.push_back(SavedAddon(addon.Name, addon.CRC));
+        m_knownAddons.emplace_back(addon.Name, addon.CRC);
     }
 
     SavedAddon const* GetAddonInfo(const std::string& name)

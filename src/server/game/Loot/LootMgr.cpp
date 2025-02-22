@@ -17,7 +17,9 @@
 
 #include "LootMgr.h"
 #include "Containers.h"
+#include "DisableMgr.h"
 #include "Group.h"
+#include "ItemEnchantmentMgr.h"
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -71,7 +73,7 @@ struct LootGroupInvalidSelector : public Acore::unary_function<LootStoreItem*, b
 
             uint8 foundDuplicates = 0;
             for (std::vector<LootItem>::const_iterator itr = _loot.items.begin(); itr != _loot.items.end(); ++itr)
-                if (itr->itemid == item->itemid)
+                if (itr->itemid == item->itemid && itr->groupid == item->groupid)
                 {
                     ++foundDuplicates;
                     if (_proto->InventoryType == 0 && foundDuplicates == 3 && _proto->ItemId != 47242 /*Trophy of the Crusade*/) // Non-equippable items are limited to 3 drops
@@ -99,13 +101,13 @@ public:
     bool HasQuestDrop(LootTemplateMap const& store) const;  // True if group includes at least 1 quest drop entry
     bool HasQuestDropForPlayer(Player const* player, LootTemplateMap const& store) const;
     // The same for active quests of the player
-    void Process(Loot& loot, Player const* player, LootStore const& lootstore, uint16 lootMode) const;    // Rolls an item from the group (if any) and adds the item to the loot
+    void Process(Loot& loot, Player const* player, LootStore const& lootstore, uint16 lootMode, uint16 nonRefIterationsLeft) const;    // Rolls an item from the group (if any) and adds the item to the loot
     float RawTotalChance() const;                       // Overall chance for the group (without equal chanced items)
     float TotalChance() const;                          // Overall chance for the group
 
     void Verify(LootStore const& lootstore, uint32 id, uint8 group_id) const;
     void CollectLootIds(LootIdSet& set) const;
-    void CheckLootRefs(LootTemplateMap const& store, LootIdSet* ref_set) const;
+    void CheckLootRefs(LootStore const& lootstore, uint32 Id, LootIdSet* ref_set) const;
     LootStoreItemList* GetExplicitlyChancedItemList() { return &ExplicitlyChanced; }
     LootStoreItemList* GetEqualChancedItemList() { return &EqualChanced; }
     void CopyConditions(ConditionList conditions);
@@ -189,6 +191,7 @@ uint32 LootStore::LoadLootTable()
 
         // Looking for the template of the entry
         // often entries are put together
+        // cppcheck-suppress eraseDereference
         if (m_LootTemplates.empty() || tab->first != entry)
         {
             // Searching the template (in case template Id changed)
@@ -274,7 +277,7 @@ uint32 LootStore::LoadAndCollectLootIds(LootIdSet& lootIdSet)
 void LootStore::CheckLootRefs(LootIdSet* ref_set) const
 {
     for (LootTemplateMap::const_iterator ltItr = m_LootTemplates.begin(); ltItr != m_LootTemplates.end(); ++ltItr)
-        ltItr->second->CheckLootRefs(m_LootTemplates, ref_set);
+        ltItr->second->CheckLootRefs(*this, ltItr->first, ref_set);
 }
 
 void LootStore::ReportUnusedIds(LootIdSet const& lootIdSet) const
@@ -292,6 +295,11 @@ void LootStore::ReportNonExistingId(uint32 lootId) const
 void LootStore::ReportNonExistingId(uint32 lootId, const char* ownerType, uint32 ownerId) const
 {
     LOG_ERROR("sql.sql", "Table '{}' Entry {} does not exist but it is used by {} {}", GetName(), lootId, ownerType, ownerId);
+}
+
+void LootStore::ReportInvalidCount(uint32 lootId, const char* ownerType, uint32 ownerId, uint32 itemId, uint8 minCount, uint8 maxCount) const
+{
+    LOG_ERROR("sql.sql", "Table '{}' Entry {} used by {} entry {} item {} has minCount ( {} ) != maxCount ( {} ) which is not supported for this loot type.", GetName(), lootId, ownerType, ownerId, itemId, minCount, maxCount);
 }
 
 //
@@ -388,8 +396,8 @@ LootItem::LootItem(LootStoreItem const& li)
     conditions   = li.conditions;
 
     ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemid);
-    freeforall  = proto && (proto->Flags & ITEM_FLAG_MULTI_DROP);
-    follow_loot_rules = proto && (proto->FlagsCu & ITEM_FLAGS_CU_FOLLOW_LOOT_RULES);
+    freeforall  = proto && proto->HasFlag(ITEM_FLAG_MULTI_DROP);
+    follow_loot_rules = proto && proto->HasFlagCu(ITEM_FLAGS_CU_FOLLOW_LOOT_RULES);
 
     needs_quest = li.needs_quest;
 
@@ -401,10 +409,11 @@ LootItem::LootItem(LootStoreItem const& li)
     is_underthreshold = 0;
     is_counted = 0;
     rollWinnerGUID = ObjectGuid::Empty;
+    groupid = li.groupid;
 }
 
 // Basic checks for player/item compatibility - if false no chance to see the item in the loot
-bool LootItem::AllowedForPlayer(Player const* player, bool isGivenByMasterLooter /*= false*/, bool allowQuestLoot /*= true*/) const
+bool LootItem::AllowedForPlayer(Player const* player, ObjectGuid source) const
 {
     ItemTemplate const* pProto = sObjectMgr->GetItemTemplate(itemid);
     if (!pProto)
@@ -412,15 +421,21 @@ bool LootItem::AllowedForPlayer(Player const* player, bool isGivenByMasterLooter
         return false;
     }
 
+    if (sDisableMgr->IsDisabledFor(DISABLE_TYPE_LOOT, itemid, nullptr))
+    {
+        return false;
+    }
+
     bool isMasterLooter = player->GetGroup() && player->GetGroup()->GetMasterLooterGuid() == player->GetGUID();
+    bool itemVisibleForMasterLooter = !needs_quest && (!follow_loot_rules || !is_underthreshold);
 
     // DB conditions check
     if (!sConditionMgr->IsObjectMeetToConditions(const_cast<Player*>(player), conditions))
     {
         // Master Looter can see conditioned recipes
-        if (!isGivenByMasterLooter && isMasterLooter)
+        if (isMasterLooter && itemVisibleForMasterLooter)
         {
-            if ((pProto->Flags & ITEM_FLAG_HIDE_UNUSABLE_RECIPE) || (pProto->Class == ITEM_CLASS_RECIPE && pProto->Bonding == BIND_WHEN_PICKED_UP && pProto->Spells[1].SpellId != 0))
+            if (pProto->HasFlag(ITEM_FLAG_HIDE_UNUSABLE_RECIPE) || (pProto->Class == ITEM_CLASS_RECIPE && pProto->Bonding == BIND_WHEN_PICKED_UP && pProto->Spells[1].SpellId != 0))
             {
                 return true;
             }
@@ -429,33 +444,25 @@ bool LootItem::AllowedForPlayer(Player const* player, bool isGivenByMasterLooter
         return false;
     }
 
-    // Checking for unique or unique(XX) objects
-    // master looter should still be able to see the loot to give to people.
-    // casting to avoid warnings, it's unlikely there's an item with unique but 2^31 items allowed.
-    if (!isMasterLooter && pProto->MaxCount > 0 && ((int32)player->GetItemCount(itemid, true) >= pProto->MaxCount))
-    {
-        return false;
-    }
-
     // not show loot for not own team
-    if ((pProto->Flags2 & ITEM_FLAGS_EXTRA_HORDE_ONLY) && player->GetTeamId(true) != TEAM_HORDE)
+    if (pProto->HasFlag2(ITEM_FLAG2_FACTION_HORDE) && player->GetTeamId(true) != TEAM_HORDE)
     {
         return false;
     }
 
-    if ((pProto->Flags2 & ITEM_FLAGS_EXTRA_ALLIANCE_ONLY) && player->GetTeamId(true) != TEAM_ALLIANCE)
+    if (pProto->HasFlag2(ITEM_FLAG2_FACTION_ALLIANCE) && player->GetTeamId(true) != TEAM_ALLIANCE)
     {
         return false;
     }
 
     // Master looter can see all items even if the character can't loot them
-    if (!isGivenByMasterLooter && isMasterLooter && allowQuestLoot)
+    if (isMasterLooter && itemVisibleForMasterLooter)
     {
         return true;
     }
 
     // Don't allow loot for players without profession or those who already know the recipe
-    if ((pProto->Flags & ITEM_FLAG_HIDE_UNUSABLE_RECIPE) && (!player->HasSkill(pProto->RequiredSkill) || player->HasSpell(pProto->Spells[1].SpellId)))
+    if (pProto->HasFlag(ITEM_FLAG_HIDE_UNUSABLE_RECIPE) && (!player->HasSkill(pProto->RequiredSkill) || player->HasSpell(pProto->Spells[1].SpellId)))
     {
         return false;
     }
@@ -467,7 +474,23 @@ bool LootItem::AllowedForPlayer(Player const* player, bool isGivenByMasterLooter
     }
 
     // check quest requirements
-    if (!(pProto->FlagsCu & ITEM_FLAGS_CU_IGNORE_QUEST_STATUS) && ((needs_quest || (pProto->StartQuest && player->GetQuestStatus(pProto->StartQuest) != QUEST_STATUS_NONE)) && !player->HasQuestForItem(itemid)))
+    if (!pProto->HasFlagCu(ITEM_FLAGS_CU_IGNORE_QUEST_STATUS))
+    {
+        //  Don't drop quest items if the player is missing the relevant quest
+        if (needs_quest && !player->HasQuestForItem(itemid))
+            return false;
+
+        // for items that start quests
+        if (pProto->StartQuest)
+        {
+            // Don't drop the item if the player has already finished the quest OR player already has the item in their inventory, and that item is unique OR the player has not finished a prerequisite quest
+            uint32 prevQuestId = sObjectMgr->GetQuestTemplate(pProto->StartQuest) ? sObjectMgr->GetQuestTemplate(pProto->StartQuest)->GetPrevQuestId() : 0;
+            if (player->GetQuestStatus(pProto->StartQuest) != QUEST_STATUS_NONE || (player->HasItemCount(itemid, pProto->MaxCount) && pProto->MaxCount) || (prevQuestId && !player->GetQuestRewardStatus(prevQuestId)))
+                return false;
+        }
+    }
+
+    if (!sScriptMgr->OnAllowedForPlayerLootCheck(player, source))
     {
         return false;
     }
@@ -515,7 +538,7 @@ void Loot::AddItem(LootStoreItem const& item)
                 {
                     if (auto member = itr->GetSource())
                     {
-                        if (generatedLoot.AllowedForPlayer(member))
+                        if (generatedLoot.AllowedForPlayer(member, sourceWorldObjectGUID))
                         {
                             canSeeItemInLootWindow = true;
                             break;
@@ -523,7 +546,7 @@ void Loot::AddItem(LootStoreItem const& item)
                     }
                 }
             }
-            else if (generatedLoot.AllowedForPlayer(player))
+            else if (generatedLoot.AllowedForPlayer(player, sourceWorldObjectGUID))
             {
                 canSeeItemInLootWindow = true;
             }
@@ -538,7 +561,7 @@ void Loot::AddItem(LootStoreItem const& item)
         // non-conditional one-player only items are counted here,
         // free for all items are counted in FillFFALoot(),
         // non-ffa conditionals are counted in FillNonQuestNonFFAConditionalLoot()
-        if (!item.needs_quest && item.conditions.empty() && !(proto->Flags & ITEM_FLAG_MULTI_DROP))
+        if (!item.needs_quest && item.conditions.empty() && !proto->HasFlag(ITEM_FLAG_MULTI_DROP))
             ++unlootedCount;
     }
 }
@@ -564,7 +587,8 @@ bool Loot::FillLoot(uint32 lootId, LootStore const& store, Player* lootOwner, bo
     items.reserve(MAX_NR_LOOT_ITEMS);
     quest_items.reserve(MAX_NR_QUEST_ITEMS);
 
-    tab->Process(*this, store, lootMode, lootOwner);          // Processing is done there, callback via Loot::AddItem()
+    // Initial group is 0, top level set to True
+    tab->Process(*this, store, lootMode, lootOwner, 0, true);          // Processing is done there, callback via Loot::AddItem()
 
     sScriptMgr->OnAfterLootTemplateProcess(this, tab, store, lootOwner, personal, noEmptyError, lootMode);
 
@@ -626,10 +650,13 @@ void Loot::FillNotNormalLootFor(Player* player)
         else
             item = &quest_items[i - itemsSize];
 
-        if (!item->is_looted && item->freeforall && item->AllowedForPlayer(player))
+        if (!item->is_looted && item->freeforall && item->AllowedForPlayer(player, sourceWorldObjectGUID))
             if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item->itemid))
                 if (proto->IsCurrencyToken())
-                    player->StoreLootItem(i, this);
+                {
+                    InventoryResult msg;
+                    player->StoreLootItem(i, this, msg);
+                }
     }
 }
 
@@ -640,7 +667,7 @@ QuestItemList* Loot::FillFFALoot(Player* player)
     for (uint8 i = 0; i < items.size(); ++i)
     {
         LootItem& item = items[i];
-        if (!item.is_looted && item.freeforall && item.AllowedForPlayer(player))
+        if (!item.is_looted && item.freeforall && item.AllowedForPlayer(player, containerGUID))
         {
             ql->push_back(QuestItem(i));
             ++unlootedCount;
@@ -663,26 +690,39 @@ QuestItemList* Loot::FillQuestLoot(Player* player)
 
     QuestItemList* ql = new QuestItemList();
 
+    Player* lootOwner = (roundRobinPlayer) ? ObjectAccessor::FindPlayer(roundRobinPlayer) : player;
+
     for (uint8 i = 0; i < quest_items.size(); ++i)
     {
         LootItem& item = quest_items[i];
 
-        if (!item.is_looted && (item.AllowedForPlayer(player, false, false) || (item.follow_loot_rules && player->GetGroup() && ((player->GetGroup()->GetLootMethod() == MASTER_LOOT && player->GetGroup()->GetMasterLooterGuid() == player->GetGUID()) || player->GetGroup()->GetLootMethod() != MASTER_LOOT ))))
+        sScriptMgr->OnPlayerBeforeFillQuestLootItem(player, item);
+
+        // Quest item is not free for all and is already assigned to another player
+        // or player doesn't need it
+        if (item.is_blocked || !item.AllowedForPlayer(player, sourceWorldObjectGUID))
         {
-            ql->push_back(QuestItem(i));
-
-            // quest items get blocked when they first appear in a
-            // player's quest vector
-            //
-            // increase once if one looter only, looter-times if free for all
-            if (item.freeforall || !item.is_blocked)
-                ++unlootedCount;
-            if (!player->GetGroup() || (player->GetGroup()->GetLootMethod() != GROUP_LOOT && player->GetGroup()->GetLootMethod() != ROUND_ROBIN))
-                item.is_blocked = true;
-
-            if (items.size() + ql->size() == MAX_NR_LOOT_ITEMS)
-                break;
+            continue;
         }
+
+        // Player is not the loot owner, and loot owner still needs this quest item
+        if (!item.freeforall &&
+            lootOwner && lootOwner != player &&
+            item.AllowedForPlayer(lootOwner, sourceWorldObjectGUID))
+        {
+            continue;
+        }
+
+        ql->push_back(QuestItem(i));
+        ++unlootedCount;
+
+        if (!item.freeforall)
+        {
+            item.is_blocked = true;
+        }
+
+        if (items.size() + ql->size() == MAX_NR_LOOT_ITEMS)
+            break;
     }
     if (ql->empty())
     {
@@ -701,7 +741,8 @@ QuestItemList* Loot::FillNonQuestNonFFAConditionalLoot(Player* player)
     for (uint8 i = 0; i < items.size(); ++i)
     {
         LootItem& item = items[i];
-        if (!item.is_looted && !item.freeforall && (item.AllowedForPlayer(player) || (item.follow_loot_rules && player->GetGroup() && ((player->GetGroup()->GetLootMethod() == MASTER_LOOT && player->GetGroup()->GetMasterLooterGuid() == player->GetGUID()) || player->GetGroup()->GetLootMethod() != MASTER_LOOT ))))
+
+        if (!item.is_looted && !item.freeforall && item.AllowedForPlayer(player, sourceWorldObjectGUID))
         {
             item.AddAllowedLooter(player);
 
@@ -820,7 +861,7 @@ LootItem* Loot::LootItemInSlot(uint32 lootSlot, Player* player, QuestItem * *qit
             if (qitem)
                 *qitem = qitem2;
             item = &quest_items[qitem2->index];
-            if (item->follow_loot_rules && !item->AllowedForPlayer(player)) // pussywizard: such items (follow_loot_rules) are added to every player, but not everyone is allowed, check it here
+            if (item->follow_loot_rules && !item->AllowedForPlayer(player, sourceWorldObjectGUID)) // pussywizard: such items (follow_loot_rules) are added to every player, but not everyone is allowed, check it here
                 return nullptr;
             is_looted = qitem2->is_looted;
         }
@@ -974,7 +1015,7 @@ ByteBuffer& operator<<(ByteBuffer& b, LootView const& lv)
 
     b << uint32(l.gold);                                    //gold
 
-    size_t count_pos = b.wpos();                            // pos of item count byte
+    std::size_t count_pos = b.wpos();                            // pos of item count byte
     b << uint8(0);                                          // item count placeholder
 
     switch (lv.permission)
@@ -989,7 +1030,7 @@ ByteBuffer& operator<<(ByteBuffer& b, LootView const& lv)
                 // blocked rolled items and quest items, and !ffa items
                 for (uint8 i = 0; i < l.items.size(); ++i)
                 {
-                    if (!l.items[i].is_looted && !l.items[i].freeforall && (l.items[i].conditions.empty() || isMasterLooter) && l.items[i].AllowedForPlayer(lv.viewer))
+                    if (!l.items[i].is_looted && !l.items[i].freeforall && (l.items[i].conditions.empty() || isMasterLooter) && l.items[i].AllowedForPlayer(lv.viewer, l.sourceWorldObjectGUID))
                     {
                         uint8 slot_type = 0;
 
@@ -1047,7 +1088,7 @@ ByteBuffer& operator<<(ByteBuffer& b, LootView const& lv)
             {
                 for (uint8 i = 0; i < l.items.size(); ++i)
                 {
-                    if (!l.items[i].is_looted && !l.items[i].freeforall && l.items[i].conditions.empty() && l.items[i].AllowedForPlayer(lv.viewer))
+                    if (!l.items[i].is_looted && !l.items[i].freeforall && l.items[i].conditions.empty() && l.items[i].AllowedForPlayer(lv.viewer, l.sourceWorldObjectGUID))
                     {
                         if (l.roundRobinPlayer && lv.viewer->GetGUID() != l.roundRobinPlayer)
                             // item shall not be displayed.
@@ -1066,7 +1107,7 @@ ByteBuffer& operator<<(ByteBuffer& b, LootView const& lv)
                 uint8 slot_type = lv.permission == OWNER_PERMISSION ? LOOT_SLOT_TYPE_OWNER : LOOT_SLOT_TYPE_ALLOW_LOOT;
                 for (uint8 i = 0; i < l.items.size(); ++i)
                 {
-                    if (!l.items[i].is_looted && !l.items[i].freeforall && l.items[i].conditions.empty() && l.items[i].AllowedForPlayer(lv.viewer))
+                    if (!l.items[i].is_looted && !l.items[i].freeforall && l.items[i].conditions.empty() && l.items[i].AllowedForPlayer(lv.viewer, l.sourceWorldObjectGUID))
                     {
                         b << uint8(i) << l.items[i];
                         b << uint8(slot_type);
@@ -1394,7 +1435,7 @@ void LootTemplate::LootGroup::CopyConditions(ConditionList /*conditions*/)
 }
 
 // Rolls an item from the group (if any takes its chance) and adds the item to the loot
-void LootTemplate::LootGroup::Process(Loot& loot, Player const* player, LootStore const& store, uint16 lootMode) const
+void LootTemplate::LootGroup::Process(Loot& loot, Player const* player, LootStore const& store, uint16 lootMode, uint16 nonRefIterationsLeft) const
 {
     if (LootStoreItem const* item = Roll(loot, player, store, lootMode))
     {
@@ -1407,7 +1448,9 @@ void LootTemplate::LootGroup::Process(Loot& loot, Player const* player, LootStor
                 uint32 maxcount = uint32(float(item->maxcount) * sWorld->getRate(RATE_DROP_ITEM_REFERENCED_AMOUNT));
                 sScriptMgr->OnAfterRefCount(player, loot, rate, lootMode, const_cast<LootStoreItem*>(item), maxcount, store);
                 for (uint32 loop = 0; loop < maxcount; ++loop) // Ref multiplicator
-                    Referenced->Process(loot, store, lootMode, player, item->groupid);
+                    // This reference needs to be processed further, but it is marked isTopLevel=false so that any groups inside
+                    // the reference are not multiplied by Rate.Drop.Item.GroupAmount
+                    Referenced->Process(loot, store, lootMode, player, item->groupid, false);
             }
         }
         else
@@ -1415,6 +1458,14 @@ void LootTemplate::LootGroup::Process(Loot& loot, Player const* player, LootStor
             // Plain entries (not a reference, not grouped)
             sScriptMgr->OnBeforeDropAddItem(player, loot, rate, lootMode, const_cast<LootStoreItem*>(item), store);
             loot.AddItem(*item); // Chance is already checked, just add
+
+            // If we still have non-ref runs to do for this group AND this item wasn't a reference,
+            // recursively call this function to produce more items for this group.
+            // However, if this is a quest item we shouldn't multiply this group.
+            if (nonRefIterationsLeft > 1 && !item->needs_quest)
+            {
+                this->Process(loot, player, store, lootMode, nonRefIterationsLeft-1);
+            }
         }
     }
 }
@@ -1445,7 +1496,7 @@ float LootTemplate::LootGroup::TotalChance() const
 void LootTemplate::LootGroup::Verify(LootStore const& lootstore, uint32 id, uint8 group_id) const
 {
     float chance = RawTotalChance();
-    if (chance > 101.0f)                                    // TODO: replace with 100% when DBs will be ready
+    if (chance > 101.0f)                                    /// @todo: replace with 100% when DBs will be ready
     {
         LOG_ERROR("sql.sql", "Table '{}' entry {} group {} has total chance > 100% ({})", lootstore.GetName(), id, group_id, chance);
     }
@@ -1456,21 +1507,20 @@ void LootTemplate::LootGroup::Verify(LootStore const& lootstore, uint32 id, uint
     }
 }
 
-void LootTemplate::LootGroup::CheckLootRefs(LootTemplateMap const& /*store*/, LootIdSet* ref_set) const
+void LootTemplate::LootGroup::CheckLootRefs(LootStore const& lootstore, uint32 Id, LootIdSet* ref_set) const
 {
     for (LootStoreItemList::const_iterator ieItr = ExplicitlyChanced.begin(); ieItr != ExplicitlyChanced.end(); ++ieItr)
     {
         LootStoreItem* item = *ieItr;
         if (item->reference)
         {
+            if (item->mincount != item->maxcount)
+                LootTemplates_Reference.ReportInvalidCount(std::abs(item->reference), lootstore.GetName(), Id, item->itemid, item->mincount, item->maxcount);
+
             if (!LootTemplates_Reference.GetLootFor(std::abs(item->reference)))
-            {
-                LootTemplates_Reference.ReportNonExistingId(std::abs(item->reference), "Reference", item->itemid);
-            }
+                LootTemplates_Reference.ReportNonExistingId(std::abs(item->reference), lootstore.GetName(), item->itemid);
             else if (ref_set)
-            {
                 ref_set->erase(std::abs(item->reference));
-            }
         }
     }
 
@@ -1479,14 +1529,13 @@ void LootTemplate::LootGroup::CheckLootRefs(LootTemplateMap const& /*store*/, Lo
         LootStoreItem* item = *ieItr;
         if (item->reference)
         {
+            if (item->mincount != item->maxcount)
+                LootTemplates_Reference.ReportInvalidCount(std::abs(item->reference), lootstore.GetName(), Id, item->itemid, item->mincount, item->maxcount);
+
             if (!LootTemplates_Reference.GetLootFor(std::abs(item->reference)))
-            {
-                LootTemplates_Reference.ReportNonExistingId(std::abs(item->reference), "Reference", item->itemid);
-            }
+                LootTemplates_Reference.ReportNonExistingId(std::abs(item->reference), lootstore.GetName(), item->itemid);
             else if (ref_set)
-            {
                 ref_set->erase(std::abs(item->reference));
-            }
         }
     }
 }
@@ -1503,7 +1552,7 @@ LootTemplate::~LootTemplate()
         Entries.pop_back();
     }
 
-    for (size_t i = 0; i < Groups.size(); ++i)
+    for (std::size_t i = 0; i < Groups.size(); ++i)
         delete Groups[i];
     Groups.clear();
 }
@@ -1646,7 +1695,7 @@ bool LootTemplate::CopyConditions(LootItem* li, uint32 conditionLootId) const
 }
 
 // Rolls for every item in the template and adds the rolled items the the loot
-void LootTemplate::Process(Loot& loot, LootStore const& store, uint16 lootMode, Player const* player, uint8 groupId) const
+void LootTemplate::Process(Loot& loot, LootStore const& store, uint16 lootMode, Player const* player, uint8 groupId, bool isTopLevel) const
 {
     bool rate = store.IsRatesAllowed();
 
@@ -1658,7 +1707,15 @@ void LootTemplate::Process(Loot& loot, LootStore const& store, uint16 lootMode, 
         if (!Groups[groupId - 1])
             return;
 
-        Groups[groupId - 1]->Process(loot, player, store, lootMode);
+        // Rate.Drop.Item.GroupAmount is only in effect for the top loot template level
+        if (isTopLevel)
+        {
+            Groups[groupId - 1]->Process(loot, player, store, lootMode, sWorld->getRate(RATE_DROP_ITEM_GROUP_AMOUNT));
+        }
+        else
+        {
+            Groups[groupId - 1]->Process(loot, player, store, lootMode, 0);
+        }
         return;
     }
 
@@ -1668,7 +1725,6 @@ void LootTemplate::Process(Loot& loot, LootStore const& store, uint16 lootMode, 
         LootStoreItem* item = *i;
         if (!(item->lootmode & lootMode))                         // Do not add if mode mismatch
             continue;
-
         if (!item->Roll(rate, player, loot, store))
             continue;                                           // Bad luck for the entry
 
@@ -1681,7 +1737,8 @@ void LootTemplate::Process(Loot& loot, LootStore const& store, uint16 lootMode, 
             uint32 maxcount = uint32(float(item->maxcount) * sWorld->getRate(RATE_DROP_ITEM_REFERENCED_AMOUNT));
             sScriptMgr->OnAfterRefCount(player, loot, rate, lootMode, item, maxcount, store);
             for (uint32 loop = 0; loop < maxcount; ++loop)      // Ref multiplicator
-                Referenced->Process(loot, store, lootMode, player, item->groupid);
+                // we're no longer in the top level, so isTopLevel is false
+                Referenced->Process(loot, store, lootMode, player, item->groupid, false);
         }
         else
         {
@@ -1694,7 +1751,19 @@ void LootTemplate::Process(Loot& loot, LootStore const& store, uint16 lootMode, 
     // Now processing groups
     for (LootGroups::const_iterator i = Groups.begin(); i != Groups.end(); ++i)
         if (LootGroup* group = *i)
-            group->Process(loot, player, store, lootMode);
+        {
+            // Rate.Drop.Item.GroupAmount is only in effect for the top loot template level
+            if (isTopLevel)
+            {
+                uint32 groupAmount = sWorld->getRate(RATE_DROP_ITEM_GROUP_AMOUNT);
+                sScriptMgr->OnAfterCalculateLootGroupAmount(player, loot, lootMode, groupAmount, store);
+                group->Process(loot, player, store, lootMode, groupAmount);
+            }
+            else
+            {
+                group->Process(loot, player, store, lootMode, 0);
+            }
+        }
 }
 
 // True if template includes at least 1 quest drop entry
@@ -1795,30 +1864,29 @@ void LootTemplate::Verify(LootStore const& lootstore, uint32 id) const
         if (Groups[i])
             Groups[i]->Verify(lootstore, id, i + 1);
 
-    // TODO: References validity checks
+    /// @todo: References validity checks
 }
 
-void LootTemplate::CheckLootRefs(LootTemplateMap const& store, LootIdSet* ref_set) const
+void LootTemplate::CheckLootRefs(LootStore const& lootstore, uint32 Id, LootIdSet* ref_set) const
 {
     for (LootStoreItemList::const_iterator ieItr = Entries.begin(); ieItr != Entries.end(); ++ieItr)
     {
         LootStoreItem* item = *ieItr;
         if (item->reference)
         {
+            if (item->mincount != item->maxcount)
+                LootTemplates_Reference.ReportInvalidCount(std::abs(item->reference), lootstore.GetName(), Id, item->itemid, item->mincount, item->maxcount);
+
             if (!LootTemplates_Reference.GetLootFor(std::abs(item->reference)))
-            {
-                LootTemplates_Reference.ReportNonExistingId(std::abs(item->reference), "Reference", item->itemid);
-            }
+                LootTemplates_Reference.ReportNonExistingId(std::abs(item->reference), lootstore.GetName(), item->itemid);
             else if (ref_set)
-            {
                 ref_set->erase(std::abs(item->reference));
-            }
         }
     }
 
     for (LootGroups::const_iterator grItr = Groups.begin(); grItr != Groups.end(); ++grItr)
         if (LootGroup* group = *grItr)
-            group->CheckLootRefs(store, ref_set);
+            group->CheckLootRefs(lootstore, Id, ref_set);
 }
 
 bool LootTemplate::addConditionItem(Condition* cond)
@@ -1894,7 +1962,7 @@ bool LootTemplate::isReference(uint32 id) const
 
 void LoadLootTemplates_Creature()
 {
-    LOG_INFO("server.loading", "Loading creature loot templates...");
+    LOG_INFO("server.loading", "Loading Creature Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -1921,16 +1989,16 @@ void LoadLootTemplates_Creature()
     LootTemplates_Creature.ReportUnusedIds(lootIdSet);
 
     if (count)
-        LOG_INFO("server.loading", ">> Loaded {} creature loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
+        LOG_INFO("server.loading", ">> Loaded {} Creature Loot Templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 creature loot templates. DB table `creature_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 creature loot templates. DB table `creature_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Disenchant()
 {
-    LOG_INFO("server.loading", "Loading disenchanting loot templates...");
+    LOG_INFO("server.loading", "Loading Disenchanting Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -1958,13 +2026,13 @@ void LoadLootTemplates_Disenchant()
     if (count)
         LOG_INFO("server.loading", ">> Loaded {} disenchanting loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 disenchanting loot templates. DB table `disenchant_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 disenchanting loot templates. DB table `disenchant_loot_template` is empty");
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Fishing()
 {
-    LOG_INFO("server.loading", "Loading fishing loot templates...");
+    LOG_INFO("server.loading", "Loading Fishing Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -1981,16 +2049,16 @@ void LoadLootTemplates_Fishing()
     LootTemplates_Fishing.ReportUnusedIds(lootIdSet);
 
     if (count)
-        LOG_INFO("server.loading", ">> Loaded {} fishing loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
+        LOG_INFO("server.loading", ">> Loaded {} Fishing Loot Templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 fishing loot templates. DB table `fishing_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 fishing loot templates. DB table `fishing_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Gameobject()
 {
-    LOG_INFO("server.loading", "Loading gameobject loot templates...");
+    LOG_INFO("server.loading", "Loading Gameobject Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2017,16 +2085,16 @@ void LoadLootTemplates_Gameobject()
     LootTemplates_Gameobject.ReportUnusedIds(lootIdSet);
 
     if (count)
-        LOG_INFO("server.loading", ">> Loaded {} gameobject loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
+        LOG_INFO("server.loading", ">> Loaded {} Gameobject Loot Templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 gameobject loot templates. DB table `gameobject_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 gameobject loot templates. DB table `gameobject_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Item()
 {
-    LOG_INFO("server.loading", "Loading item loot templates...");
+    LOG_INFO("server.loading", "Loading Item Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2036,7 +2104,7 @@ void LoadLootTemplates_Item()
     // remove real entries and check existence loot
     ItemTemplateContainer const* its = sObjectMgr->GetItemTemplateStore();
     for (ItemTemplateContainer::const_iterator itr = its->begin(); itr != its->end(); ++itr)
-        if (lootIdSet.find(itr->second.ItemId) != lootIdSet.end() && itr->second.Flags & ITEM_FLAG_HAS_LOOT)
+        if (lootIdSet.find(itr->second.ItemId) != lootIdSet.end() && itr->second.HasFlag(ITEM_FLAG_HAS_LOOT))
             lootIdSet.erase(itr->second.ItemId);
 
     // output error for any still listed (not referenced from appropriate table) ids
@@ -2045,14 +2113,14 @@ void LoadLootTemplates_Item()
     if (count)
         LOG_INFO("server.loading", ">> Loaded {} item loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 item loot templates. DB table `item_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 item loot templates. DB table `item_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Milling()
 {
-    LOG_INFO("server.loading", "Loading milling loot templates...");
+    LOG_INFO("server.loading", "Loading Milling Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2063,7 +2131,7 @@ void LoadLootTemplates_Milling()
     ItemTemplateContainer const* its = sObjectMgr->GetItemTemplateStore();
     for (ItemTemplateContainer::const_iterator itr = its->begin(); itr != its->end(); ++itr)
     {
-        if (!(itr->second.Flags & ITEM_FLAG_IS_MILLABLE))
+        if (!itr->second.HasFlag(ITEM_FLAG_IS_MILLABLE))
             continue;
 
         if (lootIdSet.find(itr->second.ItemId) != lootIdSet.end())
@@ -2076,14 +2144,14 @@ void LoadLootTemplates_Milling()
     if (count)
         LOG_INFO("server.loading", ">> Loaded {} milling loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 milling loot templates. DB table `milling_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 milling loot templates. DB table `milling_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Pickpocketing()
 {
-    LOG_INFO("server.loading", "Loading pickpocketing loot templates...");
+    LOG_INFO("server.loading", "Loading Pickpocketing Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2112,14 +2180,14 @@ void LoadLootTemplates_Pickpocketing()
     if (count)
         LOG_INFO("server.loading", ">> Loaded {} pickpocketing loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 pickpocketing loot templates. DB table `pickpocketing_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 pickpocketing loot templates. DB table `pickpocketing_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Prospecting()
 {
-    LOG_INFO("server.loading", "Loading prospecting loot templates...");
+    LOG_INFO("server.loading", "Loading Prospecting Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2130,7 +2198,7 @@ void LoadLootTemplates_Prospecting()
     ItemTemplateContainer const* its = sObjectMgr->GetItemTemplateStore();
     for (ItemTemplateContainer::const_iterator itr = its->begin(); itr != its->end(); ++itr)
     {
-        if (!(itr->second.Flags & ITEM_FLAG_IS_PROSPECTABLE))
+        if (!itr->second.HasFlag(ITEM_FLAG_IS_PROSPECTABLE))
             continue;
 
         if (lootIdSet.find(itr->second.ItemId) != lootIdSet.end())
@@ -2143,14 +2211,14 @@ void LoadLootTemplates_Prospecting()
     if (count)
         LOG_INFO("server.loading", ">> Loaded {} prospecting loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 prospecting loot templates. DB table `prospecting_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 prospecting loot templates. DB table `prospecting_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Mail()
 {
-    LOG_INFO("server.loading", "Loading mail loot templates...");
+    LOG_INFO("server.loading", "Loading Mail Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2169,14 +2237,14 @@ void LoadLootTemplates_Mail()
     if (count)
         LOG_INFO("server.loading", ">> Loaded {} mail loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 mail loot templates. DB table `mail_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 mail loot templates. DB table `mail_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Skinning()
 {
-    LOG_INFO("server.loading", "Loading skinning loot templates...");
+    LOG_INFO("server.loading", "Loading Skinning Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2205,14 +2273,14 @@ void LoadLootTemplates_Skinning()
     if (count)
         LOG_INFO("server.loading", ">> Loaded {} skinning loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 skinning loot templates. DB table `skinning_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 skinning loot templates. DB table `skinning_loot_template` is empty");
 
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Spell()
 {
-    LOG_INFO("server.loading", "Loading spell loot templates...");
+    LOG_INFO("server.loading", "Loading Spell Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2249,13 +2317,13 @@ void LoadLootTemplates_Spell()
     if (count)
         LOG_INFO("server.loading", ">> Loaded {} spell loot templates in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     else
-        LOG_ERROR("sql.sql", ">> Loaded 0 spell loot templates. DB table `spell_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 spell loot templates. DB table `spell_loot_template` is empty");
     LOG_INFO("server.loading", " ");
 }
 
 void LoadLootTemplates_Player()
 {
-    LOG_INFO("server.loading", "Loading player loot templates...");
+    LOG_INFO("server.loading", "Loading Player Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2268,7 +2336,7 @@ void LoadLootTemplates_Player()
     }
     else
     {
-        LOG_ERROR("sql.sql", ">> Loaded 0 player loot templates. DB table `player_loot_template` is empty");
+        LOG_WARN("server.loading", ">> Loaded 0 player loot templates. DB table `player_loot_template` is empty");
     }
 
     LOG_INFO("server.loading", " ");
@@ -2276,7 +2344,7 @@ void LoadLootTemplates_Player()
 
 void LoadLootTemplates_Reference()
 {
-    LOG_INFO("server.loading", "Loading reference loot templates...");
+    LOG_INFO("server.loading", "Loading Reference Loot Templates...");
 
     uint32 oldMSTime = getMSTime();
 
@@ -2299,6 +2367,6 @@ void LoadLootTemplates_Reference()
     // output error for any still listed ids (not referenced from any loot table)
     LootTemplates_Reference.ReportUnusedIds(lootIdSet);
 
-    LOG_INFO("server.loading", ">> Loaded refence loot templates in {} ms", GetMSTimeDiffToNow(oldMSTime));
+    LOG_INFO("server.loading", ">> Loaded reference loot templates in {} ms", GetMSTimeDiffToNow(oldMSTime));
     LOG_INFO("server.loading", " ");
 }

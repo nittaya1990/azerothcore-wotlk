@@ -19,10 +19,7 @@
 #define AZEROTHCORE_COMMON_H
 
 #include "Define.h"
-#include <array>
-#include <memory>
 #include <string>
-#include <utility>
 
 #if AC_PLATFORM == AC_PLATFORM_WINDOWS
 #include <ws2tcpip.h>
@@ -41,19 +38,13 @@
 #include <unistd.h>
 #endif
 
-#if AC_COMPILER == AC_COMPILER_MICROSOFT
-#define atoll _atoi64
-#define llabs _abs64
-#else
-#define stricmp strcasecmp
-#endif
-
 #define STRINGIZE(a) #a
 
 #define MAX_NETCLIENT_PACKET_SIZE (32767 - 1)               // Client hardcap: int16 with trailing zero space otherwise crash on memory free
 
 // TimeConstants
-constexpr auto MINUTE = 60;
+constexpr auto SECOND = 1;
+constexpr auto MINUTE = SECOND * 60;
 constexpr auto HOUR = MINUTE * 60;
 constexpr auto DAY = HOUR * 24;
 constexpr auto WEEK = DAY * 7;
@@ -92,7 +83,9 @@ enum LocaleConstant
 
 AC_COMMON_API extern char const* localeNames[TOTAL_LOCALES];
 
+AC_COMMON_API bool IsLocaleValid(std::string const& locale);
 AC_COMMON_API LocaleConstant GetLocaleByName(const std::string& name);
+AC_COMMON_API const std::string GetNameByLocaleConstant(LocaleConstant localeConstant);
 AC_COMMON_API void CleanStringForMysqlQuery(std::string& str);
 
 #define MAX_QUERY_LEN 32*1024

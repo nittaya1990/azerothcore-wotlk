@@ -24,8 +24,7 @@
 #include "MapInstanced.h"
 #include "MapUpdater.h"
 #include "Object.h"
-
-#include <mutex>
+#include "Timer.h"
 
 class Transport;
 class StaticTransport;
@@ -126,6 +125,15 @@ public:
             return mod;
         }
         return std::fmod(o, 2.0f * static_cast<float>(M_PI));
+    }
+
+    /**
+    * @name GetInstanceIDs
+    * @return vector of instance IDs
+    */
+    std::vector<bool> GetInstanceIDs()
+    {
+        return _instanceIds;
     }
 
     void DoDelayedMovesAndRemoves();

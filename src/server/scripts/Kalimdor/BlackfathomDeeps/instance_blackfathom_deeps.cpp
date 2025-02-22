@@ -15,8 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "InstanceMapScript.h"
 #include "InstanceScript.h"
-#include "ScriptMgr.h"
 #include "blackfathom_deeps.h"
 
 class instance_blackfathom_deeps : public InstanceMapScript
@@ -35,6 +35,7 @@ public:
 
         void Initialize() override
         {
+            SetHeaders(DataHeader);
             memset(&_encounters, 0, sizeof(_encounters));
             _requiredDeaths = 0;
         }
@@ -72,17 +73,17 @@ public:
                 case GO_FIRE_OF_AKU_MAI_4:
                     if (_encounters[TYPE_AKU_MAI_EVENT] == DONE)
                     {
-                        gameobject->SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+                        gameobject->SetGameObjectFlag(GO_FLAG_IN_USE);
                         gameobject->SetGoState(GO_STATE_ACTIVE);
                     }
                     break;
                 case GO_SHRINE_OF_GELIHAST:
                     if (_encounters[TYPE_GELIHAST] == DONE)
-                        gameobject->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE);
+                        gameobject->RemoveGameObjectFlag(GO_FLAG_NOT_SELECTABLE);
                     break;
                 case GO_ALTAR_OF_THE_DEEPS:
                     if (_encounters[TYPE_AKU_MAI] == DONE)
-                        gameobject->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE);
+                        gameobject->RemoveGameObjectFlag(GO_FLAG_NOT_SELECTABLE);
                     break;
                 case GO_AKU_MAI_DOOR:
                     if (IsFireEventDone() && _encounters[TYPE_AKU_MAI_EVENT] == DONE)
@@ -111,30 +112,24 @@ public:
                 SaveToDB();
         }
 
-        std::string GetSaveData() override
+        void ReadSaveDataMore(std::istringstream& data) override
         {
-            std::ostringstream saveStream;
-            saveStream << "B L " << _encounters[0] << ' ' << _encounters[1] << ' ' << _encounters[2] << ' ' << _encounters[3] << ' ' << _encounters[4] << ' ' << _encounters[5];
-            return saveStream.str();
+            data >> _encounters[0];
+            data >> _encounters[1];
+            data >> _encounters[2];
+            data >> _encounters[3];
+            data >> _encounters[4];
+            data >> _encounters[5];
         }
 
-        void Load(const char* in) override
+        void WriteSaveDataMore(std::ostringstream& data) override
         {
-            if (!in)
-                return;
-
-            char dataHead1, dataHead2;
-            std::istringstream loadStream(in);
-            loadStream >> dataHead1 >> dataHead2;
-            if (dataHead1 == 'B' && dataHead2 == 'L')
-            {
-                for (uint8 i = 0; i < MAX_ENCOUNTERS; ++i)
-                {
-                    loadStream >> _encounters[i];
-                    if (_encounters[i] == IN_PROGRESS)
-                        _encounters[i] = NOT_STARTED;
-                }
-            }
+            data << _encounters[0] << ' '
+                << _encounters[1] << ' '
+                << _encounters[2] << ' '
+                << _encounters[3] << ' '
+                << _encounters[4] << ' '
+                << _encounters[5];
         }
 
         bool IsFireEventDone()

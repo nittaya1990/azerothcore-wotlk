@@ -21,10 +21,9 @@
 #include "Creature.h"
 #include "CreatureAI.h"
 #include "CreatureAIImpl.h"
-#include "InstanceScript.h"
 #include "EventMap.h"
-
-#define CAST_AI(a, b)   (dynamic_cast<a*>(b))
+#include "InstanceScript.h"
+#include "TaskScheduler.h"
 
 typedef std::list<WorldObject*> ObjectList;
 
@@ -89,8 +88,9 @@ public:
     void Summon(Creature const* summon) { storage_.push_back(summon->GetGUID()); }
     void Despawn(Creature const* summon) { storage_.remove(summon->GetGUID()); }
     void DespawnEntry(uint32 entry);
-    void DespawnAll();
+    void DespawnAll(uint32 delay = 0);
     bool IsAnyCreatureAlive() const;
+    bool IsAnyCreatureWithEntryAlive(uint32 entry) const;
     bool IsAnyCreatureInCombat() const;
 
     template <typename T>
@@ -137,6 +137,20 @@ public:
         }
     }
 
+    void DoForAllSummons(std::function<void(WorldObject*)> exec)
+    {
+        // We need to use a copy of SummonList here, otherwise original SummonList would be modified
+        StorageType listCopy = storage_;
+
+        for (auto const& guid : listCopy)
+        {
+            if (WorldObject* summon = ObjectAccessor::GetWorldObject(*me, guid))
+            {
+                exec(summon);
+            }
+        }
+    }
+
     void DoZoneInCombat(uint32 entry = 0);
     void RemoveNotExisting();
     bool HasEntry(uint32 entry) const;
@@ -164,7 +178,7 @@ class PlayerOrPetCheck
 public:
     bool operator() (WorldObject* unit) const
     {
-        if (unit->GetTypeId() != TYPEID_PLAYER)
+        if (!unit->IsPlayer())
             if (!unit->ToUnit()->GetOwnerGUID().IsPlayer())
                 return true;
 
@@ -184,7 +198,7 @@ struct ScriptedAI : public CreatureAI
     void AttackStartNoMove(Unit* target);
 
     // Called at any Damage from any attacker (before damage apply)
-    void DamageTaken(Unit* /*attacker*/, uint32& /*damage*/, DamageEffectType /*damagetype*/, SpellSchoolMask /*damageSchoolMask*/) override {}
+    void DamageTaken(Unit* /*attacker*/, uint32& /*damage*/, DamageEffectType /*damagetype*/, SpellSchoolMask /*damageSchoolMask*/) override;
 
     //Called at World update tick
     void UpdateAI(uint32 diff) override;
@@ -265,9 +279,6 @@ struct ScriptedAI : public CreatureAI
     //Pointer to creature we are manipulating
     Creature* me;
 
-    //For fleeing
-    bool IsFleeing;
-
     // *************
     //Pure virtual functions
     // *************
@@ -276,9 +287,9 @@ struct ScriptedAI : public CreatureAI
     void Reset() override {}
 
     //Called at creature aggro either by MoveInLOS or Attack Start
-    void EnterCombat(Unit* /*victim*/) override {}
+    void JustEngagedWith(Unit* /*who*/) override {}
 
-    // Called before EnterCombat even before the creature is in combat.
+    // Called before JustEngagedWith even before the creature is in combat.
     void AttackStart(Unit* /*target*/) override;
 
     // *************
@@ -303,14 +314,24 @@ struct ScriptedAI : public CreatureAI
     //Plays music for all players in the zone (zone = true) or the area (zone = false)
     void DoPlayMusic(uint32 soundId, bool zone);
 
-    //Drops all threat to 0%. Does not remove players from the threat list
-    void DoResetThreat();
+    // Add specified amount of threat directly to victim (ignores redirection effects) - also puts victim in combat and engages them if necessary
+    void DoAddThreat(Unit* unit, float amount);
 
+    // Adds/removes the specified percentage from the specified victim's threat (to who, or me if not specified)
+    void DoModifyThreatByPercent(Unit* unit, int32 pct);
+
+    //Drops all threat to 0%. Does not remove players from the threat list
+    void DoResetThreat(Unit* unit);
+
+    // Resets the specified unit's threat list (me if not specified) - does not delete entries, just sets their threat to zero
+    void DoResetThreatList();
+
+    // Returns the threat level of victim towards who (or me if not specified)
     float DoGetThreat(Unit* unit);
-    void DoModifyThreatPercent(Unit* unit, int32 pct);
 
     //Teleports a player without dropping threat (only teleports to same map)
     void DoTeleportPlayer(Unit* unit, float x, float y, float z, float o);
+    void DoTeleportPlayer(Unit* unit, Position pos) { DoTeleportPlayer(unit, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), pos.GetOrientation()); };
     void DoTeleportAll(float x, float y, float z, float o);
 
     //Returns friendly unit with the most amount of hp missing from max hp
@@ -328,6 +349,18 @@ struct ScriptedAI : public CreatureAI
     //Spawns a creature relative to me
     Creature* DoSpawnCreature(uint32 entry, float offsetX, float offsetY, float offsetZ, float angle, uint32 type, uint32 despawntime);
 
+    bool IsUniqueTimedEventDone(uint32 id) const { return _uniqueTimedEvents.find(id) != _uniqueTimedEvents.end(); }
+    void SetUniqueTimedEventDone(uint32 id) { _uniqueTimedEvents.insert(id); }
+    void ResetUniqueTimedEvent(uint32 id) { _uniqueTimedEvents.erase(id); }
+    void ClearUniqueTimedEventsDone() { _uniqueTimedEvents.clear(); }
+
+    // Schedules a timed event using task scheduler.
+    void ScheduleTimedEvent(Milliseconds timerMin, Milliseconds timerMax, std::function<void()> exec, Milliseconds repeatMin, Milliseconds repeatMax = 0s, uint32 uniqueId = 0);
+    void ScheduleTimedEvent(Milliseconds timerMax, std::function<void()> exec, Milliseconds repeatMin, Milliseconds repeatMax = 0s, uint32 uniqueId = 0) { ScheduleTimedEvent(0s, timerMax, exec, repeatMin, repeatMax, uniqueId); };
+
+    // Schedules a timed event using task scheduler that never repeats. Requires an unique non-zero ID.
+    void ScheduleUniqueTimedEvent(Milliseconds timer, std::function<void()> exec, uint32 uniqueId) { ScheduleTimedEvent(0s, timer, exec, 0s, 0s, uniqueId); };
+
     bool HealthBelowPct(uint32 pct) const { return me->HealthBelowPct(pct); }
     bool HealthAbovePct(uint32 pct) const { return me->HealthAbovePct(pct); }
 
@@ -336,15 +369,6 @@ struct ScriptedAI : public CreatureAI
 
     void SetEquipmentSlots(bool loadDefault, int32 mainHand = EQUIP_NO_CHANGE, int32 offHand = EQUIP_NO_CHANGE, int32 ranged = EQUIP_NO_CHANGE);
 
-    // Used to control if MoveChase() is to be used or not in AttackStart(). Some creatures does not chase victims
-    // NOTE: If you use SetCombatMovement while the creature is in combat, it will do NOTHING - This only affects AttackStart
-    //       You should make the necessary to make it happen so.
-    //       Remember that if you modified _isCombatMovementAllowed (e.g: using SetCombatMovement) it will not be reset at Reset().
-    //       It will keep the last value you set.
-    void SetCombatMovement(bool allowMovement);
-    bool IsCombatMovementAllowed() const { return _isCombatMovementAllowed; }
-
-    bool EnterEvadeIfOutOfCombatArea();
     virtual bool CheckEvadeIfOutOfCombatArea() const { return false; }
 
     // return true for heroic mode. i.e.
@@ -414,11 +438,29 @@ struct ScriptedAI : public CreatureAI
 
     Player* SelectTargetFromPlayerList(float maxdist, uint32 excludeAura = 0, bool mustBeInLOS = false) const;
 
+    // Allows dropping to 1 HP but prevents creature from dying.
+    void SetInvincibility(bool apply) { _invincible = apply; };
+    [[nodiscard]] bool IsInvincible() const { return _invincible; };
+
+    // Disables creature auto attacks.
+    void SetAutoAttackAllowed(bool allow) { _canAutoAttack = allow; };
+    [[nodiscard]] bool IsAutoAttackAllowed() const { return _canAutoAttack; };
+
 private:
     Difficulty _difficulty;
-    uint32 _evadeCheckCooldown;
-    bool _isCombatMovementAllowed;
     bool _isHeroic;
+    bool _invincible;
+    bool _canAutoAttack;
+    std::unordered_set<uint32> _uniqueTimedEvents;
+};
+
+struct HealthCheckEventData
+{
+    HealthCheckEventData(uint8 healthPct, std::function<void()> exec, bool valid = true) : _healthPct(healthPct), _exec(exec), _valid(valid) { };
+
+    uint8 _healthPct;
+    std::function<void()> _exec;
+    bool _valid;
 };
 
 class BossAI : public ScriptedAI
@@ -427,14 +469,21 @@ public:
     BossAI(Creature* creature, uint32 bossId);
     ~BossAI() override {}
 
-    InstanceScript* const instance;
-    BossBoundaryMap const* GetBoundary() const { return _boundary; }
+    float callForHelpRange;
 
+    InstanceScript* const instance;
+
+    bool CanRespawn() override;
+
+    void DamageTaken(Unit* attacker, uint32& damage, DamageEffectType damagetype, SpellSchoolMask damageSchoolMask) override;
     void JustSummoned(Creature* summon) override;
     void SummonedCreatureDespawn(Creature* summon) override;
     void SummonedCreatureDespawnAll() override;
 
     void UpdateAI(uint32 diff) override;
+
+    void ScheduleHealthCheckEvent(uint32 healthPct, std::function<void()> exec);
+    void ScheduleHealthCheckEvent(std::initializer_list<uint8> healthPct, std::function<void()> exec);
 
     // Hook used to execute events scheduled into EventMap without the need
     // to override UpdateAI
@@ -442,35 +491,29 @@ public:
     // is supposed to run more than once
     virtual void ExecuteEvent(uint32 /*eventId*/) { }
 
+    virtual void ScheduleTasks() { }
+
     void Reset() override { _Reset(); }
-    void EnterCombat(Unit* /*who*/) override { _EnterCombat(); }
+    void JustEngagedWith(Unit* /*who*/) override { _JustEngagedWith(); }
+    void EnterEvadeMode(EvadeReason why = EVADE_REASON_OTHER) override { _EnterEvadeMode(why); }
     void JustDied(Unit* /*killer*/) override { _JustDied(); }
     void JustReachedHome() override { _JustReachedHome(); }
 
 protected:
     void _Reset();
-    void _EnterCombat();
+    void _JustEngagedWith();
     void _JustDied();
     void _JustReachedHome() { me->setActive(false); }
+    void _EnterEvadeMode(EvadeReason why = EVADE_REASON_OTHER);
 
-    bool CheckInRoom()
-    {
-        if (CheckBoundary(me))
-            return true;
-
-        EnterEvadeMode();
-        return false;
-    }
-
-    bool CheckBoundary(Unit* who);
     void TeleportCheaters();
 
-    EventMap events;
     SummonList summons;
 
 private:
-    BossBoundaryMap const* const _boundary;
     uint32 const _bossId;
+    std::list<HealthCheckEventData> _healthCheckEvents;
+    HealthCheckEventData _nextHealthCheck;
 };
 
 class WorldBossAI : public ScriptedAI
@@ -491,12 +534,12 @@ public:
     virtual void ExecuteEvent(uint32 /*eventId*/) { }
 
     void Reset() override { _Reset(); }
-    void EnterCombat(Unit* /*who*/) override { _EnterCombat(); }
+    void JustEngagedWith(Unit* /*who*/) override { _JustEngagedWith(); }
     void JustDied(Unit* /*killer*/) override { _JustDied(); }
 
 protected:
     void _Reset();
-    void _EnterCombat();
+    void _JustEngagedWith();
     void _JustDied();
 
     EventMap events;

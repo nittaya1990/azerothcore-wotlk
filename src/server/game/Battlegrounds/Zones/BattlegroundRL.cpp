@@ -16,8 +16,6 @@
  */
 
 #include "BattlegroundRL.h"
-#include "ArenaScore.h"
-#include "Language.h"
 #include "Log.h"
 #include "Player.h"
 #include "WorldPacket.h"
@@ -39,7 +37,7 @@ void BattlegroundRL::StartingEventOpenDoors()
         DoorOpen(i);
 
     for (uint32 i = BG_RL_OBJECT_BUFF_1; i <= BG_RL_OBJECT_BUFF_2; ++i)
-        SpawnBGObject(i, 60);
+        SpawnBGObject(i, 90);
 }
 
 bool BattlegroundRL::HandlePlayerUnderMap(Player* player)
@@ -93,10 +91,10 @@ void BattlegroundRL::HandleAreaTrigger(Player* player, uint32 trigger)
     }
 }
 
-void BattlegroundRL::FillInitialWorldStates(WorldPacket& data)
+void BattlegroundRL::FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet)
 {
-    data << uint32(0xbba) << uint32(1);           // 9
-    Arena::FillInitialWorldStates(data);
+    packet.Worldstates.emplace_back(0xbba, 1); // BATTELGROUND_RUINS_OF_LORDAERNON_SHOW
+    Arena::FillInitialWorldStates(packet);
 }
 
 bool BattlegroundRL::SetupBattleground()

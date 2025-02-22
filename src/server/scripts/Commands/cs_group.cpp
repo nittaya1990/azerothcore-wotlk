@@ -16,11 +16,10 @@
  */
 
 #include "Chat.h"
-#include "DatabaseEnv.h"
+#include "CommandScript.h"
 #include "GroupMgr.h"
 #include "Language.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 
 using namespace Acore::ChatCommands;
 
@@ -33,7 +32,7 @@ public:
     {
         static ChatCommandTable groupCommandTable =
         {
-            { "list",    HandleGroupListCommand,    SEC_GAMEMASTER, Console::No },
+            { "list",    HandleGroupListCommand,    SEC_GAMEMASTER, Console::Yes },
             { "join",    HandleGroupJoinCommand,    SEC_GAMEMASTER, Console::No },
             { "remove",  HandleGroupRemoveCommand,  SEC_GAMEMASTER, Console::No },
             { "disband", HandleGroupDisbandCommand, SEC_GAMEMASTER, Console::No },
@@ -157,7 +156,7 @@ public:
                         {
                             groupSource->AddMember(playerTarget);
                             groupSource->BroadcastGroupUpdate();
-                            handler->PSendSysMessage(LANG_GROUP_PLAYER_JOINED, playerTarget->GetName().c_str(), playerSource->GetName().c_str());
+                            handler->PSendSysMessage(LANG_GROUP_PLAYER_JOINED, playerTarget->GetName(), playerSource->GetName());
                             return true;
                         }
                         else
@@ -170,7 +169,7 @@ public:
                     else
                     {
                         // group is full or target player already in a group
-                        handler->PSendSysMessage(LANG_GROUP_ALREADY_IN_GROUP, playerTarget->GetName().c_str());
+                        handler->PSendSysMessage(LANG_GROUP_ALREADY_IN_GROUP, playerTarget->GetName());
                         return true;
                     }
                 }
@@ -178,7 +177,7 @@ public:
             else
             {
                 // specified source player is not in a group
-                handler->PSendSysMessage(LANG_GROUP_NOT_IN_GROUP, playerSource->GetName().c_str());
+                handler->PSendSysMessage(LANG_GROUP_NOT_IN_GROUP, playerSource->GetName());
                 return true;
             }
         }
@@ -215,11 +214,11 @@ public:
 
         if (!groupTarget)
         {
-            handler->PSendSysMessage(LANG_GROUP_NOT_IN_GROUP, target->GetName().c_str());
+            handler->PSendSysMessage(LANG_GROUP_NOT_IN_GROUP, target->GetName());
             return true;
         }
 
-        handler->PSendSysMessage(LANG_GROUP_TYPE, (groupTarget->isRaidGroup() ? "raid" : "party"));
+        handler->PSendSysMessage(LANG_GROUP_TYPE, (groupTarget->isRaidGroup() ? "Raid" : "Party"), groupTarget->GetMembersCount());
 
         for (auto const& slot : groupTarget->GetMemberSlots())
         {

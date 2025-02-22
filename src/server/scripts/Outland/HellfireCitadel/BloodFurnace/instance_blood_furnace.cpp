@@ -16,9 +16,34 @@
  */
 
 #include "CreatureAI.h"
+#include "InstanceMapScript.h"
 #include "InstanceScript.h"
-#include "ScriptMgr.h"
 #include "blood_furnace.h"
+
+DoorData const doorData[] =
+{
+    { GO_MAKER_DOOR_FRONT,   DATA_THE_MAKER, DOOR_TYPE_ROOM    },
+    { GO_MAKER_DOOR_REAR,    DATA_THE_MAKER, DOOR_TYPE_PASSAGE },
+    { GO_BROGGOK_DOOR_FRONT, DATA_BROGGOK,   DOOR_TYPE_ROOM    },
+    { GO_BROGGOK_DOOR_REAR,  DATA_BROGGOK,   DOOR_TYPE_PASSAGE },
+    { GO_KELIDAN_DOOR_EXIT1, DATA_KELIDAN,   DOOR_TYPE_PASSAGE },
+    { GO_KELIDAN_DOOR_EXIT2, DATA_KELIDAN,   DOOR_TYPE_PASSAGE },
+    { 0,                                0,   DOOR_TYPE_ROOM    } // END
+};
+
+ObjectData const gameobjectData[] =
+{
+    { GO_BROGGOK_DOOR_REAR, DATA_BROGGOK_REAR_DOOR },
+    { GO_BROGGOK_LEVER,     DATA_BROGGOK_LEVER     },
+    { 0,                    0,                     }
+};
+
+ObjectData const creatureData[] =
+{
+    { NPC_BROGGOK, DATA_BROGGOK },
+    { NPC_KELIDAN, DATA_KELIDAN },
+    { 0,           0            }
+};
 
 class instance_blood_furnace : public InstanceMapScript
 {
@@ -27,73 +52,35 @@ public:
 
     struct instance_blood_furnace_InstanceMapScript : public InstanceScript
     {
-        instance_blood_furnace_InstanceMapScript(Map* map) : InstanceScript(map) {}
-
-        uint32 _auiEncounter[MAX_ENCOUNTER];
-        ObjectGuid _bossGUIDs[3];
-        ObjectGuid _doorGUIDs[6];
-        ObjectGuid _prisonGUIDs[4];
-
-        GuidSet _prisonersCell[4];
-
-        uint8 _prisonerCounter[4];
-
-        ObjectGuid _broggokLeverGUID;
+        instance_blood_furnace_InstanceMapScript(Map* map) : InstanceScript(map)
+        {
+            SetHeaders(DataHeader);
+            SetBossNumber(EncounterCount);
+            LoadDoorData(doorData);
+            LoadObjectData(creatureData, gameobjectData);
+        }
 
         void Initialize() override
         {
-            memset(&_auiEncounter, 0, sizeof(_auiEncounter));
             memset(&_prisonerCounter, 0, sizeof(_prisonerCounter));
         }
 
         void OnCreatureCreate(Creature* creature) override
         {
-            switch (creature->GetEntry())
-            {
-                case NPC_THE_MAKER:
-                    _bossGUIDs[DATA_THE_MAKER] = creature->GetGUID();
-                    break;
-                case NPC_BROGGOK:
-                    _bossGUIDs[DATA_BROGGOK] = creature->GetGUID();
-                    break;
-                case NPC_KELIDAN:
-                    _bossGUIDs[DATA_KELIDAN] = creature->GetGUID();
-                    break;
-                case NPC_NASCENT_FEL_ORC:
-                    StorePrisoner(creature);
-                    break;
-            }
+            if (creature->GetEntry() == NPC_NASCENT_FEL_ORC)
+                StorePrisoner(creature);
+
+            InstanceScript::OnCreatureCreate(creature);
         }
 
         void OnUnitDeath(Unit* unit) override
         {
-            if (unit && unit->GetTypeId() == TYPEID_UNIT && unit->GetEntry() == NPC_NASCENT_FEL_ORC)
+            if (unit && unit->IsCreature() && unit->GetEntry() == NPC_NASCENT_FEL_ORC)
                 PrisonerDied(unit->GetGUID());
         }
 
         void OnGameObjectCreate(GameObject* go) override
         {
-            if (go->GetEntry() == 181766)                //Final exit door
-                _doorGUIDs[0] = go->GetGUID();
-            if (go->GetEntry() == 181811)               //The Maker Front door
-                _doorGUIDs[1] = go->GetGUID();
-            if (go->GetEntry() == 181812)                //The Maker Rear door
-            {
-                _doorGUIDs[2] = go->GetGUID();
-                if (GetData(DATA_THE_MAKER) == DONE)
-                    HandleGameObject(go->GetGUID(), true);
-            }
-            if (go->GetEntry() == 181822)               //Broggok Front door
-                _doorGUIDs[3] = go->GetGUID();
-            if (go->GetEntry() == 181819)               //Broggok Rear door
-            {
-                _doorGUIDs[4] = go->GetGUID();
-                if (GetData(DATA_BROGGOK) == DONE)
-                    HandleGameObject(go->GetGUID(), true);
-            }
-            if (go->GetEntry() == 181823)               //Kelidan exit door
-                _doorGUIDs[5] = go->GetGUID();
-
             if (go->GetEntry() == 181821)               //Broggok prison cell front right
                 _prisonGUIDs[0] = go->GetGUID();
             if (go->GetEntry() == 181818)               //Broggok prison cell back right
@@ -103,27 +90,13 @@ public:
             if (go->GetEntry() == 181817)               //Broggok prison cell back left
                 _prisonGUIDs[3] = go->GetGUID();
 
-            if (go->GetEntry() == 181982)
-                _broggokLeverGUID = go->GetGUID();       //Broggok lever
+            InstanceScript::OnGameObjectCreate(go);
         }
 
         ObjectGuid GetGuidData(uint32 data) const override
         {
             switch (data)
             {
-                case DATA_THE_MAKER:
-                case DATA_BROGGOK:
-                case DATA_KELIDAN:
-                    return _bossGUIDs[data];
-
-                case DATA_DOOR1:
-                case DATA_DOOR2:
-                case DATA_DOOR3:
-                case DATA_DOOR4:
-                case DATA_DOOR5:
-                case DATA_DOOR6:
-                    return _doorGUIDs[data - DATA_DOOR1];
-
                 case DATA_PRISON_CELL1:
                 case DATA_PRISON_CELL2:
                 case DATA_PRISON_CELL3:
@@ -134,89 +107,23 @@ public:
             return ObjectGuid::Empty;
         }
 
-        void SetData(uint32 type, uint32 data) override
+        bool SetBossState(uint32 type, EncounterState state) override
         {
-            switch (type)
+            if (!InstanceScript::SetBossState(type, state))
+                return false;
+
+            if (type == DATA_BROGGOK)
             {
-                case DATA_THE_MAKER:
-                case DATA_BROGGOK:
-                case DATA_KELIDAN:
-                    _auiEncounter[type] = data;
-                    if (type == DATA_BROGGOK)
-                        UpdateBroggokEvent(data);
-                    break;
-            }
-
-            if (data == DONE)
-                SaveToDB();
-        }
-
-        std::string GetSaveData() override
-        {
-            OUT_SAVE_INST_DATA;
-
-            std::ostringstream saveStream;
-            saveStream << "B F " << _auiEncounter[0] << ' ' << _auiEncounter[1] << ' ' << _auiEncounter[2];
-
-            OUT_SAVE_INST_DATA_COMPLETE;
-            return saveStream.str();
-        }
-
-        uint32 GetData(uint32 type) const override
-        {
-            switch (type)
-            {
-                case DATA_THE_MAKER:
-                case DATA_BROGGOK:
-                case DATA_KELIDAN:
-                    return _auiEncounter[type];
-            }
-            return 0;
-        }
-
-        void Load(const char* strIn) override
-        {
-            if (!strIn)
-            {
-                OUT_LOAD_INST_DATA_FAIL;
-                return;
-            }
-
-            OUT_LOAD_INST_DATA(strIn);
-
-            char dataHead1, dataHead2;
-
-            std::istringstream loadStream(strIn);
-            loadStream >> dataHead1 >> dataHead2;
-
-            if (dataHead1 == 'B' && dataHead2 == 'F')
-            {
-                loadStream >> _auiEncounter[0] >> _auiEncounter[1] >> _auiEncounter[2];
-
-                for (uint8 i = 0; i < MAX_ENCOUNTER; ++i)
-                    if (_auiEncounter[i] == IN_PROGRESS || _auiEncounter[i] == FAIL)
-                        _auiEncounter[i] = NOT_STARTED;
-            }
-
-            OUT_LOAD_INST_DATA_COMPLETE;
-        }
-
-        void UpdateBroggokEvent(uint32 data)
-        {
-            switch (data)
-            {
-                case IN_PROGRESS:
+                if (state == IN_PROGRESS)
                     ActivateCell(DATA_PRISON_CELL1);
-                    HandleGameObject(_doorGUIDs[3], false);
-                    break;
-                case NOT_STARTED:
+                else if (state == NOT_STARTED)
+                {
                     ResetPrisons();
-                    HandleGameObject(_doorGUIDs[4], false);
-                    HandleGameObject(_doorGUIDs[3], true);
-                    if (GameObject* lever = instance->GetGameObject(_broggokLeverGUID))
-                        lever->Respawn();
-                    break;
+                    DoRespawnGameObject(DATA_BROGGOK_LEVER);
+                }
             }
+
+            return true;
         }
 
         void ResetPrisons()
@@ -240,7 +147,8 @@ public:
         {
             if (!prisoner->IsAlive())
                 prisoner->Respawn(true);
-            prisoner->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_NON_ATTACKABLE);
+            prisoner->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+            prisoner->SetImmuneToAll(true);
         }
 
         void StorePrisoner(Creature* creature)
@@ -289,7 +197,7 @@ public:
             else if (_prisonersCell[2].find(guid) != _prisonersCell[2].end() && --_prisonerCounter[2] <= 0)
                 ActivateCell(DATA_PRISON_CELL4);
             else if (_prisonersCell[3].find(guid) != _prisonersCell[3].end() && --_prisonerCounter[3] <= 0)
-                ActivateCell(DATA_DOOR5);
+                ActivateCell(DATA_BROGGOK_REAR_DOOR);
         }
 
         void ActivateCell(uint8 id)
@@ -303,9 +211,10 @@ public:
                     HandleGameObject(_prisonGUIDs[id - DATA_PRISON_CELL1], true);
                     ActivatePrisoners(_prisonersCell[id - DATA_PRISON_CELL1]);
                     break;
-                case DATA_DOOR5:
-                    HandleGameObject(_doorGUIDs[4], true);
-                    if (Creature* broggok = instance->GetCreature(GetGuidData(DATA_BROGGOK)))
+                case DATA_BROGGOK_REAR_DOOR:
+                    if (GameObject* go = GetGameObject(DATA_BROGGOK_REAR_DOOR))
+                        HandleGameObject(ObjectGuid::Empty, true, go);
+                    if (Creature* broggok = GetCreature(DATA_BROGGOK))
                         broggok->AI()->DoAction(ACTION_ACTIVATE_BROGGOK);
                     break;
             }
@@ -316,10 +225,16 @@ public:
             for (ObjectGuid const& guid : prisoners)
                 if (Creature* prisoner = instance->GetCreature(guid))
                 {
-                    prisoner->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_NON_ATTACKABLE);
+                    prisoner->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+                    prisoner->SetImmuneToAll(false);
                     prisoner->SetInCombatWithZone();
                 }
         }
+
+        private:
+            ObjectGuid _prisonGUIDs[4];
+            GuidSet _prisonersCell[4];
+            uint8 _prisonerCounter[4];
     };
 
     InstanceScript* GetInstanceScript(InstanceMap* map) const override

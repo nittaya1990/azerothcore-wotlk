@@ -19,7 +19,8 @@
 #define DEF_GUNDRAK_H
 
 #include "CreatureAIImpl.h"
-#include "SpellScript.h"
+
+#define DataHeader "GD"
 
 #define GundrakScriptName "instance_gundrak"
 

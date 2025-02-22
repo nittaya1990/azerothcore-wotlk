@@ -20,22 +20,21 @@
 
 #include "ARC4.h"
 #include "AuthDefines.h"
-#include <array>
 
-class AuthCrypt
+class AC_COMMON_API AuthCrypt
 {
 public:
-    AuthCrypt();
+    AuthCrypt() = default;
 
     void Init(SessionKey const& K);
-    void DecryptRecv(uint8* data, size_t len);
-    void EncryptSend(uint8* data, size_t len);
+    void DecryptRecv(uint8* data, std::size_t len);
+    void EncryptSend(uint8* data, std::size_t len);
 
     bool IsInitialized() const { return _initialized; }
 
 private:
     Acore::Crypto::ARC4 _clientDecrypt;
     Acore::Crypto::ARC4 _serverEncrypt;
-    bool _initialized;
+    bool _initialized{ false };
 };
 #endif

@@ -17,6 +17,7 @@
 
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
+#include "ArenaSeasonMgr.h"
 #include "BattlegroundMgr.h"
 #include "CharacterCache.h"
 #include "Group.h"
@@ -281,7 +282,7 @@ bool ArenaTeam::LoadMembersFromDB(QueryResult result)
 
 bool ArenaTeam::SetName(std::string const& name)
 {
-    if (TeamName == name || name.empty() || name.length() > 24 || sObjectMgr->IsReservedName(name) || !ObjectMgr::IsValidCharterName(name))
+    if (TeamName == name || name.empty() || name.length() > 24 || !ObjectMgr::IsValidCharterName(name))
         return false;
 
     TeamName = name;
@@ -345,7 +346,7 @@ void ArenaTeam::DelMember(ObjectGuid guid, bool cleanDb)
                             WorldPacket data;
                             playerMember->RemoveBattlegroundQueueId(bgQueue);
                             sBattlegroundMgr->BuildBattlegroundStatusPacket(&data, nullptr, playerMember->GetBattlegroundQueueIndex(bgQueue), STATUS_NONE, 0, 0, 0, TEAM_NEUTRAL);
-                            queue.RemovePlayer(playerMember->GetGUID(), true, 0);
+                            queue.RemovePlayer(playerMember->GetGUID(), true);
                             playerMember->GetSession()->SendPacket(&data);
                         }
                     }
@@ -455,7 +456,7 @@ void ArenaTeam::Roster(WorldSession* session)
         sCharacterCache->GetCharacterNameByGuid(itr->Guid, tempName);
         data << tempName;                                  // member name
         data << uint32((itr->Guid == GetCaptain() ? 0 : 1));// captain flag 0 captain 1 member
-        data << uint8((player ? player->getLevel() : 0));           // unknown, level?
+        data << uint8((player ? player->GetLevel() : 0));           // unknown, level?
         data << uint8(itr->Class);                         // class
         data << uint32(itr->WeekGames);                    // played this week
         data << uint32(itr->WeekWins);                     // wins this week
@@ -658,7 +659,7 @@ uint32 ArenaTeam::GetPoints(uint32 memberRating)
 
     if (rating <= 1500)
     {
-        if (sWorld->getIntConfig(CONFIG_ARENA_SEASON_ID) < 6)
+        if (sArenaSeasonMgr->GetCurrentSeason() < 6 && !sWorld->getIntConfig(CONFIG_LEGACY_ARENA_POINTS_CALC))
             points = (float)rating * 0.22f + 14.0f;
         else
             points = 344;
@@ -751,7 +752,7 @@ int32 ArenaTeam::GetRatingMod(uint32 ownRating, uint32 opponentRating, bool won 
     // Calculate the rating modification
     float mod;
 
-    // TODO: Replace this hack with using the confidence factor (limiting the factor to 2.0f)
+    /// @todo: Replace this hack with using the confidence factor (limiting the factor to 2.0f)
     if (won)
     {
         if (ownRating < 1300)
@@ -927,7 +928,7 @@ void ArenaTeam::UpdateArenaPointsHelper(std::map<ObjectGuid, uint32>& playerPoin
     }
 }
 
-void ArenaTeam::SaveToDB()
+void ArenaTeam::SaveToDB(bool forceMemberSave)
 {
     if (!sScriptMgr->CanSaveToDB(this))
         return;
@@ -949,6 +950,10 @@ void ArenaTeam::SaveToDB()
 
     for (MemberList::const_iterator itr = Members.begin(); itr != Members.end(); ++itr)
     {
+        // Save the effort and go
+        if (itr->WeekGames == 0 && !forceMemberSave)
+            continue;
+
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ARENA_TEAM_MEMBER);
         stmt->SetData(0, itr->PersonalRating);
         stmt->SetData(1, itr->WeekGames);
@@ -970,8 +975,12 @@ void ArenaTeam::SaveToDB()
     CharacterDatabase.CommitTransaction(trans);
 }
 
-void ArenaTeam::FinishWeek()
+bool ArenaTeam::FinishWeek()
 {
+    // No need to go further than this
+    if (Stats.WeekGames == 0)
+        return false;
+
     // Reset team stats
     Stats.WeekGames = 0;
     Stats.WeekWins = 0;
@@ -982,6 +991,8 @@ void ArenaTeam::FinishWeek()
         itr->WeekGames = 0;
         itr->WeekWins = 0;
     }
+
+    return true;
 }
 
 bool ArenaTeam::IsFighting() const
@@ -1024,7 +1035,10 @@ void ArenaTeam::CreateTempArenaTeam(std::vector<Player*> playerList, uint8 type,
 {
     auto playerCountInTeam = static_cast<uint32>(playerList.size());
 
-    ASSERT(playerCountInTeam == GetReqPlayersForType(type));
+    const auto standardArenaType = { ARENA_TYPE_2v2, ARENA_TYPE_3v3, ARENA_TYPE_5v5 };
+    bool isStandardArenaType = std::find(std::begin(standardArenaType), std::end(standardArenaType), type) != std::end(standardArenaType);
+    if (isStandardArenaType)
+        ASSERT(playerCountInTeam == GetReqPlayersForType(type));
 
     // Generate new arena team id
     TeamId = sArenaTeamMgr->GenerateTempArenaTeamId();

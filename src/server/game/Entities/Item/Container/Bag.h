@@ -35,7 +35,6 @@ public:
 
     bool Create(ObjectGuid::LowType guidlow, uint32 itemid, Player const* owner) override;
 
-    void Clear();
     void StoreItem(uint8 slot, Item* pItem, bool update);
     void RemoveItem(uint8 slot, bool update);
 
@@ -56,7 +55,9 @@ public:
     // overwrite virtual Item::DeleteFromDB
     void DeleteFromDB(CharacterDatabaseTransaction trans) override;
 
-    void BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) const override;
+    void BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) override;
+
+    std::string GetDebugInfo() const override;
 
 protected:
     // Bag Storage space

@@ -20,10 +20,7 @@
 #include "GuildPackets.h"
 #include "Log.h"
 #include "ObjectMgr.h"
-#include "Opcodes.h"
 #include "SocialMgr.h"
-#include "World.h"
-#include "WorldPacket.h"
 #include "WorldSession.h"
 
 void WorldSession::HandleGuildQueryOpcode(WorldPackets::Guild::QueryGuildInfo& query)
@@ -290,7 +287,7 @@ void WorldSession::HandleGuildBankerActivate(WorldPackets::Guild::GuildBankActiv
     guild->SendBankTabsInfo(this, packet.FullUpdate);
 }
 
-// Called when opening guild bank tab only (first one)
+// Called when opening guild bank tab only
 void WorldSession::HandleGuildBankQueryTab(WorldPackets::Guild::GuildBankQueryTab& packet)
 {
     LOG_DEBUG("guild", "CMSG_GUILD_BANK_QUERY_TAB [{}]: Go: [{}], TabId: {}, ShowTabs: {}"

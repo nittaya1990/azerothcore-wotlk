@@ -19,9 +19,8 @@
 #define DEF_AZJOL_NERUB_H
 
 #include "CreatureAIImpl.h"
-#include "SpellAuraEffects.h"
-#include "SpellAuras.h"
-#include "SpellScript.h"
+
+#define DataHeader "AN"
 
 #define AzjolNerubScriptName "instance_azjol_nerub"
 

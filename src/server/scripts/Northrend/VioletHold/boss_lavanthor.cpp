@@ -15,24 +15,17 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "violet_hold.h"
 
 enum eSpells
 {
     SPELL_CAUTERIZING_FLAMES                  = 59466,
-    SPELL_FIREBOLT_N                          = 54235,
-    SPELL_FIREBOLT_H                          = 59468,
-    SPELL_FLAME_BREATH_N                      = 54282,
-    SPELL_FLAME_BREATH_H                      = 59469,
-    SPELL_LAVA_BURN_N                         = 54249,
-    SPELL_LAVA_BURN_H                         = 59594,
+    SPELL_FIREBOLT                            = 54235,
+    SPELL_FLAME_BREATH                        = 54282,
+    SPELL_LAVA_BURN                           = 54249
 };
-
-#define SPELL_FIREBOLT                      DUNGEON_MODE(SPELL_FIREBOLT_N, SPELL_FIREBOLT_H)
-#define SPELL_FLAME_BREATH                  DUNGEON_MODE(SPELL_FLAME_BREATH_N, SPELL_FLAME_BREATH_H)
-#define SPELL_LAVA_BURN                     DUNGEON_MODE(SPELL_LAVA_BURN_N, SPELL_LAVA_BURN_H)
 
 enum eEvents
 {
@@ -67,15 +60,15 @@ public:
             events.Reset();
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
             DoZoneInCombat();
             events.Reset();
-            events.RescheduleEvent(EVENT_SPELL_FIREBOLT, 1000);
-            events.RescheduleEvent(EVENT_SPELL_FLAME_BREATH, 5000);
-            events.RescheduleEvent(EVENT_SPELL_LAVA_BURN, 10000);
+            events.RescheduleEvent(EVENT_SPELL_FIREBOLT, 1s);
+            events.RescheduleEvent(EVENT_SPELL_FLAME_BREATH, 5s);
+            events.RescheduleEvent(EVENT_SPELL_LAVA_BURN, 10s);
             if (IsHeroic())
-                events.RescheduleEvent(EVENT_SPELL_CAUTERIZING_FLAMES, 3000);
+                events.RescheduleEvent(EVENT_SPELL_CAUTERIZING_FLAMES, 3s);
         }
 
         void UpdateAI(uint32 diff) override
@@ -88,25 +81,25 @@ public:
             if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
-            switch(events.ExecuteEvent())
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
                 case EVENT_SPELL_FIREBOLT:
                     me->CastSpell(me->GetVictim(), SPELL_FIREBOLT, false);
-                    events.RepeatEvent(urand(5000, 13000));
+                    events.Repeat(5s, 13s);
                     break;
                 case EVENT_SPELL_FLAME_BREATH:
                     me->CastSpell(me->GetVictim(), SPELL_FLAME_BREATH, false);
-                    events.RepeatEvent(urand(10000, 15000));
+                    events.Repeat(10s, 15s);
                     break;
                 case EVENT_SPELL_LAVA_BURN:
                     me->CastSpell(me->GetVictim(), SPELL_LAVA_BURN, false);
-                    events.RepeatEvent(urand(14000, 20000));
+                    events.Repeat(14s, 20s);
                     break;
                 case EVENT_SPELL_CAUTERIZING_FLAMES:
                     me->CastSpell((Unit*)nullptr, SPELL_FLAME_BREATH, false);
-                    events.RepeatEvent(urand(10000, 16000));
+                    events.Repeat(10s, 16s);
                     break;
             }
 
@@ -121,10 +114,11 @@ public:
 
         void MoveInLineOfSight(Unit* /*who*/) override {}
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
-            ScriptedAI::EnterEvadeMode();
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            ScriptedAI::EnterEvadeMode(why);
+            me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+
             if (pInstance)
                 pInstance->SetData(DATA_FAILED, 1);
         }

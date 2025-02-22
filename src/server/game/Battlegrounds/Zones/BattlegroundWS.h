@@ -30,7 +30,8 @@ enum BG_WS_Events
     BG_WS_EVENT_ALLIANCE_DROP_FLAG  = 4,
     BG_WS_EVENT_HORDE_DROP_FLAG     = 5,
     BG_WS_EVENT_BOTH_FLAGS_KEPT10   = 6,
-    BG_WS_EVENT_BOTH_FLAGS_KEPT15   = 7
+    BG_WS_EVENT_BOTH_FLAGS_KEPT15   = 7,
+    BG_WS_EVENT_DESPAWN_DOORS       = 8
 };
 
 enum BG_WS_TimerOrScore
@@ -41,7 +42,8 @@ enum BG_WS_TimerOrScore
     BG_WS_FLAG_RESPAWN_TIME         = 23 * IN_MILLISECONDS,
     BG_WS_FLAG_DROP_TIME            = 10 * IN_MILLISECONDS,
     BG_WS_SPELL_FORCE_TIME          = 10 * MINUTE * IN_MILLISECONDS,
-    BG_WS_SPELL_BRUTAL_TIME         = 15 * MINUTE * IN_MILLISECONDS
+    BG_WS_SPELL_BRUTAL_TIME         = 15 * MINUTE * IN_MILLISECONDS,
+    BG_WS_DOOR_DESPAWN_TIME         = 5 * IN_MILLISECONDS
 };
 
 enum BG_WS_BroadcastTexts
@@ -250,7 +252,7 @@ public:
     bool UpdatePlayerScore(Player* player, uint32 type, uint32 value, bool doAddHonor = true) override;
     void SetDroppedFlagGUID(ObjectGuid guid, TeamId teamId) override { _droppedFlagGUID[teamId] = guid; }
     ObjectGuid GetDroppedFlagGUID(TeamId teamId) const { return _droppedFlagGUID[teamId];}
-    void FillInitialWorldStates(WorldPacket& data) override;
+    void FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet) override;
 
     /* Scorekeeping */
     void AddPoints(TeamId teamId, uint32 points) { m_TeamScores[teamId] += points; }

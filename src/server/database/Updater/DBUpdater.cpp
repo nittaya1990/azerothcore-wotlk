@@ -20,11 +20,10 @@
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "DatabaseLoader.h"
-#include "GitRevision.h"
 #include "Log.h"
-#include "QueryResult.h"
 #include "StartProcess.h"
 #include "UpdateFetcher.h"
+#include "QueryResult.h"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -170,13 +169,18 @@ BaseLocation DBUpdater<T>::GetBaseLocationType()
 template<class T>
 bool DBUpdater<T>::Create(DatabaseWorkerPool<T>& pool)
 {
-    LOG_WARN("sql.updates", "Database \"{}\" does not exist, do you want to create it? [yes (default) / no]: ",
-             pool.GetConnectionInfo()->database);
+    LOG_WARN("sql.updates", "Database \"{}\" does not exist", pool.GetConnectionInfo()->database);
 
-    std::string answer;
-    std::getline(std::cin, answer);
-    if (!answer.empty() && !(answer.substr(0, 1) == "y"))
-        return false;
+    const char* disableInteractive = std::getenv("AC_DISABLE_INTERACTIVE");
+
+    if (!sConfigMgr->isDryRun() && (disableInteractive == nullptr || std::strcmp(disableInteractive, "1") != 0))
+    {
+        std::cout << "Do you want to create it? [yes (default) / no]:" << std::endl;
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (!answer.empty() && !(answer.substr(0, 1) == "y"))
+            return false;
+    }
 
     LOG_INFO("sql.updates", "Creating database \"{}\"...", pool.GetConnectionInfo()->database);
 
@@ -192,7 +196,6 @@ bool DBUpdater<T>::Create(DatabaseWorkerPool<T>& pool)
     }
 
     file << "CREATE DATABASE `" << pool.GetConnectionInfo()->database << "` DEFAULT CHARACTER SET UTF8MB4 COLLATE utf8mb4_general_ci;\n\n";
-
     file.close();
 
     try
@@ -225,14 +228,14 @@ bool DBUpdater<T>::Update(DatabaseWorkerPool<T>& pool, std::string_view modulesL
 
     if (!is_directory(sourceDirectory))
     {
-        LOG_ERROR("sql.updates", "DBUpdater: The given source directory {} does not exist, change the path to the directory where your sql directory exists (for example c:\\source\\trinitycore). Shutting down.",
+        LOG_ERROR("sql.updates", "DBUpdater: The given source directory {} does not exist, change the path to the directory where your sql directory exists (for example c:\\source\\azerothcore). Shutting down.",
                   sourceDirectory.generic_string());
         return false;
     }
 
     auto CheckUpdateTable = [&](std::string const& tableName)
     {
-        auto checkTable = DBUpdater<T>::Retrieve(pool, Acore::StringFormatFmt("SHOW TABLES LIKE '{}'", tableName));
+        auto checkTable = DBUpdater<T>::Retrieve(pool, Acore::StringFormat("SHOW TABLES LIKE '{}'", tableName));
         if (!checkTable)
         {
             LOG_WARN("sql.updates", "> Table '{}' not exist! Try add based table", tableName);
@@ -276,7 +279,7 @@ bool DBUpdater<T>::Update(DatabaseWorkerPool<T>& pool, std::string_view modulesL
         return false;
     }
 
-    std::string const info = Acore::StringFormatFmt("Containing {} new and {} archived updates.", result.recent, result.archived);
+    std::string const info = Acore::StringFormat("Containing {} new and {} archived updates.", result.recent, result.archived);
 
     if (!result.updated)
         LOG_INFO("sql.updates", ">> {} database is up-to-date! {}", DBUpdater<T>::GetTableName(), info);
@@ -304,7 +307,7 @@ bool DBUpdater<T>::Update(DatabaseWorkerPool<T>& pool, std::vector<std::string> 
 
     auto CheckUpdateTable = [&](std::string const& tableName)
     {
-        auto checkTable = DBUpdater<T>::Retrieve(pool, Acore::StringFormatFmt("SHOW TABLES LIKE '{}'", tableName));
+        auto checkTable = DBUpdater<T>::Retrieve(pool, Acore::StringFormat("SHOW TABLES LIKE '{}'", tableName));
         if (!checkTable)
         {
             Path const temp(GetBaseFilesDirectory() + tableName + ".sql");
@@ -438,15 +441,28 @@ template<class T>
 void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, std::string const& host, std::string const& user,
                              std::string const& password, std::string const& port_or_socket, std::string const& database, std::string const& ssl, Path const& path)
 {
+    std::string configTempDir = sConfigMgr->GetOption<std::string>("TempDir", "");
+
+    auto tempDir = configTempDir.empty() ? std::filesystem::temp_directory_path().string() : configTempDir;
+
+    tempDir = Acore::String::AddSuffixIfNotExists(tempDir, std::filesystem::path::preferred_separator);
+
+    std::string confFileName = "mysql_ac.conf";
+
+    std::ofstream outfile (tempDir + confFileName);
+
+    outfile << "[client]\npassword = \"" << password << '"' << std::endl;
+
+    outfile.close();
+
     std::vector<std::string> args;
-    args.reserve(7);
+    args.reserve(9);
+
+    args.emplace_back("--defaults-extra-file="+tempDir + confFileName+"");
 
     // CLI Client connection info
     args.emplace_back("-h" + host);
     args.emplace_back("-u" + user);
-
-    if (!password.empty())
-        args.emplace_back("-p" + password);
 
     // Check if we want to connect through ip or socket (Unix only)
 #ifdef _WIN32
@@ -477,17 +493,12 @@ void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, std::string const& hos
     // Set max allowed packet to 1 GB
     args.emplace_back("--max-allowed-packet=1GB");
 
-#if !defined(MARIADB_VERSION_ID) && MYSQL_VERSION_ID >= 80000
-
     if (ssl == "ssl")
         args.emplace_back("--ssl-mode=REQUIRED");
 
-#else
-
-    if (ssl == "ssl")
-        args.emplace_back("--ssl");
-
-#endif
+    // Execute sql file
+    args.emplace_back("-e");
+    args.emplace_back(Acore::StringFormat("BEGIN; SOURCE {}; COMMIT;", path.generic_string()));
 
     // Database
     if (!database.empty())
@@ -495,7 +506,7 @@ void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, std::string const& hos
 
     // Invokes a mysql process which doesn't leak credentials to logs
     int const ret = Acore::StartProcess(DBUpdaterUtil::GetCorrectedMySQLExecutable(), args,
-        "sql.updates", path.generic_string(), true);
+        "sql.updates", "", true);
 
     if (ret != EXIT_SUCCESS)
     {

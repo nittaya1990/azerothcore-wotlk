@@ -16,28 +16,25 @@
  */
 
 #include "CreatureGroups.h"
-#include "Opcodes.h"
+#include "CreatureScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "SpellAuras.h"
 #include "SpellScript.h"
-#include "WorldSession.h"
+#include "SpellScriptLoader.h"
 #include "pit_of_saron.h"
 
 enum Yells
 {
-    SAY_AGGRO                       = 14,
-    SAY_SLAY_1                      = 15,
-    SAY_DEATH                       = 17,
-    SAY_FORGE_1                     = 18,
-    SAY_FORGE_2                     = 19,
-
-    SAY_BOULDER_HIT                 = 16,
-    EMOTE_DEEP_FREEZE               = 23,
+    SAY_AGGRO                       = 0,
+    SAY_HP_66                       = 1,
+    SAY_HP_33                       = 2,
+    SAY_DEATH                       = 3,
+    SAY_SLAY                        = 4,
+    SAY_BOULDER_HIT                 = 5,
+    WHISPER_BOULDER                 = 6,
+    EMOTE_DEEP_FREEZE               = 7,
 };
-
-#define EMOTE_THROW_SARONITE        "%s hurls a massive saronite boulder at you!"
 
 enum MiscData
 {
@@ -109,13 +106,13 @@ public:
                 pInstance->SetData(DATA_ACHIEV_ELEVEN, 0);
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
             me->CastSpell(me, SPELL_PERMAFROST, true);
 
             Talk(SAY_AGGRO);
             DoZoneInCombat();
-            events.RescheduleEvent(EVENT_SPELL_THROW_SARONITE, urand(5000, 7500));
+            events.RescheduleEvent(EVENT_SPELL_THROW_SARONITE, 5000ms, 7500ms);
 
             if (pInstance)
                 pInstance->SetData(DATA_GARFROST, IN_PROGRESS);
@@ -129,9 +126,9 @@ public:
                 me->SetReactState(REACT_PASSIVE);
                 me->SetTarget();
                 me->SendMeleeAttackStop(me->GetVictim());
-                events.DelayEvents(8000);
+                events.DelayEvents(8s);
                 me->CastSpell(me, SPELL_THUNDERING_STOMP, false);
-                events.RescheduleEvent(EVENT_JUMP, 1250);
+                events.RescheduleEvent(EVENT_JUMP, 1250ms);
                 return;
             }
 
@@ -142,9 +139,9 @@ public:
                 me->SetReactState(REACT_PASSIVE);
                 me->SetTarget();
                 me->SendMeleeAttackStop(me->GetVictim());
-                events.DelayEvents(8000);
+                events.DelayEvents(8s);
                 me->CastSpell(me, SPELL_THUNDERING_STOMP, false);
-                events.RescheduleEvent(EVENT_JUMP, 1250);
+                events.RescheduleEvent(EVENT_JUMP, 1250ms);
                 return;
             }
         }
@@ -158,14 +155,14 @@ public:
             {
                 me->SetControlled(true, UNIT_STATE_ROOT);
                 me->CastSpell(me, SPELL_FORGE_BLADE, false);
-                Talk(SAY_FORGE_1);
+                Talk(SAY_HP_66);
             }
             else if (phase == 2)
             {
                 me->SetControlled(true, UNIT_STATE_ROOT);
                 me->RemoveAurasDueToSpell(SPELL_FORGE_BLADE);
                 me->CastSpell(me, SPELL_FORGE_MACE, false);
-                Talk(SAY_FORGE_2);
+                Talk(SAY_HP_33);
             }
         }
 
@@ -194,7 +191,7 @@ public:
             }
             else if (spell->Id == uint32(SPELL_FORGE_MACE))
             {
-                events.RescheduleEvent(EVENT_SPELL_DEEP_FREEZE, 10000);
+                events.RescheduleEvent(EVENT_SPELL_DEEP_FREEZE, 10s);
                 SetEquipmentSlots(false, EQUIP_ID_MACE);
                 me->SetReactState(REACT_AGGRESSIVE);
                 me->SetControlled(false, UNIT_STATE_ROOT);
@@ -219,7 +216,7 @@ public:
                 if (x < 600.0f || x > 770.0f || y < -270.0f || y > -137.0f || z < 514.0f || z > 550.0f)
                 {
                     me->SetHealth(me->GetMaxHealth());
-                    EnterEvadeMode();
+                    EnterEvadeMode(EVADE_REASON_OTHER);
                     if (CreatureGroup* f = me->GetFormation())
                     {
                         const CreatureGroup::CreatureGroupMemberType& m = f->GetMembers();
@@ -236,7 +233,7 @@ public:
             if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
-            switch(events.ExecuteEvent())
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
@@ -244,12 +241,10 @@ public:
                     bCanSayBoulderHit = true;
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 140.0f, true))
                     {
-                        WorldPacket data;
-                        ChatHandler::BuildChatPacket(data, CHAT_MSG_RAID_BOSS_EMOTE, LANG_UNIVERSAL, me, nullptr, EMOTE_THROW_SARONITE);
-                        target->ToPlayer()->GetSession()->SendPacket(&data);
+                        Talk(WHISPER_BOULDER, target);
                         me->CastSpell(target, SPELL_THROW_SARONITE, false);
                     }
-                    events.RepeatEvent(urand(12500, 20000));
+                    events.Repeat(12s + 500ms, 20s);
                     break;
                 case EVENT_JUMP:
                     me->DisableRotate(true);
@@ -261,7 +256,7 @@ public:
                     break;
                 case EVENT_SPELL_CHILLING_WAVE:
                     me->CastSpell(me->GetVictim(), SPELL_CHILLING_WAVE, false);
-                    events.RepeatEvent(35000);
+                    events.Repeat(35s);
                     break;
                 case EVENT_SPELL_DEEP_FREEZE:
                     if (Unit* target = SelectTarget(SelectTargetMethod::Random, 0, 0.0f, true))
@@ -269,7 +264,7 @@ public:
                         Talk(EMOTE_DEEP_FREEZE, target);
                         me->CastSpell(target, SPELL_DEEP_FREEZE, false);
                     }
-                    events.RepeatEvent(35000);
+                    events.Repeat(35s);
                     break;
             }
 
@@ -285,15 +280,15 @@ public:
 
         void KilledUnit(Unit* who) override
         {
-            if (who->GetTypeId() == TYPEID_PLAYER)
-                Talk(SAY_SLAY_1);
+            if (who->IsPlayer())
+                Talk(SAY_SLAY);
         }
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
             me->SetControlled(false, UNIT_STATE_ROOT);
             me->DisableRotate(false);
-            ScriptedAI::EnterEvadeMode();
+            ScriptedAI::EnterEvadeMode(why);
         }
     };
 
@@ -303,78 +298,67 @@ public:
     }
 };
 
-class spell_garfrost_permafrost : public SpellScriptLoader
+class spell_garfrost_permafrost : public SpellScript
 {
-public:
-    spell_garfrost_permafrost() : SpellScriptLoader("spell_garfrost_permafrost") { }
+    PrepareSpellScript(spell_garfrost_permafrost);
 
-    class spell_garfrost_permafrost_SpellScript : public SpellScript
+    std::list<WorldObject*> targetList;
+
+    void Unload() override
     {
-        PrepareSpellScript(spell_garfrost_permafrost_SpellScript);
+        targetList.clear();
+    }
 
-        std::list<WorldObject*> targetList;
-
-        void Unload() override
+    void FilterTargets(std::list<WorldObject*>& targets)
+    {
+        if (Unit* caster = GetCaster())
         {
-            targetList.clear();
-        }
+            std::list<GameObject*> blockList;
+            caster->GetGameObjectListWithEntryInGrid(blockList, GO_SARONITE_ROCK, 100.0f);
 
-        void FilterTargets(std::list<WorldObject*>& targets)
-        {
-            if (Unit* caster = GetCaster())
+            if (!blockList.empty())
             {
-                std::list<GameObject*> blockList;
-                caster->GetGameObjectListWithEntryInGrid(blockList, GO_SARONITE_ROCK, 100.0f);
-
-                if (!blockList.empty())
-                {
-                    for (std::list<WorldObject*>::iterator itrU = targets.begin(); itrU != targets.end(); ++itrU)
-                        if (WorldObject* target = (*itrU))
+                for (std::list<WorldObject*>::iterator itrU = targets.begin(); itrU != targets.end(); ++itrU)
+                    if (WorldObject* target = (*itrU))
+                    {
+                        bool valid = true;
+                        if (!caster->IsWithinMeleeRange(target->ToUnit()))
+                            for (std::list<GameObject*>::const_iterator itr = blockList.begin(); itr != blockList.end(); ++itr)
+                                if (!(*itr)->IsInvisibleDueToDespawn())
+                                    if ((*itr)->IsInBetween(caster, target, 4.0f))
+                                    {
+                                        valid = false;
+                                        break;
+                                    }
+                        if (valid)
                         {
-                            bool valid = true;
-                            if (!caster->IsWithinMeleeRange(target->ToUnit()))
-                                for (std::list<GameObject*>::const_iterator itr = blockList.begin(); itr != blockList.end(); ++itr)
-                                    if (!(*itr)->IsInvisibleDueToDespawn())
-                                        if ((*itr)->IsInBetween(caster, target, 4.0f))
-                                        {
-                                            valid = false;
-                                            break;
-                                        }
-                            if (valid)
-                            {
-                                if (Aura* aur = target->ToUnit()->GetAura(70336))
-                                    if (aur->GetStackAmount() >= 10 && caster->GetTypeId() == TYPEID_UNIT)
-                                        caster->ToCreature()->AI()->SetData(1, aur->GetStackAmount());
-                                targetList.push_back(*itrU);
-                            }
+                            if (Aura* aur = target->ToUnit()->GetAura(70336))
+                                if (aur->GetStackAmount() >= 10 && caster->IsCreature())
+                                    caster->ToCreature()->AI()->SetData(1, aur->GetStackAmount());
+                            targetList.push_back(*itrU);
                         }
-                }
-                else
-                {
-                    targetList = targets;
-                    return;
-                }
+                    }
             }
-
-            targets = targetList;
+            else
+            {
+                targetList = targets;
+                return;
+            }
         }
 
-        void FilterTargetsNext(std::list<WorldObject*>& targets)
-        {
-            targets = targetList;
-        }
+        targets = targetList;
+    }
 
-        void Register() override
-        {
-            OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_garfrost_permafrost_SpellScript::FilterTargets, EFFECT_0, TARGET_UNIT_DEST_AREA_ENEMY);
-            OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_garfrost_permafrost_SpellScript::FilterTargetsNext, EFFECT_1, TARGET_UNIT_DEST_AREA_ENEMY);
-            OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_garfrost_permafrost_SpellScript::FilterTargetsNext, EFFECT_2, TARGET_UNIT_DEST_AREA_ENEMY);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void FilterTargetsNext(std::list<WorldObject*>& targets)
     {
-        return new spell_garfrost_permafrost_SpellScript();
+        targets = targetList;
+    }
+
+    void Register() override
+    {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_garfrost_permafrost::FilterTargets, EFFECT_0, TARGET_UNIT_DEST_AREA_ENEMY);
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_garfrost_permafrost::FilterTargetsNext, EFFECT_1, TARGET_UNIT_DEST_AREA_ENEMY);
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_garfrost_permafrost::FilterTargetsNext, EFFECT_2, TARGET_UNIT_DEST_AREA_ENEMY);
     }
 };
 
@@ -382,5 +366,5 @@ void AddSC_boss_garfrost()
 {
     new boss_garfrost();
 
-    new spell_garfrost_permafrost();
+    RegisterSpellScript(spell_garfrost_permafrost);
 }

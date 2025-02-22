@@ -15,9 +15,6 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "CryptoHash.h"
-#include <cstring>
-
 #ifndef AZEROTHCORE_SESSIONKEYGENERATOR_HPP
 #define AZEROTHCORE_SESSIONKEYGENERATOR_HPP
 
@@ -25,12 +22,13 @@ template <typename Hash>
 class SessionKeyGenerator
 {
 public:
-    template <typename C> SessionKeyGenerator(C const& buf) :
+    template <typename C>
+    SessionKeyGenerator(C const& buf) :
         o0it(o0.begin())
     {
         uint8 const* data = std::data(buf);
-        size_t const len = std::size(buf);
-        size_t const halflen = (len / 2);
+        std::size_t const len = std::size(buf);
+        std::size_t const halflen = (len / 2);
 
         o1 = Hash::GetDigestOf(data, halflen);
         o2 = Hash::GetDigestOf(data + halflen, len - halflen);
@@ -52,9 +50,9 @@ public:
     }
 
 private:
-    typename Hash::Digest o0 = { };
-    typename Hash::Digest o1 = { };
-    typename Hash::Digest o2 = { };
+    typename Hash::Digest o0{};
+    typename Hash::Digest o1{};
+    typename Hash::Digest o2{};
     typename Hash::Digest::const_iterator o0it;
 };
 

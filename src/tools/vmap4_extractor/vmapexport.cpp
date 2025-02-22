@@ -163,14 +163,14 @@ bool ExtractSingleWmo(std::string& fname)
 
             string s = groupFileName;
             WMOGroup fgroup(s);
-            if (!fgroup.open())
+            if (!fgroup.open(&froot))
             {
                 printf("Could not open all Group file for: %s\n", plain_name);
                 file_ok = false;
                 break;
             }
 
-            Wmo_nVertices += fgroup.ConvertToVMAPGroupWmo(output, &froot, preciseVectorData);
+            Wmo_nVertices += fgroup.ConvertToVMAPGroupWmo(output, preciseVectorData);
             for (uint16 groupReference : fgroup.DoodadReferences)
             {
                 if (groupReference >= doodads.Spawns.size())
@@ -485,7 +485,7 @@ int main(int argc, char** argv)
             map_ids[x].id = dbc->getRecord(x).getUInt(0);
 
             char const* map_name = dbc->getRecord(x).getString(1);
-            size_t max_map_name_length = sizeof(map_ids[x].name);
+            std::size_t max_map_name_length = sizeof(map_ids[x].name);
             if (strlen(map_name) >= max_map_name_length)
             {
                 delete dbc;

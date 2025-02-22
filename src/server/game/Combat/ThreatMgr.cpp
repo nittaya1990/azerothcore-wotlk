@@ -21,7 +21,6 @@
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
-#include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Unit.h"
@@ -32,11 +31,11 @@
 //==============================================================
 
 // The hatingUnit is not used yet
-float ThreatCalcHelper::calcThreat(Unit* hatedUnit, Unit* /*hatingUnit*/, float threat, SpellSchoolMask schoolMask, SpellInfo const* threatSpell)
+float ThreatCalcHelper::calcThreat(Unit* hatedUnit, float threat, SpellSchoolMask schoolMask, SpellInfo const* threatSpell)
 {
     if (threatSpell)
     {
-        if (SpellThreatEntry const*  threatEntry = sSpellMgr->GetSpellThreatEntry(threatSpell->Id))
+        if (SpellThreatEntry const* threatEntry = sSpellMgr->GetSpellThreatEntry(threatSpell->Id))
             if (threatEntry->pctMod != 1.0f)
                 threat *= threatEntry->pctMod;
 
@@ -67,7 +66,7 @@ bool ThreatCalcHelper::isValidProcess(Unit* hatedUnit, Unit* hatingUnit, SpellIn
         return false;
 
     // not to GM
-    if (hatedUnit->GetTypeId() == TYPEID_PLAYER && hatedUnit->ToPlayer()->IsGameMaster())
+    if (hatedUnit->IsPlayer() && hatedUnit->ToPlayer()->IsGameMaster())
         return false;
 
     // not to dead and not for dead
@@ -82,7 +81,7 @@ bool ThreatCalcHelper::isValidProcess(Unit* hatedUnit, Unit* hatingUnit, SpellIn
     if (threatSpell && threatSpell->HasAttribute(SPELL_ATTR1_NO_THREAT))
         return false;
 
-    ASSERT(hatingUnit->GetTypeId() == TYPEID_UNIT);
+    ASSERT(hatingUnit->IsCreature());
 
     return true;
 }
@@ -131,14 +130,17 @@ void HostileReference::fireStatusChanged(ThreatRefStatusChangeEvent& threatRefSt
         GetSource()->processThreatEvent(&threatRefStatusChangeEvent);
 }
 
+// -- compatibility layer for combat rewrite
+Unit* HostileReference::GetOwner() const { return GetSource()->GetOwner(); }
+
 //============================================================
 
-void HostileReference::addThreat(float modThreat)
+void HostileReference::AddThreat(float modThreat)
 {
     iThreat += modThreat;
     // the threat is changed. Source and target unit have to be available
     // if the link was cut before relink it again
-    if (!isOnline())
+    if (!IsOnline())
         updateOnlineStatus();
     if (modThreat != 0.0f)
     {
@@ -154,7 +156,7 @@ void HostileReference::addThreat(float modThreat)
             Unit* victimOwner = target->GetCharmerOrOwner();
             if (victimOwner && victimOwner->IsAlive())
             {
-                GetSource()->addThreat(victimOwner, 0.0f); // create a threat to the owner of a pet, if the pet attacks
+                GetSource()->AddThreat(victimOwner, 0.0f); // create a threat to the owner of a pet, if the pet attacks
             }
         }
     }
@@ -169,7 +171,7 @@ void HostileReference::addThreatPercent(int32 percent)
 
     float tmpThreat = iThreat;
     AddPct(tmpThreat, percent);
-    addThreat(tmpThreat - iThreat);
+    AddThreat(tmpThreat - iThreat);
 }
 
 //============================================================
@@ -188,7 +190,7 @@ void HostileReference::updateOnlineStatus()
     // target is no player or not gamemaster
     // target is not in flight
     if (isValid()
-            && (getTarget()->GetTypeId() != TYPEID_PLAYER || !getTarget()->ToPlayer()->IsGameMaster())
+            && (!getTarget()->IsPlayer() || !getTarget()->ToPlayer()->IsGameMaster())
             && !getTarget()->IsInFlight()
             && getTarget()->IsInMap(GetSourceUnit())
             && getTarget()->InSamePhase(GetSourceUnit())
@@ -215,7 +217,7 @@ void HostileReference::setOnlineOfflineState(bool isOnline)
     {
         iOnline = isOnline;
 
-        ThreatRefStatusChangeEvent event(UEV_THREAT_REF_ONLINE_STATUS, this);
+        ThreatRefStatusChangeEvent event(UEV_THREAT_REF_ONLINE_STATUS, this, isOnline);
         fireStatusChanged(event);
     }
 }
@@ -228,7 +230,7 @@ void HostileReference::removeReference()
 {
     invalidate();
 
-    ThreatRefStatusChangeEvent event(UEV_THREAT_REF_REMOVE_FROM_LIST, this);
+    ThreatRefStatusChangeEvent event(UEV_THREAT_REF_REMOVE_FROM_LIST, this, false);
     fireStatusChanged(event);
 }
 
@@ -256,17 +258,23 @@ void ThreatContainer::clearReferences()
 
 //============================================================
 // Return the HostileReference of nullptr, if not found
-HostileReference* ThreatContainer::getReferenceByTarget(Unit* victim) const
+HostileReference* ThreatContainer::getReferenceByTarget(Unit const* victim) const
 {
     if (!victim)
         return nullptr;
 
-    ObjectGuid const guid = victim->GetGUID();
+    return getReferenceByTarget(victim->GetGUID());
+}
+
+HostileReference* ThreatContainer::getReferenceByTarget(ObjectGuid const& guid) const
+{
     for (ThreatContainer::StorageType::const_iterator i = iThreatList.begin(); i != iThreatList.end(); ++i)
     {
         HostileReference* ref = (*i);
         if (ref && ref->getUnitGuid() == guid)
+        {
             return ref;
+        }
     }
 
     return nullptr;
@@ -275,17 +283,17 @@ HostileReference* ThreatContainer::getReferenceByTarget(Unit* victim) const
 //============================================================
 // Add the threat, if we find the reference
 
-HostileReference* ThreatContainer::addThreat(Unit* victim, float threat)
+HostileReference* ThreatContainer::AddThreat(Unit* victim, float threat)
 {
     HostileReference* ref = getReferenceByTarget(victim);
     if (ref)
-        ref->addThreat(threat);
+        ref->AddThreat(threat);
     return ref;
 }
 
 //============================================================
 
-void ThreatContainer::modifyThreatPercent(Unit* victim, int32 percent)
+void ThreatContainer::ModifyThreatByPercent(Unit* victim, int32 percent)
 {
     if (HostileReference* ref = getReferenceByTarget(victim))
         ref->addThreatPercent(percent);
@@ -306,7 +314,7 @@ void ThreatContainer::update()
 // return the next best victim
 // could be the current victim
 
-HostileReference* ThreatContainer::selectNextVictim(Creature* attacker, HostileReference* currentVictim) const
+HostileReference* ThreatContainer::SelectNextVictim(Creature* attacker, HostileReference* currentVictim) const
 {
     // pussywizard: pretty much remade this whole function
 
@@ -320,7 +328,7 @@ HostileReference* ThreatContainer::selectNextVictim(Creature* attacker, HostileR
         Unit* cvUnit = currentVictim->getTarget();
         if (!attacker->CanCreatureAttack(cvUnit)) // pussywizard: if currentVictim is not valid => don't compare the threat with it, just take the highest threat valid target
             currentVictim = nullptr;
-        else if (cvUnit->IsImmunedToDamageOrSchool(attacker->GetMeleeDamageSchoolMask()) || cvUnit->HasNegativeAuraWithInterruptFlag(AURA_INTERRUPT_FLAG_TAKE_DAMAGE)) // pussywizard: no 10%/30% if currentVictim is immune to damage or has auras breakable by damage
+        else if (cvUnit->IsImmunedToDamageOrSchool(attacker->GetMeleeDamageSchoolMask()) || cvUnit->HasNegativeAuraWithInterruptFlag(AURA_INTERRUPT_FLAG_TAKE_DAMAGE) || cvUnit->HasUnitState(UNIT_STATE_CONFUSED)) // pussywizard: no 10%/30% if currentVictim is immune to damage or has auras breakable by damage
             currentVictim = nullptr;
     }
 
@@ -337,7 +345,7 @@ HostileReference* ThreatContainer::selectNextVictim(Creature* attacker, HostileR
 
         // pussywizard: don't go to threat comparison if this ref is immune to damage or has aura breakable on damage (second choice target)
         // pussywizard: if this is the last entry on the threat list, then all targets are second choice, set bool to true and loop threat list again, ignoring this section
-        if (!noPriorityTargetFound && (target->IsImmunedToDamageOrSchool(attacker->GetMeleeDamageSchoolMask()) || target->HasNegativeAuraWithInterruptFlag(AURA_INTERRUPT_FLAG_TAKE_DAMAGE) || target->HasAuraTypeWithCaster(SPELL_AURA_IGNORED, attacker->GetGUID())))
+        if (!noPriorityTargetFound && (target->IsImmunedToDamageOrSchool(attacker->GetMeleeDamageSchoolMask()) || target->HasNegativeAuraWithInterruptFlag(AURA_INTERRUPT_FLAG_TAKE_DAMAGE) || target->HasUnitState(UNIT_STATE_CONFUSED) || target->HasAuraTypeWithCaster(SPELL_AURA_IGNORED, attacker->GetGUID())))
         {
             if (iter != lastRef)
             {
@@ -364,12 +372,12 @@ HostileReference* ThreatContainer::selectNextVictim(Creature* attacker, HostileR
                 }
 
                 // pussywizard: implement 110% threat rule for targets in melee range and 130% rule for targets in ranged distances
-                if (currentRef->getThreat() > 1.3f * currentVictim->getThreat()) // pussywizard: enough in all cases, end
+                if (currentRef->GetThreat() > 1.3f * currentVictim->GetThreat()) // pussywizard: enough in all cases, end
                 {
                     found = true;
                     break;
                 }
-                else if (currentRef->getThreat() > 1.1f * currentVictim->getThreat()) // pussywizard: enought only if target in melee range
+                else if (currentRef->GetThreat() > 1.1f * currentVictim->GetThreat()) // pussywizard: enought only if target in melee range
                 {
                     if (attacker->IsWithinMeleeRange(target))
                     {
@@ -406,6 +414,13 @@ ThreatMgr::ThreatMgr(Unit* owner) : iCurrentVictim(nullptr), iOwner(owner), iUpd
 {
 }
 
+void ThreatMgr::ClearAllThreat()
+{
+    if (iOwner->CanHaveThreatList(true) && !isThreatListEmpty())
+        iOwner->SendClearThreatListOpcode();
+    clearReferences();
+}
+
 //============================================================
 
 void ThreatMgr::clearReferences()
@@ -418,22 +433,47 @@ void ThreatMgr::clearReferences()
 
 //============================================================
 
-void ThreatMgr::addThreat(Unit* victim, float threat, SpellSchoolMask schoolMask, SpellInfo const* threatSpell)
+void ThreatMgr::AddThreat(Unit* victim, float threat, SpellSchoolMask schoolMask, SpellInfo const* threatSpell)
 {
-    if (!ThreatCalcHelper::isValidProcess(victim, GetOwner(), threatSpell))
+    if (!ThreatCalcHelper::isValidProcess(victim, iOwner, threatSpell))
         return;
 
-    doAddThreat(victim, ThreatCalcHelper::calcThreat(victim, iOwner, threat, schoolMask, threatSpell));
+    threat = ThreatCalcHelper::calcThreat(victim, threat, schoolMask, threatSpell);
+    if (Creature* hatingCreature = iOwner->ToCreature())
+    {
+        if (hatingCreature->IsAIEnabled)
+        {
+            hatingCreature->AI()->CalculateThreat(victim, threat, threatSpell);
+        }
+    }
+
+    DoAddThreat(victim, threat);
 }
 
-void ThreatMgr::doAddThreat(Unit* victim, float threat)
+void ThreatMgr::DoAddThreat(Unit* victim, float threat)
 {
     uint32 redirectThreadPct = victim->GetRedirectThreatPercent();
+    Unit* redirectTarget = victim->GetRedirectThreatTarget();
+
+    // Personal Spawns from same summoner can aggro each other
+    if (TempSummon* tempSummonVictim = victim->ToTempSummon())
+    {
+        if (tempSummonVictim->IsVisibleBySummonerOnly())
+        {
+            if (!GetOwner()->ToTempSummon() ||
+                !GetOwner()->ToTempSummon()->IsVisibleBySummonerOnly() ||
+                tempSummonVictim->GetSummonerGUID() != GetOwner()->ToTempSummon()->GetSummonerGUID())
+            {
+                redirectThreadPct = 100;
+                redirectTarget = tempSummonVictim->GetSummonerUnit();
+            }
+        }
+    }
 
     // must check > 0.0f, otherwise dead loop
     if (threat > 0.0f && redirectThreadPct)
     {
-        if (Unit* redirectTarget = victim->GetRedirectThreatTarget())
+        if (redirectTarget)
         {
             float redirectThreat = CalculatePct(threat, redirectThreadPct);
             threat -= redirectThreat;
@@ -447,49 +487,49 @@ void ThreatMgr::doAddThreat(Unit* victim, float threat)
 
 void ThreatMgr::_addThreat(Unit* victim, float threat)
 {
-    HostileReference* ref = iThreatContainer.addThreat(victim, threat);
+    HostileReference* ref = iThreatContainer.AddThreat(victim, threat);
     // Ref is not in the online refs, search the offline refs next
     if (!ref)
-        ref = iThreatOfflineContainer.addThreat(victim, threat);
+        ref = iThreatOfflineContainer.AddThreat(victim, threat);
 
     if (!ref) // there was no ref => create a new one
     {
         // threat has to be 0 here
         HostileReference* hostileRef = new HostileReference(victim, this, 0);
         iThreatContainer.addReference(hostileRef);
-        hostileRef->addThreat(threat); // now we add the real threat
-        if (victim->GetTypeId() == TYPEID_PLAYER && victim->ToPlayer()->IsGameMaster())
+        hostileRef->AddThreat(threat); // now we add the real threat
+        if (victim->IsPlayer() && victim->ToPlayer()->IsGameMaster())
             hostileRef->setOnlineOfflineState(false); // GM is always offline
     }
 }
 
 //============================================================
 
-void ThreatMgr::modifyThreatPercent(Unit* victim, int32 percent)
+void ThreatMgr::ModifyThreatByPercent(Unit* victim, int32 percent)
 {
-    iThreatContainer.modifyThreatPercent(victim, percent);
+    iThreatContainer.ModifyThreatByPercent(victim, percent);
 }
 
 //============================================================
 
-Unit* ThreatMgr::getHostilTarget()
+Unit* ThreatMgr::getHostileTarget()
 {
     iThreatContainer.update();
-    HostileReference* nextVictim = iThreatContainer.selectNextVictim(GetOwner()->ToCreature(), getCurrentVictim());
+    HostileReference* nextVictim = iThreatContainer.SelectNextVictim(GetOwner()->ToCreature(), getCurrentVictim());
     setCurrentVictim(nextVictim);
     return getCurrentVictim() != nullptr ? getCurrentVictim()->getTarget() : nullptr;
 }
 
 //============================================================
 
-float ThreatMgr::getThreat(Unit* victim, bool alsoSearchOfflineList)
+float ThreatMgr::GetThreat(Unit* victim, bool alsoSearchOfflineList)
 {
     float threat = 0.0f;
     HostileReference* ref = iThreatContainer.getReferenceByTarget(victim);
     if (!ref && alsoSearchOfflineList)
         ref = iThreatOfflineContainer.getReferenceByTarget(victim);
     if (ref)
-        threat = ref->getThreat();
+        threat = ref->GetThreat();
     return threat;
 }
 
@@ -502,7 +542,7 @@ float ThreatMgr::getThreatWithoutTemp(Unit* victim, bool alsoSearchOfflineList)
     if (!ref && alsoSearchOfflineList)
         ref = iThreatOfflineContainer.getReferenceByTarget(victim);
     if (ref)
-        threat = ref->getThreat() - ref->getTempThreatModifier();
+        threat = ref->GetThreat() - ref->getTempThreatModifier();
     return threat;
 }
 
@@ -511,10 +551,10 @@ float ThreatMgr::getThreatWithoutTemp(Unit* victim, bool alsoSearchOfflineList)
 void ThreatMgr::tauntApply(Unit* taunter)
 {
     HostileReference* ref = iThreatContainer.getReferenceByTarget(taunter);
-    if (getCurrentVictim() && ref && (ref->getThreat() < getCurrentVictim()->getThreat()))
+    if (getCurrentVictim() && ref && (ref->GetThreat() < getCurrentVictim()->GetThreat()))
     {
         if (ref->getTempThreatModifier() == 0.0f) // Ok, temp threat is unused
-            ref->setTempThreat(getCurrentVictim()->getThreat());
+            ref->setTempThreat(getCurrentVictim()->GetThreat());
     }
 }
 
@@ -546,49 +586,49 @@ void ThreatMgr::processThreatEvent(ThreatRefStatusChangeEvent* threatRefStatusCh
 {
     threatRefStatusChangeEvent->setThreatMgr(this);     // now we can set the threat manager
 
-    HostileReference* hostilRef = threatRefStatusChangeEvent->getReference();
+    HostileReference* hostileRef = threatRefStatusChangeEvent->getReference();
 
     switch (threatRefStatusChangeEvent->getType())
     {
         case UEV_THREAT_REF_THREAT_CHANGE:
-            if ((getCurrentVictim() == hostilRef && threatRefStatusChangeEvent->getFValue() < 0.0f) ||
-                    (getCurrentVictim() != hostilRef && threatRefStatusChangeEvent->getFValue() > 0.0f))
+            if ((getCurrentVictim() == hostileRef && threatRefStatusChangeEvent->getFValue() < 0.0f) ||
+                    (getCurrentVictim() != hostileRef && threatRefStatusChangeEvent->getFValue() > 0.0f))
                 setDirty(true);                             // the order in the threat list might have changed
             break;
         case UEV_THREAT_REF_ONLINE_STATUS:
-            if (!hostilRef->isOnline())
+            if (!hostileRef->IsOnline())
             {
-                if (hostilRef == getCurrentVictim())
+                if (hostileRef == getCurrentVictim())
                 {
                     setCurrentVictim(nullptr);
                     setDirty(true);
                 }
                 if (GetOwner() && GetOwner()->IsInWorld())
-                    if (Unit* target = ObjectAccessor::GetUnit(*GetOwner(), hostilRef->getUnitGuid()))
+                    if (Unit* target = ObjectAccessor::GetUnit(*GetOwner(), hostileRef->getUnitGuid()))
                         if (GetOwner()->IsInMap(target))
-                            GetOwner()->SendRemoveFromThreatListOpcode(hostilRef);
-                iThreatContainer.remove(hostilRef);
-                iThreatOfflineContainer.addReference(hostilRef);
+                            GetOwner()->SendRemoveFromThreatListOpcode(hostileRef);
+                iThreatContainer.remove(hostileRef);
+                iThreatOfflineContainer.addReference(hostileRef);
             }
             else
             {
-                if (getCurrentVictim() && hostilRef->getThreat() > (1.1f * getCurrentVictim()->getThreat()))
+                if (getCurrentVictim() && hostileRef->GetThreat() > (1.1f * getCurrentVictim()->GetThreat()))
                     setDirty(true);
-                iThreatContainer.addReference(hostilRef);
-                iThreatOfflineContainer.remove(hostilRef);
+                iThreatContainer.addReference(hostileRef);
+                iThreatOfflineContainer.remove(hostileRef);
             }
             break;
         case UEV_THREAT_REF_REMOVE_FROM_LIST:
-            if (hostilRef == getCurrentVictim())
+            if (hostileRef == getCurrentVictim())
             {
                 setCurrentVictim(nullptr);
                 setDirty(true);
             }
-            iOwner->SendRemoveFromThreatListOpcode(hostilRef);
-            if (hostilRef->isOnline())
-                iThreatContainer.remove(hostilRef);
+            iOwner->SendRemoveFromThreatListOpcode(hostileRef);
+            if (hostileRef->IsOnline())
+                iThreatContainer.remove(hostileRef);
             else
-                iThreatOfflineContainer.remove(hostilRef);
+                iThreatOfflineContainer.remove(hostileRef);
             break;
     }
 }
@@ -608,14 +648,18 @@ bool ThreatMgr::isNeedUpdateToClient(uint32 time)
 }
 
 // Reset all aggro without modifying the threatlist.
-void ThreatMgr::resetAllAggro()
+void ThreatMgr::ResetAllThreat()
 {
     ThreatContainer::StorageType& threatList = iThreatContainer.iThreatList;
     if (threatList.empty())
         return;
 
-    for (ThreatContainer::StorageType::iterator itr = threatList.begin(); itr != threatList.end(); ++itr)
-        (*itr)->setThreat(0);
+    for (HostileReference* ref : threatList)
+    {
+        // Reset temp threat before setting threat back to 0.
+        ref->resetTempThreat();
+        ref->SetThreat(0.f);
+    }
 
     setDirty(true);
 }

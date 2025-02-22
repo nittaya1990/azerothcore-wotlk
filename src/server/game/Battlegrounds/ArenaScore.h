@@ -19,6 +19,7 @@
 #define _ARENA_SCORE_H
 
 #include "BattlegroundScore.h"
+#include "SharedDefines.h"
 #include "StringFormat.h"
 
 struct AC_GAME_API ArenaScore : public BattlegroundScore
@@ -35,7 +36,7 @@ protected:
     // For Logging purpose
     std::string ToString() const override
     {
-        return Acore::StringFormatFmt("Damage done: {}, Healing done: {}, Killing blows: {}", DamageDone, HealingDone, KillingBlows);
+        return Acore::StringFormat("Damage done: {}, Healing done: {}, Killing blows: {}", DamageDone, HealingDone, KillingBlows);
     }
 
     uint8 PvPTeamId;
@@ -61,7 +62,7 @@ protected:
     {
         RatingChange = ratingChange;
         MatchmakerRating = matchMakerRating;
-        TeamName = teamName;
+        TeamName = std::string(teamName);
     }
 
     void BuildRatingInfoBlock(WorldPacket& data);
@@ -72,4 +73,4 @@ protected:
     std::string TeamName{};
 };
 
-#endif // WARHEAD_ARENA_SCORE_H
+#endif // ACORE_ARENA_SCORE_H

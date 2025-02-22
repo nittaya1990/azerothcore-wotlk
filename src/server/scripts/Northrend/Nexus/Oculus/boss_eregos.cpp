@@ -15,9 +15,10 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
+#include "CreatureScript.h"
 #include "ScriptedCreature.h"
 #include "oculus.h"
+#include "SpellAuras.h"
 
 enum Spells
 {
@@ -92,16 +93,16 @@ public:
             if (pInstance)
             {
                 pInstance->SetData(DATA_EREGOS, NOT_STARTED);
-                if( pInstance->GetData(DATA_UROM) != DONE )
-                    me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+                if (pInstance->GetData(DATA_UROM) != DONE )
+                    me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
                 else
-                    me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+                    me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
             }
 
             events.Reset();
         }
 
-        void EnterCombat(Unit*  /*who*/) override
+        void JustEngagedWith(Unit*  /*who*/) override
         {
             Talk(SAY_AGGRO);
 
@@ -109,17 +110,17 @@ public:
             {
                 pInstance->SetData(DATA_EREGOS, IN_PROGRESS);
 
-                if( me->FindNearestCreature(NPC_AMBER_DRAKE, 750.0f, true) )
+                if (me->FindNearestCreature(NPC_AMBER_DRAKE, 750.0f, true))
                     pInstance->SetData(DATA_AMBER_VOID, 0);
                 else
                     pInstance->SetData(DATA_AMBER_VOID, 1);
 
-                if( me->FindNearestCreature(NPC_EMERALD_DRAKE, 750.0f, true) )
+                if (me->FindNearestCreature(NPC_EMERALD_DRAKE, 750.0f, true))
                     pInstance->SetData(DATA_EMERALD_VOID, 0);
                 else
                     pInstance->SetData(DATA_EMERALD_VOID, 1);
 
-                if( me->FindNearestCreature(NPC_RUBY_DRAKE, 750.0f, true) )
+                if (me->FindNearestCreature(NPC_RUBY_DRAKE, 750.0f, true))
                     pInstance->SetData(DATA_RUBY_VOID, 0);
                 else
                     pInstance->SetData(DATA_RUBY_VOID, 1);
@@ -129,10 +130,10 @@ public:
 
             shiftNumber = 0;
 
-            events.RescheduleEvent(EVENT_SPELL_ARCANE_BARRAGE, 0);
-            events.RescheduleEvent(EVENT_SPELL_ARCANE_VOLLEY, 5000);
-            events.RescheduleEvent(EVENT_SPELL_ENRAGED_ASSAULT, 35000);
-            events.RescheduleEvent(EVENT_SUMMON_WHELPS, 40000);
+            events.RescheduleEvent(EVENT_SPELL_ARCANE_BARRAGE, 0ms);
+            events.RescheduleEvent(EVENT_SPELL_ARCANE_VOLLEY, 5s);
+            events.RescheduleEvent(EVENT_SPELL_ENRAGED_ASSAULT, 35s);
+            events.RescheduleEvent(EVENT_SUMMON_WHELPS, 40s);
         }
 
         void JustDied(Unit*  /*killer*/) override
@@ -147,13 +148,13 @@ public:
 
         void DamageTaken(Unit*, uint32& /*damage*/, DamageEffectType, SpellSchoolMask) override
         {
-            if( !me->GetMap()->IsHeroic() )
+            if (!me->GetMap()->IsHeroic())
                 return;
 
-            if( shiftNumber <= uint32(1) && uint32(me->GetHealth() * 100 / me->GetMaxHealth()) <= uint32(60 - shiftNumber * 40) )
+            if (shiftNumber <= uint32(1) && uint32(me->GetHealth() * 100 / me->GetMaxHealth()) <= uint32(60 - shiftNumber * 40))
             {
                 ++shiftNumber;
-                events.RescheduleEvent(EVENT_SPELL_PLANAR_SHIFT, 0);
+                events.RescheduleEvent(EVENT_SPELL_PLANAR_SHIFT, 0ms);
             }
         }
 
@@ -166,7 +167,7 @@ public:
 
         void JustSummoned(Creature* pSummon) override
         {
-            if( pSummon->GetEntry() != NPC_LEY_GUARDIAN_WHELP )
+            if (pSummon->GetEntry() != NPC_LEY_GUARDIAN_WHELP )
                 return;
 
             DoZoneInCombat(pSummon, 300.0f);
@@ -174,41 +175,41 @@ public:
 
         void UpdateAI(uint32 diff) override
         {
-            if( !UpdateVictim() )
+            if (!UpdateVictim())
                 return;
 
-            if( me->HasAura(SPELL_PLANAR_SHIFT) || me->HasAura(SPELL_DRAKE_STOP_TIME) )
+            if (me->HasAnyAuras(SPELL_PLANAR_SHIFT, SPELL_DRAKE_STOP_TIME))
                 return;
 
             events.Update(diff);
 
-            if( me->HasUnitState(UNIT_STATE_CASTING) )
+            if (me->HasUnitState(UNIT_STATE_CASTING))
                 return;
 
             DoMeleeAttackIfReady();
 
-            switch( events.ExecuteEvent() )
+            switch (events.ExecuteEvent())
             {
                 case 0:
                     break;
                 case EVENT_SPELL_ARCANE_BARRAGE:
-                    if( Unit* v = me->GetVictim() )
+                    if (Unit* v = me->GetVictim())
                         me->CastSpell(v, SPELL_ARCANE_BARRAGE, false);
-                    events.RepeatEvent(2500);
+                    events.Repeat(2500ms);
                     break;
                 case EVENT_SPELL_ARCANE_VOLLEY:
                     me->CastSpell(me, SPELL_ARCANE_VOLLEY, false);
-                    events.RepeatEvent(8000);
+                    events.Repeat(8s);
                     break;
                 case EVENT_SPELL_ENRAGED_ASSAULT:
                     Talk(SAY_ENRAGE);
                     me->CastSpell(me, SPELL_ENRAGED_ASSAULT, false);
-                    events.RepeatEvent(35000);
+                    events.Repeat(35s);
                     break;
                 case EVENT_SUMMON_WHELPS:
                     for( uint8 i = 0; i < 5; ++i )
                         events.ScheduleEvent(EVENT_SUMMON_SINGLE_WHELP, urand(0, 8000));
-                    events.RepeatEvent(40000);
+                    events.Repeat(40s);
                     break;
                 case EVENT_SUMMON_SINGLE_WHELP:
                     {
@@ -223,8 +224,8 @@ public:
                     Talk(SAY_SHIELD);
                     me->CastSpell(me, SPELL_PLANAR_SHIFT, false);
                     for( uint8 i = 0; i < 3; ++i )
-                        if( Unit* t = SelectTarget(SelectTargetMethod::Random, 0, 300.0f, false) )
-                            if( Creature* pa = me->SummonCreature(NPC_PLANAR_ANOMALY, *me, TEMPSUMMON_TIMED_DESPAWN, 17000) )
+                        if (Unit* t = SelectTarget(SelectTargetMethod::Random, 0, 300.0f, false))
+                            if (Creature* pa = me->SummonCreature(NPC_PLANAR_ANOMALY, *me, TEMPSUMMON_TIMED_DESPAWN, 17000))
                             {
                                 pa->SetCanFly(true);
                                 pa->SetDisableGravity(true);
@@ -233,7 +234,7 @@ public:
                                 pa->CastSpell(pa, SPELL_PLANAR_AURA_DAMAGE, true);
                                 if (Aura* a = pa->GetAura(SPELL_PLANAR_AURA_DAMAGE))
                                     a->SetDuration(15000);
-                                if( pa->AI() )
+                                if (pa->AI())
                                 {
                                     pa->AI()->AttackStart(t);
                                     pa->GetMotionMaster()->MoveChase(t, 0.01f);

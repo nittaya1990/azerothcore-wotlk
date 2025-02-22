@@ -15,6 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
+#include "AllCreatureScript.h"
 #include "ScriptMgr.h"
 #include "ScriptMgrMacros.h"
 #include "ScriptedGossip.h"
@@ -148,7 +150,6 @@ uint32 ScriptMgr::GetDialogStatus(Player* player, Creature* creature)
     ASSERT(creature);
 
     auto tempScript = ScriptRegistry<CreatureScript>::GetScriptById(creature->GetScriptId());
-    ClearGossipMenuFor(player);
     return tempScript ? tempScript->GetDialogStatus(player, creature) : DIALOG_STATUS_SCRIPTED_NO_STATUS;
 }
 
@@ -170,6 +171,15 @@ CreatureAI* ScriptMgr::GetCreatureAI(Creature* creature)
     return tempScript ? tempScript->GetAI(creature) : nullptr;
 }
 
+//Fires whenever the UNIT_BYTE2_FLAG_FFA_PVP bit is Changed on the player
+void ScriptMgr::OnFfaPvpStateUpdate(Creature* creature, bool InPvp)
+{
+    ExecuteScript<AllCreatureScript>([&](AllCreatureScript* script)
+        {
+            script->OnFfaPvpStateUpdate(creature, InPvp);
+        });
+}
+
 void ScriptMgr::OnCreatureUpdate(Creature* creature, uint32 diff)
 {
     ASSERT(creature);
@@ -184,3 +194,11 @@ void ScriptMgr::OnCreatureUpdate(Creature* creature, uint32 diff)
         tempScript->OnUpdate(creature, diff);
     }
 }
+
+CreatureScript::CreatureScript(const char* name)
+    : ScriptObject(name)
+{
+    ScriptRegistry<CreatureScript>::AddScript(this);
+}
+
+template class AC_GAME_API ScriptRegistry<CreatureScript>;

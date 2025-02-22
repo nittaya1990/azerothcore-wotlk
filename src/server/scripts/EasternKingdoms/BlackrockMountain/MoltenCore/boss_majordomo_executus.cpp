@@ -15,12 +15,13 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "ScriptedGossip.h"
 #include "SpellScript.h"
+#include "SpellScriptLoader.h"
 #include "molten_core.h"
 
 enum Texts
@@ -151,7 +152,8 @@ public:
             {
                 summon->CastSpell(summon, SPELL_RAGNAROS_FADE);
                 summon->CastSpell(summon, SPELL_RAGNAROS_SUBMERGE_EFFECT, true);
-                summon->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_NON_ATTACKABLE);
+                summon->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+                summon->SetImmuneToAll(true);
                 summon->SetReactState(REACT_PASSIVE);
             }
         }
@@ -180,8 +182,8 @@ public:
             else
             {
                 events.SetPhase(PHASE_NONE);
-                me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC|UNIT_FLAG_IMMUNE_TO_NPC);
-                me->SetFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+                me->SetImmuneToAll(true);
+                me->SetNpcFlag(UNIT_NPC_FLAG_GOSSIP);
                 me->SetFaction(FACTION_MAJORDOMO_FRIENDLY);
             }
         }
@@ -212,6 +214,8 @@ public:
                         majordomoSummonsData[spawn->GetGUID().GetCounter()] = MajordomoAddData(spawn->GetGUID(), spawn->GetEntry(), spawn->GetPosition());
                     }
                 }
+
+                me->RemoveNpcFlag(UNIT_NPC_FLAG_GOSSIP);
             }
             else
             {
@@ -234,21 +238,21 @@ public:
             }
         }
 
-        void EnterCombat(Unit* /*attacker*/) override
+        void JustEngagedWith(Unit* /*attacker*/) override
         {
             if (!events.IsInPhase(PHASE_COMBAT))
             {
                 return;
             }
 
-            _EnterCombat();
+            _JustEngagedWith();
             DoCastAOE(SPELL_SEPARATION_ANXIETY);
             Talk(SAY_AGGRO);
             DoCastSelf(SPELL_AEGIS_OF_RAGNAROS, true);
 
-            events.ScheduleEvent(EVENT_SHIELD_REFLECTION, 30000, PHASE_COMBAT, PHASE_COMBAT);
-            events.ScheduleEvent(EVENT_TELEPORT_RANDOM, 25000, PHASE_COMBAT, PHASE_COMBAT);
-            events.ScheduleEvent(EVENT_TELEPORT_TARGET, 15000, PHASE_COMBAT, PHASE_COMBAT);
+            events.ScheduleEvent(EVENT_SHIELD_REFLECTION, 30s, PHASE_COMBAT, PHASE_COMBAT);
+            events.ScheduleEvent(EVENT_TELEPORT_RANDOM, 25s, PHASE_COMBAT, PHASE_COMBAT);
+            events.ScheduleEvent(EVENT_TELEPORT_TARGET, 15s, PHASE_COMBAT, PHASE_COMBAT);
 
             aliveMinionsGUIDS.clear();
             aliveMinionsGUIDS = static_minionsGUIDS;
@@ -282,7 +286,7 @@ public:
                     instance->SetBossState(DATA_MAJORDOMO_EXECUTUS, DONE);
                     events.CancelEventGroup(PHASE_COMBAT);
                     me->GetMap()->UpdateEncounterState(ENCOUNTER_CREDIT_KILL_CREATURE, me->GetEntry(), me);
-                    me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC|UNIT_FLAG_IMMUNE_TO_NPC);
+                    me->SetImmuneToAll(true);
                     me->SetFaction(FACTION_MAJORDOMO_FRIENDLY);
                     EnterEvadeMode();
                     Talk(SAY_DEFEAT);
@@ -299,7 +303,7 @@ public:
             {
                 events.Reset();
                 events.SetPhase(PHASE_DEFEAT_OUTRO);
-                events.ScheduleEvent(EVENT_DEFEAT_OUTRO_1, 7500, PHASE_DEFEAT_OUTRO, PHASE_DEFEAT_OUTRO);
+                events.ScheduleEvent(EVENT_DEFEAT_OUTRO_1, 7500ms, PHASE_DEFEAT_OUTRO, PHASE_DEFEAT_OUTRO);
             }
         }
 
@@ -386,13 +390,13 @@ public:
                             case EVENT_DEFEAT_OUTRO_1:
                             {
                                 Talk(SAY_DEFEAT_2);
-                                events.ScheduleEvent(EVENT_DEFEAT_OUTRO_2, 8000, PHASE_DEFEAT_OUTRO, PHASE_DEFEAT_OUTRO);
+                                events.ScheduleEvent(EVENT_DEFEAT_OUTRO_2, 8s, PHASE_DEFEAT_OUTRO, PHASE_DEFEAT_OUTRO);
                                 break;
                             }
                             case EVENT_DEFEAT_OUTRO_2:
                             {
                                 Talk(SAY_DEFEAT_3);
-                                events.ScheduleEvent(EVENT_DEFEAT_OUTRO_3, 21500, PHASE_DEFEAT_OUTRO, PHASE_DEFEAT_OUTRO);
+                                events.ScheduleEvent(EVENT_DEFEAT_OUTRO_3, 21500ms, PHASE_DEFEAT_OUTRO, PHASE_DEFEAT_OUTRO);
                                 break;
                             }
                             case EVENT_DEFEAT_OUTRO_3:
@@ -437,8 +441,8 @@ public:
                                 }
 
                                 Talk(SAY_SUMMON_MAJ);
-                                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_3, 16700, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
-                                events.ScheduleEvent(EVENT_RAGNAROS_EMERGE, 15000, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
+                                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_3, 16700ms, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
+                                events.ScheduleEvent(EVENT_RAGNAROS_EMERGE, 15s, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
                                 break;
                             }
                             case EVENT_RAGNAROS_SUMMON_3:
@@ -447,13 +451,13 @@ public:
                                 {
                                     ragnaros->AI()->Talk(SAY_ARRIVAL1_RAG);
                                 }
-                                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_4, 11700, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
+                                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_4, 11700ms, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
                                 break;
                             }
                             case EVENT_RAGNAROS_SUMMON_4:
                             {
                                 Talk(SAY_ARRIVAL2_MAJ);
-                                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_5, 8700, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
+                                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_5, 8700ms, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
                                 break;
                             }
                             case EVENT_RAGNAROS_SUMMON_5:
@@ -463,7 +467,7 @@ public:
                                     ragnaros->AI()->Talk(SAY_ARRIVAL3_RAG);
                                 }
 
-                                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_6, 16500, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
+                                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_6, 16500ms, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
                                 break;
                             }
                             case EVENT_RAGNAROS_SUMMON_6:
@@ -496,7 +500,7 @@ public:
             if (type == POINT_MOTION_TYPE && pointId == POINT_RAGNAROS_SUMMON)
             {
                 DoCastAOE(SPELL_SUMMON_RAGNAROS);
-                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_2, 11500, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
+                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_2, 11500ms, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
             }
         }
 
@@ -504,7 +508,7 @@ public:
         {
             if (events.IsInPhase(PHASE_DEFEAT_OUTRO) && spellInfo->Id == SPELL_TELEPORT_SELF)
             {
-                me->SetFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+                me->SetNpcFlag(UNIT_NPC_FLAG_GOSSIP);
                 me->SetHomePosition(MajordomoRagnaros);
                 me->NearTeleportTo(MajordomoRagnaros.GetPositionX(), MajordomoRagnaros.GetPositionY(), MajordomoRagnaros.GetPositionZ(), MajordomoRagnaros.GetOrientation());
                 events.SetPhase(PHASE_NONE);
@@ -516,7 +520,7 @@ public:
             if (action == ACTION_START_RAGNAROS_INTRO && !events.IsInPhase(PHASE_RAGNAROS_SUMMONING))
             {
                 events.SetPhase(PHASE_RAGNAROS_SUMMONING);
-                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_1, 5000, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
+                events.ScheduleEvent(EVENT_RAGNAROS_SUMMON_1, 5s, PHASE_RAGNAROS_SUMMONING, PHASE_RAGNAROS_SUMMONING);
             }
         }
     private:
@@ -558,7 +562,7 @@ public:
             case GOSSIP_ACTION_INFO_DEF+3:
             {
                 CloseGossipMenuFor(player);
-                creature->RemoveFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+                creature->RemoveNpcFlag(UNIT_NPC_FLAG_GOSSIP);
                 creature->AI()->Talk(SAY_RAG_SUM_1, player);
                 creature->AI()->DoAction(ACTION_START_RAGNAROS_INTRO);
                 break;
@@ -577,108 +581,74 @@ public:
 };
 
 // 20538 Hate to Zero (SERVERSIDE)
-class spell_hate_to_zero : public SpellScriptLoader
+class spell_hate_to_zero : public SpellScript
 {
-public:
-    spell_hate_to_zero() : SpellScriptLoader("spell_hate_to_zero") {}
+    PrepareSpellScript(spell_hate_to_zero);
 
-    class spell_hate_to_zero_SpellScript : public SpellScript
+    bool Load() override
     {
-        PrepareSpellScript(spell_hate_to_zero_SpellScript);
+        return GetCaster()->IsCreature();
+    }
 
-        bool Load() override
+    void HandleHit(SpellEffIndex /*effIndex*/)
+    {
+        if (Unit* caster = GetCaster())
         {
-            return GetCaster()->GetTypeId() == TYPEID_UNIT;
-        }
-
-        void HandleHit(SpellEffIndex /*effIndex*/)
-        {
-            if (Unit* caster = GetCaster())
+            if (Creature* creatureCaster = caster->ToCreature())
             {
-                if (Creature* creatureCaster = caster->ToCreature())
-                {
-                    creatureCaster->getThreatMgr().resetAllAggro();
-                }
+                creatureCaster->GetThreatMgr().ResetAllThreat();
             }
         }
+    }
 
-        void Register() override
-        {
-            OnEffectHitTarget += SpellEffectFn(spell_hate_to_zero_SpellScript::HandleHit, EFFECT_0, SPELL_EFFECT_DUMMY);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void Register() override
     {
-        return new spell_hate_to_zero_SpellScript();
+        OnEffectHitTarget += SpellEffectFn(spell_hate_to_zero::HandleHit, EFFECT_0, SPELL_EFFECT_DUMMY);
     }
 };
 
 // 21094 Separation Anxiety (server side)
-class spell_majordomo_separation_nexiety : public SpellScriptLoader
+class spell_majordomo_separation_anxiety_aura : public AuraScript
 {
-public:
-    spell_majordomo_separation_nexiety() : SpellScriptLoader("spell_majordomo_separation_nexiety") {}
+    PrepareAuraScript(spell_majordomo_separation_anxiety_aura);
 
-    class spell_majordomo_separation_nexiety_AuraScript : public AuraScript
+    bool Validate(SpellInfo const* /*spell*/) override
     {
-        PrepareAuraScript(spell_majordomo_separation_nexiety_AuraScript);
+        return ValidateSpellInfo({ SPELL_SEPARATION_ANXIETY_MINION });
+    }
 
-        bool Validate(SpellInfo const* /*spell*/) override
-        {
-            return ValidateSpellInfo({ SPELL_SEPARATION_ANXIETY_MINION });
-        }
-
-        void HandlePeriodic(AuraEffect const* aurEff)
-        {
-            Unit const* caster = GetCaster();
-            Unit* target = GetTarget();
-            if (caster && target && target->GetDistance(caster) > 40.0f && !target->HasAura(SPELL_SEPARATION_ANXIETY_MINION))
-            {
-                target->CastSpell(target, SPELL_SEPARATION_ANXIETY_MINION, true, nullptr, aurEff);
-            }
-        }
-
-        void Register() override
-        {
-            OnEffectPeriodic += AuraEffectPeriodicFn(spell_majordomo_separation_nexiety_AuraScript::HandlePeriodic, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY);
-        }
-    };
-
-    // Should return a fully valid AuraScript pointer.
-    AuraScript* GetAuraScript() const override
+    void HandlePeriodic(AuraEffect const* aurEff)
     {
-        return new spell_majordomo_separation_nexiety_AuraScript();
+        Unit const* caster = GetCaster();
+        Unit* target = GetTarget();
+        if (caster && target && target->GetDistance(caster) > 40.0f && !target->HasAura(SPELL_SEPARATION_ANXIETY_MINION))
+        {
+            target->CastSpell(target, SPELL_SEPARATION_ANXIETY_MINION, true, nullptr, aurEff);
+        }
+    }
+
+    void Register() override
+    {
+        OnEffectPeriodic += AuraEffectPeriodicFn(spell_majordomo_separation_anxiety_aura::HandlePeriodic, EFFECT_0, SPELL_AURA_PERIODIC_DUMMY);
     }
 };
 
 // 19774 Summon Ragnaros
-class spell_summon_ragnaros : public SpellScriptLoader
+class spell_summon_ragnaros : public SpellScript
 {
-public:
-    spell_summon_ragnaros() : SpellScriptLoader("spell_summon_ragnaros") {}
+    PrepareSpellScript(spell_summon_ragnaros);
 
-    class spell_summon_ragnaros_SpellScript : public SpellScript
+    void HandleHit()
     {
-        PrepareSpellScript(spell_summon_ragnaros_SpellScript);
-
-        void HandleHit()
+        if (Unit* caster = GetCaster())
         {
-            if (Unit* caster = GetCaster())
-            {
-                caster->SummonCreature(NPC_RAGNAROS, RagnarosSummonPos, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 2 * HOUR * IN_MILLISECONDS);
-            }
+            caster->SummonCreature(NPC_RAGNAROS, RagnarosSummonPos, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 2 * HOUR * IN_MILLISECONDS);
         }
+    }
 
-        void Register() override
-        {
-            AfterCast += SpellCastFn(spell_summon_ragnaros_SpellScript::HandleHit);
-        }
-    };
-
-    SpellScript* GetSpellScript() const override
+    void Register() override
     {
-        return new spell_summon_ragnaros_SpellScript();
+        AfterCast += SpellCastFn(spell_summon_ragnaros::HandleHit);
     }
 };
 
@@ -687,7 +657,7 @@ void AddSC_boss_majordomo()
     new boss_majordomo();
 
     // Spells
-    new spell_hate_to_zero();
-    new spell_majordomo_separation_nexiety();
-    new spell_summon_ragnaros();
+    RegisterSpellScript(spell_hate_to_zero);
+    RegisterSpellScript(spell_majordomo_separation_anxiety_aura);
+    RegisterSpellScript(spell_summon_ragnaros);
 }

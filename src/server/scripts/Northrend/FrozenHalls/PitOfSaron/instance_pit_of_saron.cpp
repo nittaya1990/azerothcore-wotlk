@@ -15,10 +15,12 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
+#include "InstanceMapScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "pit_of_saron.h"
+#include "Group.h"
 
 class instance_pit_of_saron : public InstanceMapScript
 {
@@ -27,10 +29,12 @@ public:
 
     struct instance_pit_of_saron_InstanceScript : public InstanceScript
     {
-        instance_pit_of_saron_InstanceScript(Map* map) : InstanceScript(map) {}
+        instance_pit_of_saron_InstanceScript(Map* map) : InstanceScript(map)
+        {
+            SetHeaders(DataHeader);
+        }
 
         uint32 m_auiEncounter[MAX_ENCOUNTER];
-        TeamId teamIdInInstance;
         uint32 InstanceProgress;
         std::string str_data;
 
@@ -56,7 +60,6 @@ public:
         void Initialize() override
         {
             memset(&m_auiEncounter, 0, sizeof(m_auiEncounter));
-            teamIdInInstance = TEAM_NEUTRAL;
             InstanceProgress = INSTANCE_PROGRESS_NONE;
 
             bAchievEleven = true;
@@ -71,32 +74,25 @@ public:
             return false;
         }
 
-        void OnPlayerEnter(Player*  /*plr*/) override
+        void OnPlayerEnter(Player* player) override
         {
-            instance->LoadGrid(LeaderIntroPos.GetPositionX(), LeaderIntroPos.GetPositionY());
+            InstanceScript::OnPlayerEnter(player);
+
             if (Creature* c = instance->GetCreature(GetGuidData(DATA_LEADER_FIRST_GUID)))
                 c->AI()->SetData(DATA_START_INTRO, 0);
         }
 
         uint32 GetCreatureEntry(ObjectGuid::LowType /*guidLow*/, CreatureData const* data) override
         {
-            if (teamIdInInstance == TEAM_NEUTRAL)
-            {
-                Map::PlayerList const& players = instance->GetPlayers();
-                if (!players.IsEmpty())
-                    if (Player* player = players.begin()->GetSource())
-                        teamIdInInstance = player->GetTeamId();
-            }
-
             uint32 entry = data->id1;
             switch (entry)
             {
                 case NPC_RESCUED_ALLIANCE_SLAVE:
-                    if (teamIdInInstance == TEAM_HORDE)
+                    if (GetTeamIdInInstance() == TEAM_HORDE)
                         return 0;
                     break;
                 case NPC_RESCUED_HORDE_SLAVE:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         return 0;
                     break;
             }
@@ -106,18 +102,10 @@ public:
 
         void OnCreatureCreate(Creature* creature) override
         {
-            if (teamIdInInstance == TEAM_NEUTRAL)
-            {
-                Map::PlayerList const& players = instance->GetPlayers();
-                if (!players.IsEmpty())
-                    if (Player* player = players.begin()->GetSource())
-                        teamIdInInstance = player->GetTeamId();
-            }
-
             switch (creature->GetEntry())
             {
                 case NPC_SYLVANAS_PART1:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_JAINA_PART1);
                     NPC_LeaderFirstGUID = creature->GetGUID();
 
@@ -136,7 +124,7 @@ public:
                     }
                     break;
                 case NPC_SYLVANAS_PART2:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_JAINA_PART2);
                     NPC_LeaderSecondGUID = creature->GetGUID();
                     break;
@@ -166,50 +154,50 @@ public:
                     }
                     break;
                 case NPC_LORALEN:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_ELANDRA);
                     if (!NPC_GuardFirstGUID)
                         NPC_GuardFirstGUID = creature->GetGUID();
                     break;
                 case NPC_KALIRA:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_KORELN);
                     if (!NPC_GuardSecondGUID)
                         NPC_GuardSecondGUID = creature->GetGUID();
                     break;
                 case NPC_HORDE_SLAVE_1:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_ALLIANCE_SLAVE_1);
                     break;
                 case NPC_HORDE_SLAVE_2:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_ALLIANCE_SLAVE_2);
                     break;
                 case NPC_HORDE_SLAVE_3:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_ALLIANCE_SLAVE_3);
                     break;
                 case NPC_HORDE_SLAVE_4:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_ALLIANCE_SLAVE_4);
                     break;
                 case NPC_GORKUN_IRONSKULL_1:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_MARTIN_VICTUS_1);
                     break;
                 case NPC_GARFROST:
                     NPC_GarfrostGUID = creature->GetGUID();
                     break;
                 case NPC_FREED_SLAVE_1_HORDE:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_FREED_SLAVE_1_ALLIANCE);
                     break;
                 case NPC_FREED_SLAVE_2_HORDE:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_FREED_SLAVE_2_ALLIANCE);
                     break;
                 case NPC_FREED_SLAVE_3_HORDE:
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_FREED_SLAVE_3_ALLIANCE);
                     break;
                 case NPC_GORKUN_IRONSKULL_2:
@@ -219,7 +207,7 @@ public:
                             c->AI()->DoAction(1); // despawn summons
                             c->DespawnOrUnsummon();
                         }
-                    if (teamIdInInstance == TEAM_ALLIANCE)
+                    if (GetTeamIdInInstance() == TEAM_ALLIANCE)
                         creature->UpdateEntry(NPC_MARTIN_VICTUS_2);
                     NPC_MartinOrGorkunGUID = creature->GetGUID();
                     break;
@@ -257,7 +245,7 @@ public:
 
         void SetData(uint32 type, uint32 data) override
         {
-            switch(type)
+            switch (type)
             {
                 case DATA_INSTANCE_PROGRESS:
                     if (InstanceProgress < data)
@@ -302,7 +290,7 @@ public:
 
         void SetGuidData(uint32 type, ObjectGuid data) override
         {
-            switch(type)
+            switch (type)
             {
                 case DATA_NECROLYTE_1_GUID:
                     NPC_Necrolyte1GUID = data;
@@ -323,7 +311,7 @@ public:
                 case DATA_INSTANCE_PROGRESS:
                     return InstanceProgress;
                 case DATA_TEAMID_IN_INSTANCE:
-                    return teamIdInInstance;
+                    return GetTeamIdInInstance();
                 case DATA_GARFROST:
                     return m_auiEncounter[0];
                 case DATA_ICK:
@@ -370,7 +358,7 @@ public:
 
         bool CheckAchievementCriteriaMeet(uint32 criteria_id, Player const*  /*source*/, Unit const*  /*target*/, uint32  /*miscvalue1*/) override
         {
-            switch(criteria_id)
+            switch (criteria_id)
             {
                 case 12993: // Doesn't Go to Eleven (4524)
                     return bAchievEleven;
@@ -378,48 +366,20 @@ public:
             return false;
         }
 
-        std::string GetSaveData() override
+        void ReadSaveDataMore(std::istringstream& data) override
         {
-            OUT_SAVE_INST_DATA;
-
-            std::ostringstream saveStream;
-            saveStream << "P S " << m_auiEncounter[0] << ' ' << m_auiEncounter[1] << ' ' << m_auiEncounter[2] << ' ' << InstanceProgress;
-            str_data = saveStream.str();
-
-            OUT_SAVE_INST_DATA_COMPLETE;
-            return str_data;
+            data >> m_auiEncounter[0];
+            data >> m_auiEncounter[1];
+            data >> m_auiEncounter[2];
+            data >> InstanceProgress;
         }
 
-        void Load(const char* in) override
+        void WriteSaveDataMore(std::ostringstream& data) override
         {
-            if (!in)
-            {
-                OUT_LOAD_INST_DATA_FAIL;
-                return;
-            }
-
-            OUT_LOAD_INST_DATA(in);
-
-            char dataHead1, dataHead2;
-            uint32 data0, data1, data2, data3;
-
-            std::istringstream loadStream(in);
-            loadStream >> dataHead1 >> dataHead2 >> data0 >> data1 >> data2 >> data3;
-
-            if (dataHead1 == 'P' && dataHead2 == 'S')
-            {
-                m_auiEncounter[0] = data0;
-                m_auiEncounter[1] = data1;
-                m_auiEncounter[2] = data2;
-                InstanceProgress = data3;
-
-                for (uint8 i = 0; i < MAX_ENCOUNTER; ++i)
-                    if (m_auiEncounter[i] == IN_PROGRESS)
-                        m_auiEncounter[i] = NOT_STARTED;
-            }
-            else OUT_LOAD_INST_DATA_FAIL;
-
-            OUT_LOAD_INST_DATA_COMPLETE;
+            data << m_auiEncounter[0] << ' '
+                << m_auiEncounter[1] << ' '
+                << m_auiEncounter[2] << ' '
+                << InstanceProgress;
         }
     };
 

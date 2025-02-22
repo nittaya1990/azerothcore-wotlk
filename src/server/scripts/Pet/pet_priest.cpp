@@ -20,18 +20,14 @@
  * Scriptnames of files in this file should be prefixed with "npc_pet_pri_".
  */
 
-#include "PassiveAI.h"
+#include "CreatureScript.h"
 #include "PetAI.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "TotemAI.h"
 
 enum PriestSpells
 {
-    SPELL_PRIEST_GLYPH_OF_SHADOWFIEND       = 58228,
-    SPELL_PRIEST_GLYPH_OF_SHADOWFIEND_MANA  = 58227,
-    SPELL_PRIEST_SHADOWFIEND_DODGE          = 8273,
-    SPELL_PRIEST_LIGHTWELL_CHARGES          = 59907
+    SPELL_PRIEST_LIGHTWELL_CHARGES          = 59907,
 };
 
 struct npc_pet_pri_lightwell : public TotemAI
@@ -40,12 +36,15 @@ struct npc_pet_pri_lightwell : public TotemAI
 
     void InitializeAI() override
     {
-        if (Unit* owner = me->ToTempSummon()->GetSummonerUnit())
+        if (TempSummon* tempSummon = me->ToTempSummon())
         {
-            uint32 hp = uint32(owner->GetMaxHealth() * 0.3f);
-            me->SetMaxHealth(hp);
-            me->SetHealth(hp);
-            me->SetLevel(owner->getLevel());
+            if (Unit* owner = tempSummon->GetSummonerUnit())
+            {
+                uint32 hp = uint32(owner->GetMaxHealth() * 0.3f);
+                me->SetMaxHealth(hp);
+                me->SetHealth(hp);
+                me->SetLevel(owner->GetLevel());
+            }
         }
 
         me->CastSpell(me, SPELL_PRIEST_LIGHTWELL_CHARGES, false); // Spell for Lightwell Charges
@@ -53,31 +52,7 @@ struct npc_pet_pri_lightwell : public TotemAI
     }
 };
 
-struct npc_pet_pri_shadowfiend : public PetAI
-{
-    npc_pet_pri_shadowfiend(Creature* creature) : PetAI(creature) { }
-
-    void Reset() override
-    {
-        PetAI::Reset();
-        if (!me->HasAura(SPELL_PRIEST_SHADOWFIEND_DODGE))
-            me->AddAura(SPELL_PRIEST_SHADOWFIEND_DODGE, me);
-
-        if (Unit* target = me->SelectNearestTarget(15.0f))
-            AttackStart(target);
-    }
-
-    void JustDied(Unit* /*killer*/) override
-    {
-        if (me->IsSummon())
-            if (Unit* owner = me->ToTempSummon()->GetSummonerUnit())
-                if (owner->HasAura(SPELL_PRIEST_GLYPH_OF_SHADOWFIEND))
-                    owner->CastSpell(owner, SPELL_PRIEST_GLYPH_OF_SHADOWFIEND_MANA, true);
-    }
-};
-
 void AddSC_priest_pet_scripts()
 {
     RegisterCreatureAI(npc_pet_pri_lightwell);
-    RegisterCreatureAI(npc_pet_pri_shadowfiend);
 }

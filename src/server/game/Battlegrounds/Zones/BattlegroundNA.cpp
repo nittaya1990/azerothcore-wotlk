@@ -36,7 +36,7 @@ void BattlegroundNA::StartingEventOpenDoors()
         DoorOpen(i);
 
     for (uint32 i = BG_NA_OBJECT_BUFF_1; i <= BG_NA_OBJECT_BUFF_2; ++i)
-        SpawnBGObject(i, 60);
+        SpawnBGObject(i, 90);
 }
 
 bool BattlegroundNA::HandlePlayerUnderMap(Player* player)
@@ -64,16 +64,16 @@ void BattlegroundNA::HandleAreaTrigger(Player* player, uint32 trigger)
     }
 }
 
-void BattlegroundNA::FillInitialWorldStates(WorldPacket& data)
+void BattlegroundNA::FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet)
 {
-    data << uint32(0xa11) << uint32(1);           // 9
-    Arena::FillInitialWorldStates(data);
+    packet.Worldstates.emplace_back(0xa11, 1); // BATTLEGROUND_NAGRAND_ARENA_SHOW
+    Arena::FillInitialWorldStates(packet);
 }
 
 bool BattlegroundNA::SetupBattleground()
 {
     // gates
-    if (   !AddObject(BG_NA_OBJECT_DOOR_1, BG_NA_OBJECT_TYPE_DOOR_1, 4031.854f, 2966.833f, 12.0462f,  -2.648788f, 0, 0, 0.9697962f, -0.2439165f, RESPAWN_IMMEDIATELY)
+    if (!AddObject(BG_NA_OBJECT_DOOR_1, BG_NA_OBJECT_TYPE_DOOR_1, 4031.854f, 2966.833f, 12.0462f,  -2.648788f, 0, 0, 0.9697962f, -0.2439165f, RESPAWN_IMMEDIATELY)
             || !AddObject(BG_NA_OBJECT_DOOR_2, BG_NA_OBJECT_TYPE_DOOR_2, 4081.179f, 2874.97f,  12.00171f, 0.4928045f, 0, 0, 0.2439165f, 0.9697962f,  RESPAWN_IMMEDIATELY)
             || !AddObject(BG_NA_OBJECT_DOOR_3, BG_NA_OBJECT_TYPE_DOOR_3, 4023.709f, 2981.777f, 10.70117f, -2.648788f, 0, 0, 0.9697962f, -0.2439165f, RESPAWN_IMMEDIATELY)
             || !AddObject(BG_NA_OBJECT_DOOR_4, BG_NA_OBJECT_TYPE_DOOR_4, 4090.064f, 2858.438f, 10.23631f, 0.4928045f, 0, 0, 0.2439165f,  0.9697962f, RESPAWN_IMMEDIATELY)

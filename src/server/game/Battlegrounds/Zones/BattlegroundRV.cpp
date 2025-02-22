@@ -16,16 +16,12 @@
  */
 
 #include "BattlegroundRV.h"
-#include "ArenaScore.h"
 #include "Battleground.h"
 #include "GameObject.h"
-#include "Language.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
-#include "Pet.h"
 #include "Player.h"
 #include "WorldPacket.h"
-#include "WorldSession.h"
 
 static constexpr Milliseconds BG_RV_PILLAR_SWITCH_TIMER  = 25s;
 static constexpr Milliseconds BG_RV_FIRE_TO_PILLAR_TIMER = 20s;
@@ -125,7 +121,7 @@ void BattlegroundRV::PostUpdateImpl(uint32 diff)
                     uint32 objects[2] = { BG_RV_OBJECT_ELEVATOR_1, BG_RV_OBJECT_ELEVATOR_2 };
                     for (uint8 i = 0; i < 2; ++i)
                         if (GameObject* go = GetBGObject(objects[i]))
-                            go->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_TRANSPORT);
+                            go->RemoveGameObjectFlag(GO_FLAG_TRANSPORT);
                 }
                 break;
             }
@@ -208,10 +204,10 @@ void BattlegroundRV::HandleAreaTrigger(Player* player, uint32 trigger)
     }
 }
 
-void BattlegroundRV::FillInitialWorldStates(WorldPacket& data)
+void BattlegroundRV::FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& packet)
 {
-    data << uint32(BG_RV_WORLD_STATE) << uint32(1);
-    Arena::FillInitialWorldStates(data);
+    packet.Worldstates.emplace_back(BG_RV_WORLD_STATE, 1);
+    Arena::FillInitialWorldStates(packet);
 }
 
 void BattlegroundRV::Init()

@@ -23,20 +23,20 @@
  EndScriptData */
 
 #include "Chat.h"
-#include "Config.h"
+#include "CommandScript.h"
+#include "Common.h"
 #include "GameTime.h"
 #include "GitRevision.h"
-#include "Language.h"
+#include "Log.h"
 #include "ModuleMgr.h"
+#include "MotdMgr.h"
 #include "MySQLThreading.h"
-#include "Player.h"
 #include "Realm.h"
-#include "ScriptMgr.h"
-#include "ServerMotd.h"
 #include "StringConvert.h"
 #include "UpdateTime.h"
 #include "VMapFactory.h"
 #include "VMapMgr2.h"
+#include "WorldSessionMgr.h"
 #include <boost/version.hpp>
 #include <filesystem>
 #include <numeric>
@@ -123,21 +123,24 @@ public:
                 dbPort = (*res)[0].Get<uint16>();
 
             if (dbPort)
-                dbPortOutput = Acore::StringFormatFmt("Realmlist (Realm Id: {}) configured in port {}", realm.Id.Realm, dbPort);
+                dbPortOutput = Acore::StringFormat("Realmlist (Realm Id: {}) configured in port {}", realm.Id.Realm, dbPort);
             else
-                dbPortOutput = Acore::StringFormat("Realm Id: %u not found in `realmlist` table. Please check your setup", realm.Id.Realm);
+                dbPortOutput = Acore::StringFormat("Realm Id: {} not found in `realmlist` table. Please check your setup", realm.Id.Realm);
         }
 
-        handler->PSendSysMessage("%s", GitRevision::GetFullVersion());
-        handler->PSendSysMessage("Using SSL version: %s (library: %s)", OPENSSL_VERSION_TEXT, SSLeay_version(SSLEAY_VERSION));
-        handler->PSendSysMessage("Using Boost version: %i.%i.%i", BOOST_VERSION / 100000, BOOST_VERSION / 100 % 1000, BOOST_VERSION % 100);
-        handler->PSendSysMessage("Using MySQL version: %u", MySQL::GetLibraryVersion());
-        handler->PSendSysMessage("Using CMake version: %s", GitRevision::GetCMakeVersion());
+        HandleServerInfoCommand(handler);
 
-        handler->PSendSysMessage("Compiled on: %s", GitRevision::GetHostOSVersion());
+        handler->PSendSysMessage("Using SSL version: {} (library: {})", OPENSSL_VERSION_TEXT, OpenSSL_version(OPENSSL_VERSION));
+        handler->PSendSysMessage("Using Boost version: {}.{}.{}", BOOST_VERSION / 100000, BOOST_VERSION / 100 % 1000, BOOST_VERSION % 100);
+        handler->PSendSysMessage("Using CMake version: {}", GitRevision::GetCMakeVersion());
 
-        handler->PSendSysMessage("Worldserver listening connections on port %" PRIu16, worldPort);
-        handler->PSendSysMessage("%s", dbPortOutput.c_str());
+        handler->PSendSysMessage("Using MySQL version: {}", MySQL::GetLibraryVersion());
+        handler->PSendSysMessage("Found MySQL Executable: {}", GitRevision::GetMySQLExecutable());
+
+        handler->PSendSysMessage("Compiled on: {}", GitRevision::GetHostOSVersion());
+
+        handler->PSendSysMessage("Worldserver listening connections on port {}", worldPort);
+        handler->PSendSysMessage("{}", dbPortOutput);
 
         bool vmapIndoorCheck = sWorld->getBoolConfig(CONFIG_VMAP_INDOOR_CHECK);
         bool vmapLOSCheck = VMAP::VMapFactory::createOrGetVMapMgr()->isLineOfSightCalcEnabled();
@@ -150,7 +153,7 @@ public:
         subDirs.emplace_back("maps");
         if (vmapIndoorCheck || vmapLOSCheck || vmapHeightCheck)
         {
-            handler->PSendSysMessage("VMAPs status: Enabled. LineOfSight: %i, getHeight: %i, indoorCheck: %i", vmapLOSCheck, vmapHeightCheck, vmapIndoorCheck);
+            handler->PSendSysMessage("VMAPs status: Enabled. LineOfSight: {}, getHeight: {}, indoorCheck: {}", vmapLOSCheck, vmapHeightCheck, vmapIndoorCheck);
             subDirs.emplace_back("vmaps");
         }
         else
@@ -171,7 +174,7 @@ public:
 
             if (!std::filesystem::exists(mapPath))
             {
-                handler->PSendSysMessage("%s directory doesn't exist!. Using path: %s", subDir.c_str(), mapPath.generic_string().c_str());
+                handler->PSendSysMessage("{} directory doesn't exist!. Using path: {}", subDir, mapPath.generic_string());
                 continue;
             }
 
@@ -183,7 +186,7 @@ public:
                 return val;
             });
 
-            handler->PSendSysMessage(Acore::StringFormatFmt("{} directory located in {}. Total size: {} bytes", subDir.c_str(), mapPath.generic_string().c_str(), folderSize).c_str());
+            handler->PSendSysMessage("{} directory located in {}. Total size: {} bytes", subDir, mapPath.generic_string(), folderSize);
         }
 
         LocaleConstant defaultLocale = sWorld->GetDefaultDbcLocale();
@@ -210,25 +213,45 @@ public:
                 availableLocales += " ";
         }
 
-        handler->PSendSysMessage("Using %s DBC Locale as default. All available DBC locales: %s", localeNames[defaultLocale], availableLocales.c_str());
+        handler->PSendSysMessage("Default DBC locale: {}.\nAll available DBC locales: {}", localeNames[defaultLocale], availableLocales);
 
-        handler->PSendSysMessage("Using World DB: %s", sWorld->GetDBVersion());
-        handler->PSendSysMessage("Using World DB Revision: %s", sWorld->GetWorldDBRevision());
-        handler->PSendSysMessage("Using Character DB Revision: %s", sWorld->GetCharacterDBRevision());
-        handler->PSendSysMessage("Using Auth DB Revision: %s", sWorld->GetAuthDBRevision());
+        handler->PSendSysMessage("Using World DB: {}", sWorld->GetDBVersion());
 
-        handler->PSendSysMessage("LoginDatabase queue size: %zu", LoginDatabase.QueueSize());
-        handler->PSendSysMessage("CharacterDatabase queue size: %zu", CharacterDatabase.QueueSize());
-        handler->PSendSysMessage("WorldDatabase queue size: %zu", WorldDatabase.QueueSize());
+        std::string lldb = "No updates found!";
+        if (QueryResult resL = LoginDatabase.Query("SELECT name FROM updates ORDER BY name DESC LIMIT 1"))
+        {
+            Field* fields = resL->Fetch();
+            lldb = fields[0].Get<std::string>();
+        }
+        std::string lcdb = "No updates found!";
+        if (QueryResult resC = CharacterDatabase.Query("SELECT name FROM updates ORDER BY name DESC LIMIT 1"))
+        {
+            Field* fields = resC->Fetch();
+            lcdb = fields[0].Get<std::string>();
+        }
+        std::string lwdb = "No updates found!";
+        if (QueryResult resW = WorldDatabase.Query("SELECT name FROM updates ORDER BY name DESC LIMIT 1"))
+        {
+            Field* fields = resW->Fetch();
+            lwdb = fields[0].Get<std::string>();
+        }
+
+        handler->PSendSysMessage("Latest LoginDatabase update: {}", lldb);
+        handler->PSendSysMessage("Latest CharacterDatabase update: {}", lcdb);
+        handler->PSendSysMessage("Latest WorldDatabase update: {}", lwdb);
+
+        handler->PSendSysMessage("LoginDatabase queue size: {}", LoginDatabase.QueueSize());
+        handler->PSendSysMessage("CharacterDatabase queue size: {}", CharacterDatabase.QueueSize());
+        handler->PSendSysMessage("WorldDatabase queue size: {}", WorldDatabase.QueueSize());
 
         if (Acore::Module::GetEnableModulesList().empty())
-            handler->SendSysMessage("No modules enabled");
+            handler->PSendSysMessage("No modules are enabled");
         else
-            handler->SendSysMessage("> List enable modules:");
+            handler->PSendSysMessage("List of enabled modules:");
 
         for (auto const& modName : Acore::Module::GetEnableModulesList())
         {
-            handler->SendSysMessage(Acore::StringFormatFmt("- {}", modName));
+            handler->PSendSysMessage("|- {}", modName);
         }
 
         return true;
@@ -237,31 +260,39 @@ public:
     static bool HandleServerInfoCommand(ChatHandler* handler)
     {
         std::string realmName = sWorld->GetRealmName();
-        uint32 playerCount = sWorld->GetPlayerCount();
-        uint32 activeSessionCount = sWorld->GetActiveSessionCount();
-        uint32 queuedSessionCount = sWorld->GetQueuedSessionCount();
-        uint32 connPeak = sWorld->GetMaxActiveSessionCount();
+        uint32 playerCount = sWorldSessionMgr->GetPlayerCount();
+        uint32 activeSessionCount = sWorldSessionMgr->GetActiveSessionCount();
+        uint32 queuedSessionCount = sWorldSessionMgr->GetQueuedSessionCount();
+        uint32 connPeak = sWorldSessionMgr->GetMaxActiveSessionCount();
 
-        handler->PSendSysMessage("%s", GitRevision::GetFullVersion());
+        handler->PSendSysMessage("{}", GitRevision::GetFullVersion());
         if (!queuedSessionCount)
-            handler->PSendSysMessage("Connected players: %u. Characters in world: %u.", activeSessionCount, playerCount);
+            handler->PSendSysMessage("Connected players: {}. Characters in world: {}.", activeSessionCount, playerCount);
         else
-            handler->PSendSysMessage("Connected players: %u. Characters in world: %u. Queue: %u.", activeSessionCount, playerCount, queuedSessionCount);
+            handler->PSendSysMessage("Connected players: {}. Characters in world: {}. Queue: {}.", activeSessionCount, playerCount, queuedSessionCount);
 
-        handler->PSendSysMessage("Connection peak: %u.", connPeak);
-        handler->PSendSysMessage(LANG_UPTIME, secsToTimeString(GameTime::GetUptime().count()).c_str());
-        handler->PSendSysMessage("Update time diff: %ums, average: %ums.", sWorldUpdateTime.GetLastUpdateTime(), sWorldUpdateTime.GetAverageUpdateTime());
+        handler->PSendSysMessage("Connection peak: {}.", connPeak);
+        handler->PSendSysMessage(LANG_UPTIME, secsToTimeString(GameTime::GetUptime().count()));
+        handler->PSendSysMessage("Update time diff: {}ms. Last {} diffs summary:", sWorldUpdateTime.GetLastUpdateTime(), sWorldUpdateTime.GetDatasetSize());
+        handler->PSendSysMessage("|- Mean: {}ms", sWorldUpdateTime.GetAverageUpdateTime());
+        handler->PSendSysMessage("|- Median: {}ms", sWorldUpdateTime.GetPercentile(50));
+        handler->PSendSysMessage("|- Percentiles (95, 99, max): {}ms, {}ms, {}ms",
+                                 sWorldUpdateTime.GetPercentile(95),
+                                 sWorldUpdateTime.GetPercentile(99),
+                                 sWorldUpdateTime.GetPercentile(100));
 
         //! Can't use sWorld->ShutdownMsg here in case of console command
         if (sWorld->IsShuttingDown())
-            handler->PSendSysMessage(LANG_SHUTDOWN_TIMELEFT, secsToTimeString(sWorld->GetShutDownTimeLeft()).append(".").c_str());
+            handler->PSendSysMessage(LANG_SHUTDOWN_TIMELEFT, secsToTimeString(sWorld->GetShutDownTimeLeft()).append("."));
 
         return true;
     }
     // Display the 'Message of the day' for the realm
     static bool HandleServerMotdCommand(ChatHandler* handler)
     {
-        handler->PSendSysMessage(LANG_MOTD_CURRENT, Motd::GetMotd());
+        handler->PSendSysMessage(LANG_MOTD_CURRENT);
+        for (uint32 i = 0; i < TOTAL_LOCALES; ++i)
+            handler->PSendSysMessage(LANG_GENERIC_TWO_CURLIES_WITH_COLON, GetNameByLocaleConstant(LocaleConstant(i)), sMotdMgr->GetMotd(LocaleConstant(i)));
         return true;
     }
 
@@ -272,10 +303,21 @@ public:
         return true;
     }
 
-    static bool HandleServerShutDownCommand(ChatHandler* /*handler*/, int32 time, Optional<int32> exitCode, Tail reason)
+    static bool HandleServerShutDownCommand(ChatHandler* handler, std::string time, Optional<int32> exitCode, Tail reason)
     {
         std::wstring wReason   = std::wstring();
         std::string  strReason = std::string();
+
+        if (time.empty())
+        {
+            return false;
+        }
+
+        if (Acore::StringTo<int32>(time).value_or(0) < 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
 
         if (!reason.empty())
         {
@@ -290,23 +332,46 @@ public:
             }
         }
 
+        int32 delay = TimeStringToSecs(time);
+        if (delay <= 0)
+        {
+            delay = Acore::StringTo<int32>(time).value_or(0);
+        }
+
+        if (delay <= 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
+
         if (exitCode && *exitCode >= 0 && *exitCode <= 125)
         {
-            sWorld->ShutdownServ(time, 0, *exitCode);
+            sWorld->ShutdownServ(delay, 0, *exitCode);
         }
         else
         {
-            sWorld->ShutdownServ(time, 0, SHUTDOWN_EXIT_CODE, strReason);
+            sWorld->ShutdownServ(delay, 0, SHUTDOWN_EXIT_CODE, strReason);
         }
 
         return true;
     }
 
-    static bool HandleServerRestartCommand(ChatHandler* /*handler*/, int32 time, Optional<int32> exitCode, Tail reason)
+    static bool HandleServerRestartCommand(ChatHandler* handler, std::string time, Optional<int32> exitCode, Tail reason)
     {
         std::wstring wReason = std::wstring();
         std::string strReason    = std::string();
 
+        if (time.empty())
+        {
+            return false;
+        }
+
+        if (Acore::StringTo<int32>(time).value_or(0) < 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
+
         if (!reason.empty())
         {
             if (!Utf8toWStr(reason, wReason))
@@ -320,22 +385,45 @@ public:
             }
         }
 
+        int32 delay = TimeStringToSecs(time);
+        if (delay <= 0)
+        {
+            delay = Acore::StringTo<int32>(time).value_or(0);
+        }
+
+        if (delay <= 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
+
         if (exitCode && *exitCode >= 0 && *exitCode <= 125)
         {
-            sWorld->ShutdownServ(time, SHUTDOWN_MASK_RESTART, *exitCode);
+            sWorld->ShutdownServ(delay, SHUTDOWN_MASK_RESTART, *exitCode);
         }
         else
         {
-            sWorld->ShutdownServ(time, SHUTDOWN_MASK_RESTART, RESTART_EXIT_CODE, strReason);
+            sWorld->ShutdownServ(delay, SHUTDOWN_MASK_RESTART, RESTART_EXIT_CODE, strReason);
         }
 
         return true;
     }
 
-    static bool HandleServerIdleRestartCommand(ChatHandler* /*handler*/, int32 time, Optional<int32> exitCode, Tail reason)
+    static bool HandleServerIdleRestartCommand(ChatHandler* handler, std::string time, Optional<int32> exitCode, Tail reason)
     {
         std::wstring wReason   = std::wstring();
         std::string  strReason = std::string();
+
+        if (time.empty())
+        {
+            return false;
+        }
+
+        if (Acore::StringTo<int32>(time).value_or(0) < 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
 
         if (!reason.empty())
         {
@@ -350,22 +438,45 @@ public:
             }
         }
 
+        int32 delay = TimeStringToSecs(time);
+        if (delay <= 0)
+        {
+            delay = Acore::StringTo<int32>(time).value_or(0);
+        }
+
+        if (delay <= 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
+
         if (exitCode && *exitCode >= 0 && *exitCode <= 125)
         {
-            sWorld->ShutdownServ(time, SHUTDOWN_MASK_RESTART | SHUTDOWN_MASK_IDLE, *exitCode);
+            sWorld->ShutdownServ(delay, SHUTDOWN_MASK_RESTART | SHUTDOWN_MASK_IDLE, *exitCode);
         }
         else
         {
-            sWorld->ShutdownServ(time, SHUTDOWN_MASK_RESTART | SHUTDOWN_MASK_IDLE, RESTART_EXIT_CODE, strReason);
+            sWorld->ShutdownServ(delay, SHUTDOWN_MASK_RESTART | SHUTDOWN_MASK_IDLE, RESTART_EXIT_CODE, strReason);
         }
 
         return true;
     }
 
-    static bool HandleServerIdleShutDownCommand(ChatHandler* /*handler*/, int32 time, Optional<int32> exitCode, Tail reason)
+    static bool HandleServerIdleShutDownCommand(ChatHandler* handler, std::string time, Optional<int32> exitCode, Tail reason)
     {
         std::wstring wReason   = std::wstring();
         std::string  strReason = std::string();
+
+        if (time.empty())
+        {
+            return false;
+        }
+
+        if (Acore::StringTo<int32>(time).value_or(0) < 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
 
         if (!reason.empty())
         {
@@ -380,13 +491,25 @@ public:
             }
         }
 
+        int32 delay = TimeStringToSecs(time);
+        if (delay <= 0)
+        {
+            delay = Acore::StringTo<int32>(time).value_or(0);
+        }
+
+        if (delay <= 0)
+        {
+            handler->SendErrorMessage(LANG_BAD_VALUE);
+            return false;
+        }
+
         if (exitCode && *exitCode >= 0 && *exitCode <= 125)
         {
-            sWorld->ShutdownServ(time, SHUTDOWN_MASK_IDLE, *exitCode);
+            sWorld->ShutdownServ(delay, SHUTDOWN_MASK_IDLE, *exitCode);
         }
         else
         {
-            sWorld->ShutdownServ(time, SHUTDOWN_MASK_IDLE, SHUTDOWN_EXIT_CODE, strReason);
+            sWorld->ShutdownServ(delay, SHUTDOWN_MASK_IDLE, SHUTDOWN_EXIT_CODE, strReason);
         }
 
         return true;
@@ -401,10 +524,61 @@ public:
     }
 
     // Define the 'Message of the day' for the realm
-    static bool HandleServerSetMotdCommand(ChatHandler* handler, std::string motd)
+    static bool HandleServerSetMotdCommand(ChatHandler* handler, Optional<int32> realmId, std::string locale, Tail motd)
     {
-        Motd::SetMotd(motd);
-        handler->PSendSysMessage(LANG_MOTD_NEW, motd);
+        std::wstring wMotd = std::wstring();
+        std::string strMotd = std::string();
+
+        // Default realmId to the current realm if not provided
+        if (!realmId)
+            realmId = static_cast<int32>(realm.Id.Realm);
+
+        // Determine the locale; default to "enUS" if not provided
+        LocaleConstant localeConstant;
+        if (IsLocaleValid(locale))
+            localeConstant = GetLocaleByName(locale);
+        else
+        {
+            handler->SendErrorMessage("locale ({}) is not valid. Valid locales: enUS, koKR, frFR, deDE, zhCN, zhWE, esES, esMX, ruRU.", locale);
+            return false;
+        }
+
+        if (motd.empty())
+            return false;
+
+        // Convert the concatenated motdString to UTF-8 and ensure encoding consistency
+        if (!Utf8toWStr(motd, wMotd))
+            return false;
+
+        if (!WStrToUtf8(wMotd, strMotd))
+            return false;
+
+        // Start a transaction for the database operations
+        LoginDatabaseTransaction trans = LoginDatabase.BeginTransaction();
+
+        if (localeConstant == LOCALE_enUS)
+        {
+            // Insert or update in the main motd table for enUS
+            LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_REP_MOTD);
+            stmt->SetData(0, realmId.value());  // realmId for insertion
+            stmt->SetData(1, strMotd);          // motd text for insertion
+            trans->Append(stmt);
+        }
+        else
+        {
+            // Insert or update in the motd_localized table for other locales
+            LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_REP_MOTD_LOCALE);
+            stmt->SetData(0, realmId.value());  // realmId for insertion
+            stmt->SetData(1, locale);           // locale for insertion
+            stmt->SetData(2, strMotd);          // motd text for insertion
+            trans->Append(stmt);
+        }
+
+        // Commit the transaction & update db
+        LoginDatabase.CommitTransaction(trans);
+
+        sMotdMgr->SetMotd(strMotd, localeConstant);
+        handler->PSendSysMessage(LANG_MOTD_NEW, realmId.value(), locale, strMotd);
         return true;
     }
 
@@ -424,8 +598,7 @@ public:
             return true;
         }
 
-        handler->SendSysMessage(LANG_USE_BOL);
-        handler->SetSentErrorMessage(true);
+        handler->SendErrorMessage(LANG_USE_BOL);
         return false;
     }
 

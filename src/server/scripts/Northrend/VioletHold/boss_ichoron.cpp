@@ -15,8 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "CreatureScript.h"
 #include "Player.h"
-#include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "SpellInfo.h"
 #include "violet_hold.h"
@@ -53,22 +53,15 @@ enum eCreatures
 enum eSpells
 {
     SPELL_DRAINED                           = 59820,
-    SPELL_FRENZY_N                          = 54312,
-    SPELL_FRENZY_H                          = 59522,
+    SPELL_FRENZY                            = 54312,
     SPELL_PROTECTIVE_BUBBLE                 = 54306,
-    SPELL_WATER_BLAST_N                     = 54237,
-    SPELL_WATER_BLAST_H                     = 59520,
-    SPELL_WATER_BOLT_VOLLEY_N               = 54241,
-    SPELL_WATER_BOLT_VOLLEY_H               = 59521,
+    SPELL_WATER_BLAST                       = 54237,
+    SPELL_WATER_BOLT_VOLLEY                 = 54241,
 
     SPELL_SPLASH                            = 59516, // casted by globule upon death
     SPELL_WATER_GLOBULE                     = 54268, // casted when hit by visual
     SPELL_CREATE_GLOBULE_VISUAL             = 54260, // tar 25
 };
-
-#define SPELL_WATER_BLAST                   DUNGEON_MODE(SPELL_WATER_BLAST_N, SPELL_WATER_BLAST_H)
-#define SPELL_WATER_BOLT_VOLLEY             DUNGEON_MODE(SPELL_WATER_BOLT_VOLLEY_N, SPELL_WATER_BOLT_VOLLEY_H)
-#define SPELL_FRENZY                        DUNGEON_MODE(SPELL_FRENZY_N, SPELL_FRENZY_H)
 
 class boss_ichoron : public CreatureScript
 {
@@ -101,7 +94,7 @@ public:
             bIsFrenzy = false;
             uiDrainedTimer = 15000;
             uiWaterBoltVolleyTimer = urand(7000, 12000);
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+            me->RemoveUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
             me->SetDisplayId(me->GetNativeDisplayId());
         }
 
@@ -110,7 +103,7 @@ public:
             if (!me->IsAlive())
                 return;
 
-            switch(param)
+            switch (param)
             {
                 case ACTION_WATER_ELEMENT_HIT:
                     if (pInstance)
@@ -138,7 +131,7 @@ public:
                 me->CastSpell(me, SPELL_PROTECTIVE_BUBBLE, true);
             }
 
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+            me->RemoveUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
             me->SetDisplayId(me->GetNativeDisplayId());
         }
 
@@ -153,7 +146,7 @@ public:
                     me->CastSpell(plr, spellId, triggered);
         }
 
-        void EnterCombat(Unit* /*who*/) override
+        void JustEngagedWith(Unit* /*who*/) override
         {
             bIsExploded = false;
             bIsFrenzy = false;
@@ -191,7 +184,7 @@ public:
                         me->CastSpell(me, SPELL_DRAINED, true);
                         bIsExploded = true;
                         uiDrainedTimer = 15000;
-                        me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+                        me->SetUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
                         me->SetDisplayId(11686);
                         for (uint8 i = 0; i < MAX_SPAWN_LOC; ++i)
                         {
@@ -273,7 +266,7 @@ public:
         {
             Talk(SAY_DEATH);
             bIsExploded = false;
-            me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+            me->RemoveUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
             me->SetDisplayId(me->GetNativeDisplayId());
             globules.DespawnAll();
             if (pInstance)
@@ -289,10 +282,11 @@ public:
 
         void MoveInLineOfSight(Unit* /*who*/) override {}
 
-        void EnterEvadeMode() override
+        void EnterEvadeMode(EvadeReason why) override
         {
-            ScriptedAI::EnterEvadeMode();
-            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NON_ATTACKABLE);
+            ScriptedAI::EnterEvadeMode(why);
+            me->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
+
             if (pInstance)
                 pInstance->SetData(DATA_FAILED, 1);
         }

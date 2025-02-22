@@ -20,12 +20,17 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GridNotifiers.h"
-#include "GridNotifiersImpl.h"
 #include "ObjectAccessor.h"
 #include "SpellMgr.h"
 #include "Totem.h"
 
-int TotemAI::Permissible(Creature const* creature)
+/// @todo: this import is not necessary for compilation and marked as unused by the IDE
+//  however, for some reasons removing it would cause a damn linking issue
+//  there is probably some underlying problem with imports which should properly addressed
+//  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
+#include "GridNotifiersImpl.h"
+
+int32 TotemAI::Permissible(Creature const* creature)
 {
     if (creature->IsTotem())
         return PERMIT_BASE_PROACTIVE;
@@ -50,7 +55,7 @@ void TotemAI::MoveInLineOfSight(Unit* /*who*/)
 {
 }
 
-void TotemAI::EnterEvadeMode()
+void TotemAI::EnterEvadeMode(EvadeReason /*why*/)
 {
     me->CombatStop(true);
 }
@@ -60,8 +65,23 @@ void TotemAI::UpdateAI(uint32 /*diff*/)
     if (me->ToTotem()->GetTotemType() != TOTEM_ACTIVE)
         return;
 
-    if (!me->IsAlive() || me->IsNonMeleeSpellCast(false))
+    if (!me->IsAlive())
+    {
         return;
+    }
+
+    if (me->IsNonMeleeSpellCast(false))
+    {
+        if (Unit* victim = ObjectAccessor::GetUnit(*me, i_victimGuid))
+        {
+            if (!victim || !victim->IsAlive())
+            {
+                me->InterruptNonMeleeSpells(false);
+            }
+        }
+
+        return;
+    }
 
     // Search spell
     SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(me->ToTotem()->GetSpell());
@@ -109,7 +129,7 @@ void TotemAI::UpdateAI(uint32 /*diff*/)
 void TotemAI::AttackStart(Unit* /*victim*/)
 {
     // Sentry totem sends ping on attack
-    if (me->GetEntry() == SENTRY_TOTEM_ENTRY && me->GetOwner()->GetTypeId() == TYPEID_PLAYER)
+    if (me->GetEntry() == SENTRY_TOTEM_ENTRY && me->GetOwner()->IsPlayer())
     {
         WorldPacket data(MSG_MINIMAP_PING, (8 + 4 + 4));
         data << me->GetGUID();
